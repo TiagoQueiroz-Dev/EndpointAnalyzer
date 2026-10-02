@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\EndpointAnalyzer.ChangeDetection\EndpointAnalyzer.ChangeDetection.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Só para restrições com mais de uma variável ou aritmética (Fase 5); o núcleo é determinístico e próprio. -->
+    <PackageReference Include="Microsoft.Z3" Version="4.12.2" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

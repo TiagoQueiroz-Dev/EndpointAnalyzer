@@ -1,0 +1,1889 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Endpoint Analyzer</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --sidebar: #fafbfc; --text: #1d2330; --muted: #5d6677; --border: #dde1e8;
+    --hover: #eef0f4; --active: #e4e9f5; --accent: #2f5fd0; --accent-text: #ffffff; --code: #f0f2f5;
+    --post: #1f8a4c; --put: #b26a00; --patch: #7a4cc2; --delete: #c0392b; --get: #2f6fd0; --danger: #c0392b; --claude: #c4633f;
+    --hl: #fbe9a6; --hl-border: #d9a800;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171c; --panel: #1c2027; --sidebar: #0f1114; --text: #e4e7ec; --muted: #9aa3b2; --border: #2a2f37;
+      --hover: #1b1f25; --active: #222832; --accent: #6b93f0; --accent-text: #0e1116; --code: #242a33;
+      --post: #4cc584; --put: #f0a940; --patch: #b593f0; --delete: #ef7a6d; --get: #6ba6f0; --danger: #ef7a6d; --claude: #c4633f;
+      --hl: rgba(240, 169, 64, .2); --hl-border: #f0a940;
+    }
+  }
+  * { box-sizing: border-box; }
+  /* Sem height fixo no body: o sticky da barra lateral precisa de um contêiner que cresça com o conteúdo. */
+  body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+         display: grid; grid-template-columns: 300px minmax(0, 1fr); align-items: start; }
+  @media (max-width: 860px) { body { grid-template-columns: 1fr; } }
+
+  /* ---- Barra lateral (estilo Scalar) ---- */
+  aside { position: sticky; top: 0; align-self: start; height: 100vh; display: flex; flex-direction: column; background: var(--sidebar);
+          border-right: 1px solid var(--border); min-width: 0; }
+  @media (max-width: 860px) { aside { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--border); } }
+  .brand { padding: 14px 14px 6px; font-weight: 700; font-size: 14px; letter-spacing: .04em; }
+  .project { display: flex; gap: 6px; padding: 4px 10px; }
+  .file { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid var(--border);
+          border-radius: 6px; background: var(--panel); color: var(--text); font: inherit; font-size: 13.5px; font-weight: 400; text-align: left; cursor: pointer; }
+  .file:hover { border-color: var(--accent); }
+  .file svg { width: 15px; height: 15px; flex: none; color: var(--muted); }
+  .file span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file .placeholder { color: var(--muted); }
+  .project button.icon { display: flex; align-items: center; justify-content: center; width: 34px; padding: 0; flex: none; }
+  .project button.icon svg { width: 16px; height: 16px; }
+  .project-status { padding: 0 14px 4px; font-size: 12px; min-height: 18px; }
+  .search { position: relative; margin: 4px 10px 8px; }
+  .search input[type=text] { width: 100%; padding: 8px 56px 8px 32px; border-radius: 8px; }
+  .search svg { position: absolute; left: 10px; top: 50%; width: 14px; height: 14px; transform: translateY(-50%); color: var(--muted); }
+  .search kbd { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font: 11px ui-monospace, Consolas, monospace;
+                border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; color: var(--muted); background: var(--panel); }
+  nav { flex: 1; overflow-y: auto; padding: 0 8px 12px; min-height: 120px; }
+  @media (max-width: 860px) { nav { max-height: 55vh; } }
+  .group-toggle { display: flex; align-items: center; gap: 6px; width: 100%; padding: 6px 8px; background: none; border: 0;
+                  color: var(--text); font: inherit; font-size: 14px; text-align: left; cursor: pointer; border-radius: 6px; }
+  .group-toggle:hover { background: var(--hover); }
+  .chevron { width: 14px; height: 14px; flex: none; color: var(--muted); transition: transform .15s; }
+  /* ">" porque numa solução os grupos ficam dentro do nó do projeto, cada um abrindo de forma independente. */
+  .group.open > .group-toggle .chevron { transform: rotate(90deg); }
+  .items, .subgroups { list-style: none; margin: 0 0 4px 15px; padding: 0 0 0 8px; border-left: 1px solid var(--border); display: none; }
+  .group.open > .items, .group.open > .subgroups { display: block; }
+  .project-toggle { font-weight: 600; }
+  .item { display: flex; gap: 8px; align-items: flex-start; justify-content: space-between; width: 100%; padding: 6px 8px; border: 0;
+          background: none; color: var(--muted); font: inherit; font-size: 13.5px; line-height: 1.35; text-align: left; cursor: pointer; border-radius: 6px; }
+  .item:hover { background: var(--hover); color: var(--text); }
+  .item.active { background: var(--active); color: var(--text); }
+  .item .title { min-width: 0; overflow-wrap: anywhere; }
+  .method { flex: none; font: 700 10.5px ui-monospace, Consolas, monospace; text-transform: uppercase; padding-top: 2px; }
+  .method.POST { color: var(--post); } .method.PUT { color: var(--put); } .method.PATCH { color: var(--patch); }
+  .method.DELETE { color: var(--delete); } .method.GET { color: var(--get); }
+  .empty { padding: 12px 8px; font-size: 13px; color: var(--muted); }
+
+  /* Rodapé: conta do Claude + modelo/effort */
+  .claude-footer { border-top: 1px solid var(--border); padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+  .claude-btn { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; padding: 9px 12px;
+                background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; font-weight: 600; }
+  .claude-btn:hover { border-color: var(--claude); }
+  .claude-btn svg { width: 15px; height: 15px; color: var(--claude); }
+  .account-row { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 10px; border: 1px solid var(--border);
+                 border-radius: 8px; background: var(--panel); }
+  .account-row .email { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+  .account-row button { padding: 4px 10px; font-size: 12.5px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--post); flex: none; }
+  .dot.warn { background: var(--put); }
+  .selects { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .selects select { width: 100%; min-width: 0; padding: 6px 6px; font-size: 12.5px; }
+  .footer-note { font-size: 12px; color: var(--muted); }
+  .footer-note a { color: var(--accent); }
+
+  /* ---- Conteúdo ---- */
+  main { padding: 24px; min-width: 0; }
+  @media (max-width: 860px) { main { padding: 16px; } }
+  section { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; min-width: 0; margin-bottom: 16px; }
+  input[type=text], select { border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text); font: inherit; }
+  input[type=text] { padding: 8px 10px; }
+  input[type=text]:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  button { padding: 8px 14px; border: 0; border-radius: 6px; background: var(--accent); color: var(--accent-text); font: inherit; font-weight: 600; cursor: pointer; }
+  button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--border); }
+  button:disabled { opacity: .5; cursor: default; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+  .row { display: flex; gap: 10px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .error { color: var(--danger); }
+  .breadcrumb { font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+  .endpoint-title { font-size: 22px; margin: 0 0 6px; }
+  .endpoint-route { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .endpoint-route .method { font-size: 12px; }
+  .route { font-family: ui-monospace, Consolas, monospace; font-size: 13.5px; overflow-wrap: anywhere; }
+  .check { display: flex; gap: 6px; align-items: center; margin: 0; color: var(--text); font-size: 14px; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 12px; flex-wrap: wrap; }
+  .tabs button { background: none; color: var(--muted); border-radius: 0; border-bottom: 2px solid transparent; }
+  .tabs button.active { color: var(--text); border-bottom-color: var(--accent); }
+  h3 { font-size: 16px; margin: 20px 0 8px; } h4 { margin: 12px 0 4px; font-size: 14px; }
+  pre { background: var(--code); padding: 10px 12px; border-radius: 6px; overflow-x: auto; font-size: 12.5px; margin: 6px 0; }
+  code { font-family: ui-monospace, Consolas, monospace; }
+  .card { border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; margin: 8px 0; }
+  .badge { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 10px; background: var(--code); color: var(--muted); margin-left: 6px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .table-wrap { overflow-x: auto; }
+  .tree { font-family: ui-monospace, Consolas, monospace; font-size: 13px; overflow-x: auto; background: var(--code); border-radius: 6px; padding: 8px 10px; }
+  .tree-line { white-space: nowrap; line-height: 1.7; }
+  .tree-line.dim { opacity: .55; }
+  .tree-line em { font-style: normal; color: var(--muted); }
+  .cat { font: 600 10.5px system-ui, sans-serif; padding: 0 6px; border-radius: 8px; border: 1px solid var(--border); color: var(--muted); }
+  .cat.BUSINESS { color: var(--get); border-color: var(--get); } .cat.VALIDATION { color: var(--patch); border-color: var(--patch); }
+  .cat.DATA_ACCESS { color: var(--put); border-color: var(--put); } .cat.PERSISTENCE { color: var(--post); border-color: var(--post); }
+  .cat.EXTERNAL_EFFECT { color: var(--delete); border-color: var(--delete); }
+  .cond { font-size: 12px; color: var(--muted); border-bottom: 1px dotted var(--muted); cursor: help; }
+  .warn { color: var(--put); font-size: 12px; }
+
+  /* ---- Matriz de cenários ---- */
+  .scen-toolbar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 4px 0 12px; }
+  .scen-toolbar .spacer { flex: 1; }
+  .chip { padding: 4px 10px; border-radius: 14px; border: 1px solid var(--border); background: var(--panel); color: var(--muted); font-size: 12.5px; font-weight: 500; }
+  .chip.on { border-color: var(--accent); color: var(--text); background: var(--active); }
+  .chip .n { margin-left: 4px; opacity: .7; }
+  .scen-toolbar button.secondary { display: flex; align-items: center; gap: 6px; padding: 5px 10px; font-size: 12.5px; }
+  .scen-toolbar button svg, .payload-actions button svg { width: 13px; height: 13px; }
+  table.scen td { padding: 8px; }
+  table.scen td.id { white-space: nowrap; }
+  table.scen .title { font-weight: 600; }
+  table.scen .desc { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+  .kind { display: inline-block; font: 600 10.5px system-ui, sans-serif; padding: 1px 7px; border-radius: 8px; border: 1px solid var(--border); color: var(--muted); margin-top: 4px; }
+  .kind.sucesso { color: var(--post); border-color: var(--post); } .kind.validacao { color: var(--patch); border-color: var(--patch); }
+  .kind.regra { color: var(--delete); border-color: var(--delete); } .kind.limite { color: var(--get); border-color: var(--get); }
+  .tech { display: block; font-size: 11px; color: var(--muted); margin-top: 3px; }
+  .payload { min-width: 240px; max-width: 420px; }
+  .payload .url { font: 12px ui-monospace, Consolas, monospace; overflow-wrap: anywhere; }
+  .payload pre { max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-all; margin: 4px 0 0; font-size: 12px; }
+  .payload-actions { display: flex; gap: 4px; margin-top: 4px; }
+  .payload-actions button { display: flex; align-items: center; gap: 4px; padding: 2px 8px; font-size: 11.5px; font-weight: 500; }
+  .pre-list { margin: 0; padding-left: 16px; font-size: 13px; }
+  .pre-list li { margin-bottom: 3px; }
+  .pre-list .pk { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; margin-right: 4px; }
+  .pre-list .pk.suposicao { color: var(--put); }
+  .status { display: inline-block; font: 700 12px ui-monospace, Consolas, monospace; padding: 1px 7px; border-radius: 6px; color: #fff; }
+  .status.s2 { background: var(--post); } .status.s4 { background: var(--put); } .status.s5 { background: var(--delete); } .status.s0 { background: var(--muted); }
+  .status-src { font-size: 11.5px; color: var(--muted); margin-left: 4px; }
+  .expected .msg { font-size: 13px; margin-top: 3px; }
+  .expected .effects { margin: 4px 0 0; padding-left: 16px; font-size: 12.5px; color: var(--muted); }
+  .expected .persist { font-size: 12px; margin-top: 4px; }
+  .expected .persist.no { color: var(--muted); } .expected .persist.partial { color: var(--delete); }
+  .scen-notes { font-size: 11.5px; color: var(--put); margin-top: 4px; }
+  .dt th, .dt td { text-align: center; padding: 4px 6px; font-size: 12.5px; }
+  .dt th:first-child, .dt td:first-child { text-align: left; position: sticky; left: 0; background: var(--panel); min-width: 260px; }
+  .dt td.v { color: var(--post); font-weight: 700; } .dt td.f { color: var(--muted); } .dt td.x { color: var(--border); }
+  .dt .cond-code { display: block; font: 11px ui-monospace, Consolas, monospace; color: var(--muted); overflow-wrap: anywhere; }
+
+  /* ---- Fluxograma (Mermaid) do grafo técnico ---- */
+  .flow { position: relative; background: var(--code); border-radius: 6px; }
+  .flow-actions { position: absolute; top: 8px; right: 8px; z-index: 1; display: flex; gap: 6px; }
+  .flow-actions button { display: flex; align-items: center; gap: 6px; padding: 5px 10px; font-size: 12.5px; background: var(--panel); }
+  .flow-actions button svg { width: 14px; height: 14px; flex: none; }
+  /* As cores dos nós são fixas (tons claros), então o fundo é sempre claro, com pontos como no Mermaid Live. */
+  .flow-canvas { position: relative; height: 78vh; min-height: 360px; overflow: hidden; border-radius: 6px; background-color: #fbfbfc;
+                 background-image: radial-gradient(#d5d8de 1px, transparent 1px); background-size: 18px 18px; color: #1d2330;
+                 cursor: grab; user-select: none; touch-action: none; }
+  .flow-canvas.dragging { cursor: grabbing; }
+  .flow-canvas > p { margin: 0; padding: 16px; }
+  .flow-canvas.flow-error { height: auto; overflow: auto; cursor: auto; user-select: text; padding: 52px 16px 16px; }
+  .flow-stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+  .flow-stage svg { display: block; max-width: none !important; }
+  /* Setas escuras e mais grossas, como no Mermaid Live (o CSS do Mermaid usa seletor por id, por isso o !important). */
+  .flow-stage svg .flowchart-link { stroke: #222 !important; stroke-width: 2px !important; }
+  .flow-stage svg .marker, .flow-stage svg .arrowMarkerPath { fill: #222 !important; stroke: #222 !important; }
+  /* Cada etapa abre o seu trecho de código num popup. */
+  .flow-canvas:not(.dragging) .flow-stage g.node { cursor: pointer; }
+  .flow-stage g.node:hover { filter: brightness(.94); }
+  .code-dialog { padding: 0; width: min(1000px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow: hidden; outline: none; }
+  .code-dialog .code-panel { position: static; max-height: calc(100vh - 48px); border: 0; border-radius: 0; box-shadow: none; }
+  .flow-zoom { position: absolute; right: 8px; bottom: 8px; z-index: 1; display: flex; gap: 4px; }
+  .flow-zoom button { min-width: 32px; padding: 4px 8px; font-size: 13px; background: var(--panel); }
+  .flow-zoom span { align-self: center; min-width: 46px; text-align: center; font-size: 12px; color: #5d6677; }
+
+  /* ---- Código da regra / validação / condição selecionada ---- */
+  .result-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
+  .result-grid.with-code { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .pick { cursor: pointer; }
+  tr.pick:hover td, li.pick:hover { background: var(--hover); }
+  tr.picked td, li.picked { background: var(--active); }
+  tr.picked td:first-child, li.picked { box-shadow: inset 3px 0 var(--accent); }
+  li.pick { padding: 2px 6px; border-radius: 4px; }
+  .card.pick:hover { border-color: var(--muted); }
+  .card.picked { border-color: var(--accent); box-shadow: inset 3px 0 var(--accent); }
+  .pick:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .code-panel { position: sticky; top: 16px; display: flex; flex-direction: column; max-height: calc(100vh - 32px);
+                border: 1px solid var(--border); border-radius: 8px; background: var(--panel); overflow: hidden; }
+  .code-panel[hidden] { display: none; }
+  .code-head { display: flex; align-items: center; gap: 12px; padding: 8px 8px 8px 12px; border-bottom: 1px solid var(--border); font-size: 12.5px; }
+  .code-file { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+  .code-range { flex: none; color: var(--muted); }
+  .code-close { flex: none; padding: 0 8px; background: none; color: var(--muted); font-size: 18px; line-height: 1.2; font-weight: 400; }
+  .code-close:hover { color: var(--text); background: var(--hover); }
+  .code-msg { padding: 12px; }
+  /* overflow-anchor: as linhas reveladas acima aparecem no lugar do botão, sem o navegador compensar a rolagem. */
+  .code-body { position: relative; flex: 1; min-height: 0; overflow: auto; overflow-anchor: none; font: 12.5px/1.6 ui-monospace, Consolas, monospace; }
+  .code-expand { display: flex; align-items: center; background: var(--code); color: var(--muted); font: 12px system-ui, sans-serif; }
+  .code-expand button { position: sticky; left: 0; display: flex; align-items: center; justify-content: center; flex: none; width: 52px; height: 26px;
+                        padding: 0; border-radius: 0; background: var(--code); color: var(--muted); }
+  .code-expand button:hover, .code-expand button:focus-visible { background: var(--accent); color: var(--accent-text); outline: none; }
+  .code-expand button svg { width: 15px; height: 15px; }
+  .code-expand span { padding-left: 12px; white-space: nowrap; }
+  .code-lines { min-width: max-content; padding: 4px 0; }
+  .code-line { display: flex; white-space: pre; }
+  .code-line .n { position: sticky; left: 0; flex: none; width: 52px; padding-right: 12px; text-align: right; color: var(--muted);
+                  background: var(--panel); user-select: none; }
+  .code-line .t { flex: 1; padding: 0 16px 0 12px; }
+  .code-line.hl, .code-line.hl .n { background: var(--hl); }
+  .code-line.hl .n { color: var(--text); font-weight: 600; }
+  .code-line.hl .t { box-shadow: inset 3px 0 var(--hl-border); }
+  /* Tela estreita: o código abre por cima, na parte de baixo. */
+  @media (max-width: 1200px) {
+    .result-grid.with-code { grid-template-columns: minmax(0, 1fr); }
+    .result-grid.with-code .result-body { padding-bottom: 52vh; }
+    .code-panel { position: fixed; top: auto; left: 16px; right: 16px; bottom: 16px; max-height: 50vh; z-index: 10;
+                  box-shadow: 0 8px 28px rgba(0, 0, 0, .25); }
+  }
+
+  dialog { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); color: var(--text); padding: 20px; width: min(460px, calc(100vw - 32px)); }
+  dialog::backdrop { background: rgba(0, 0, 0, .45); }
+  dialog h2 { font-size: 17px; margin: 0 0 8px; }
+  dialog p { margin: 6px 0 12px; font-size: 14px; }
+  dialog ol { padding-left: 20px; font-size: 14px; }
+  dialog ol li { margin-bottom: 8px; }
+  dialog a { color: var(--accent); }
+  dialog input[type=text] { width: 100%; }
+</style>
+</head>
+<body>
+<aside>
+  <div class="brand">ENDPOINT ANALYZER</div>
+  <div class="project">
+    <button id="fileName" class="file" type="button" title="Selecionar a solução ou projeto (.sln / .slnx / .csproj)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>
+      <span class="placeholder">nenhum arquivo selecionado</span>
+    </button>
+    <button id="browse" class="secondary icon" type="button" title="Procurar no explorador de arquivos">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+    </button>
+    <button id="load" class="secondary icon" type="button" title="Recarregar endpoints do projeto">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg>
+    </button>
+  </div>
+  <div id="loadStatus" class="project-status muted"></div>
+  <div class="search">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+    <input id="search" type="text" placeholder="Buscar" autocomplete="off" spellcheck="false" aria-label="Buscar endpoints">
+    <kbd>Ctrl K</kbd>
+  </div>
+  <nav id="groups" aria-label="Endpoints"></nav>
+  <div id="claudeFooter" class="claude-footer"><span class="footer-note">verificando conta do Claude...</span></div>
+</aside>
+
+<main>
+  <section id="endpointPanel">
+    <p class="muted">Selecione um endpoint na barra lateral.</p>
+  </section>
+  <div id="result"></div>
+</main>
+
+<dialog id="loginDialog">
+  <form method="dialog" id="loginStep1">
+    <h2>Entrar com Claude</h2>
+    <p class="muted">Usa o seu plano mensal (Pro, Max ou Team) pelo Claude Code instalado nesta máquina, sem cobrança por uso da API.</p>
+    <label for="loginEmail">E-mail da conta do Claude</label>
+    <input id="loginEmail" type="text" inputmode="email" autocomplete="email" placeholder="voce@empresa.com.br">
+    <div class="row">
+      <button id="loginStart" type="button">Continuar</button>
+      <button class="secondary" type="button" data-close>Cancelar</button>
+    </div>
+    <p id="loginError1" class="error"></p>
+  </form>
+  <form method="dialog" id="loginStep2" hidden>
+    <h2>Autorize no navegador</h2>
+    <ol>
+      <li>Na aba que abriu, entre com a sua conta do Claude e autorize.
+        Se ela não abriu, <a id="loginLink" href="#" target="_blank" rel="noopener">abra a página de login</a>.</li>
+      <li>Copie o código exibido e cole aqui:</li>
+    </ol>
+    <input id="loginCode" type="text" spellcheck="false" autocomplete="off" placeholder="código de autorização">
+    <div class="row">
+      <button id="loginConfirm" type="button">Confirmar</button>
+      <button class="secondary" type="button" data-close>Cancelar</button>
+    </div>
+    <p id="loginError2" class="error"></p>
+  </form>
+</dialog>
+
+<dialog id="codeDialog" class="code-dialog" aria-label="Código da etapa do fluxograma">
+  <div id="codePopup" class="code-panel"></div>
+</dialog>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const methodLabel = (m) => m === "DELETE" ? "DEL" : m;
+const normalize = (s) => String(s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+const store = {
+  get(key, fallback) { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } },
+  set(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch { } },
+};
+
+let endpoints = [];
+let selected = null;
+let lastResponse = null;
+let authState = null;
+let openGroups = new Set(store.get("ea.openGroups", []));
+let openProjects = new Set(store.get("ea.openProjects", []));
+
+async function api(url, options) {
+  const response = await fetch(url, options);
+  const body = response.headers.get("content-type")?.includes("json") ? await response.json() : await response.text();
+  if (!response.ok) throw new Error(body?.error ?? body ?? response.statusText);
+  return body;
+}
+
+async function init() {
+  const info = await api("/api/projects/info");
+  // O último arquivo escolhido tem prioridade sobre o padrão do appsettings.
+  setSolution(store.get("ea.solutionPath", null) ?? info.defaultSolution ?? "");
+  if (solutionPath) loadEndpoints(false);
+  await refreshAuth(false);
+}
+
+// ---- Solução selecionada ----
+
+let solutionPath = "";
+
+function setSolution(path) {
+  solutionPath = path;
+  const name = path.split(/[\\/]/).pop();
+  $("fileName").querySelector("span").outerHTML = name
+    ? `<span>${esc(name)}</span>`
+    : `<span class="placeholder">nenhum arquivo selecionado</span>`;
+  $("fileName").title = path || "Selecionar a solução ou projeto (.sln / .slnx / .csproj)";
+  $("load").disabled = !path;
+}
+
+async function browse() {
+  const previous = { text: $("loadStatus").textContent, className: $("loadStatus").className };
+  $("browse").disabled = $("fileName").disabled = true;
+  $("loadStatus").className = "project-status muted";
+  $("loadStatus").textContent = "Selecione o arquivo na janela do explorador...";
+  try {
+    const { path } = await api(`/api/projects/browse?current=${encodeURIComponent(solutionPath)}`, { method: "POST" });
+    if (!path) {
+      // Cancelou: mantém a solução atual.
+      $("loadStatus").textContent = previous.text;
+      $("loadStatus").className = previous.className;
+      return;
+    }
+    setSolution(path);
+    store.set("ea.solutionPath", path);
+    selected = null;
+    renderEndpointPanel();
+    $("result").innerHTML = "";
+    await loadEndpoints(true);
+  } catch (err) {
+    $("loadStatus").textContent = err.message;
+    $("loadStatus").className = "project-status error";
+  } finally {
+    $("browse").disabled = $("fileName").disabled = false;
+  }
+}
+
+// ---- Endpoints agrupados (como o Scalar) ----
+
+async function loadEndpoints(reload) {
+  $("loadStatus").textContent = "Carregando solução...";
+  $("loadStatus").className = "project-status muted";
+  $("groups").innerHTML = "";
+  try {
+    endpoints = await api(`/api/projects/endpoints?path=${encodeURIComponent(solutionPath)}&reload=${reload}`);
+    const projects = projectNames(endpoints);
+    const groups = new Set(endpoints.map(groupKey));
+    $("loadStatus").textContent = `${endpoints.length} endpoint(s) em ${groups.size} grupo(s)`
+      + (showProjects() ? ` · ${projects.length} projeto(s)` : "");
+    // Primeira visita (ou um único projeto/grupo): abre o primeiro projeto e o primeiro grupo dele.
+    if (showProjects() && projects.length > 0 && (projects.length === 1 || store.get("ea.openProjects", null) === null)) openProjects.add(projects[0]);
+    const first = endpoints.find(e => e.project === projects[0]);
+    if (first && (groups.size === 1 || store.get("ea.openGroups", null) === null)) openGroups.add(groupKey(first));
+    if (selected && !endpoints.some(e => key(e) === key(selected))) selected = null;
+    renderGroups();
+
+    // Link direto: #POST%20/veiculo/v1 seleciona o endpoint; ?analisar executa a análise.
+    const linked = endpoints.find(e => route(e) === decodeURIComponent(location.hash.slice(1)));
+    if (linked) {
+      selectEndpoint(linked);
+      if (new URLSearchParams(location.search).has("analisar")) analyze();
+    }
+  } catch (err) {
+    endpoints = [];
+    $("loadStatus").textContent = err.message;
+    $("loadStatus").className = "project-status error";
+  }
+}
+
+const route = (e) => `${e.httpMethod} ${e.route}`;
+// A mesma rota pode existir em mais de um projeto da solução.
+const key = (e) => `${e.project}:${route(e)}`;
+
+/** Nó de projeto na árvore: numa .sln/.slnx e num .csproj que referencia outro projeto com endpoints. */
+const showProjects = () => /\.slnx?$/i.test(solutionPath) || new Set(endpoints.map(e => e.project)).size > 1;
+const projectNames = (items) => [...new Set(items.map(e => e.project))].sort((a, b) => a.localeCompare(b, "pt-BR", { sensitivity: "base" }));
+// Com projetos, o mesmo nome de grupo em projetos diferentes abre/fecha separado.
+const groupKey = (e) => showProjects() ? `${e.project}\n${e.group}` : e.group;
+
+const chevron = `<svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>`;
+
+function renderGroups() {
+  const query = normalize($("search").value.trim());
+  const matches = (e) => !query || [e.summary, e.route, e.httpMethod, e.group, e.project, `${e.controller}.${e.action}`].some(v => normalize(v).includes(query));
+  const visible = endpoints.filter(matches);
+
+  if (visible.length === 0) {
+    $("groups").innerHTML = `<div class="empty">${endpoints.length ? "Nenhum endpoint encontrado." : ""}</div>`;
+    return;
+  }
+
+  const renderGroupNodes = (items) => {
+    const groups = new Map();
+    for (const e of items) {
+      if (!groups.has(e.group)) groups.set(e.group, []);
+      groups.get(e.group).push(e);
+    }
+    return [...groups].map(([name, items]) => {
+      const id = groupKey(items[0]);
+      const open = query || openGroups.has(id);
+      return `<div class="group ${open ? "open" : ""}" data-group="${esc(id)}">
+        <button class="group-toggle" aria-expanded="${open}">${chevron}<span>${esc(name)}</span></button>
+        <ul class="items">${items.map(e => `
+          <li><button class="item ${selected && key(selected) === key(e) ? "active" : ""}" data-key="${esc(key(e))}" title="${esc(route(e))}">
+            <span class="title">${esc(e.summary || e.route)}</span>
+            <span class="method ${esc(e.httpMethod)}">${esc(methodLabel(e.httpMethod))}</span>
+          </button></li>`).join("")}
+        </ul></div>`;
+    }).join("");
+  };
+
+  $("groups").innerHTML = !showProjects() ? renderGroupNodes(visible) : projectNames(visible).map(name => {
+    const open = query || openProjects.has(name);
+    return `<div class="group ${open ? "open" : ""}" data-project="${esc(name)}">
+      <button class="group-toggle project-toggle" aria-expanded="${open}" title="${esc(name)}">${chevron}<span>${esc(name)}</span></button>
+      <div class="subgroups">${renderGroupNodes(visible.filter(e => e.project === name))}</div></div>`;
+  }).join("");
+
+  document.querySelectorAll(".group-toggle").forEach(b => b.addEventListener("click", () => {
+    const node = b.parentElement;
+    const isProject = "project" in node.dataset;
+    const [set, storeKey, id] = isProject ? [openProjects, "ea.openProjects", node.dataset.project] : [openGroups, "ea.openGroups", node.dataset.group];
+    node.classList.toggle("open");
+    b.setAttribute("aria-expanded", node.classList.contains("open"));
+    if (node.classList.contains("open")) set.add(id); else set.delete(id);
+    store.set(storeKey, [...set]);
+  }));
+  document.querySelectorAll(".item").forEach(b => b.addEventListener("click", () => selectEndpoint(endpoints.find(e => key(e) === b.dataset.key))));
+}
+
+function selectEndpoint(endpoint) {
+  selected = endpoint;
+  lastResponse = null;
+  resetSource();
+  openGroups.add(groupKey(endpoint));
+  store.set("ea.openGroups", [...openGroups]);
+  if (showProjects()) {
+    openProjects.add(endpoint.project);
+    store.set("ea.openProjects", [...openProjects]);
+  }
+  document.querySelectorAll(".item").forEach(b => b.classList.toggle("active", b.dataset.key === key(endpoint)));
+  // Link direto: abre o grupo (e o projeto) do endpoint na árvore.
+  const item = [...document.querySelectorAll(".item")].find(b => b.dataset.key === key(endpoint));
+  for (let node = item?.closest(".group"); node; node = node.parentElement.closest(".group")) {
+    node.classList.add("open");
+    node.querySelector(":scope > .group-toggle").setAttribute("aria-expanded", "true");
+  }
+  item?.scrollIntoView({ block: "nearest" });
+  history.replaceState(null, "", `${location.pathname}${location.search}#${encodeURIComponent(route(endpoint))}`);
+  $("result").innerHTML = "";
+  renderEndpointPanel();
+}
+
+function renderEndpointPanel() {
+  const e = selected;
+  if (!e) {
+    $("endpointPanel").innerHTML = `<p class="muted">Selecione um endpoint na barra lateral.</p>`;
+    return;
+  }
+  $("endpointPanel").innerHTML = `
+    <div class="breadcrumb">${showProjects() ? `${esc(e.project)} › ` : ""}${esc(e.group)}</div>
+    <h2 class="endpoint-title">${esc(e.summary || `${e.controller}.${e.action}`)}</h2>
+    <div class="endpoint-route"><span class="method ${esc(e.httpMethod)}">${esc(e.httpMethod)}</span><span class="route">${esc(e.route)}</span></div>
+    <p class="muted">${esc(e.controller)}.${esc(e.action)} — ${esc(e.sourceFile)}:${e.sourceLine}</p>
+    <div class="row">
+      <label class="check"><input id="useAi" type="checkbox"> <span id="useAiLabel">Usar IA</span></label>
+      <span id="aiModeSlot"></span>
+    </div>
+    <div class="row">
+      <button id="analyze">ANALISAR</button>
+      <span id="analyzeStatus" class="muted"></span>
+    </div>`;
+  $("analyze").addEventListener("click", analyze);
+  updateAiControls(true);
+}
+
+/** Atualiza a caixa "Usar IA" e o seletor de origem conforme a conta. */
+function updateAiControls(initial) {
+  if (!$("useAi")) return;
+  const s = authState ?? {};
+  const source = s.activeSource;
+  const wasDisabled = $("useAi").disabled;
+  $("useAi").disabled = !source;
+  if (!source) $("useAi").checked = false;
+  else if (initial || wasDisabled) $("useAi").checked = true;
+  $("useAiLabel").textContent = source === "subscription" ? "Usar IA (Claude · plano mensal)"
+    : source === "api" ? "Usar IA (Claude · API)" : "Usar IA (entre com Claude para habilitar)";
+
+  $("aiModeSlot").innerHTML = s.apiConfigured && s.cliInstalled ? `<select id="aiMode" title="Origem da IA">
+      <option value="auto">IA: automática</option>
+      <option value="subscription">IA: plano mensal</option>
+      <option value="api">IA: API (por uso)</option></select>` : "";
+  if ($("aiMode")) {
+    $("aiMode").value = s.mode;
+    $("aiMode").addEventListener("change", async (ev) => renderAuth(await api("/api/auth/mode", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: ev.target.value }),
+    })));
+  }
+}
+
+// ---- Análise ----
+
+async function analyze() {
+  if (!selected) return;
+  const endpoint = selected;
+  $("analyze").disabled = true;
+  $("analyzeStatus").className = "muted";
+  $("analyzeStatus").textContent = $("useAi").checked ? "Analisando com IA (pode levar alguns minutos)..." : "Analisando...";
+  try {
+    const response = await api("/api/analysis", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        solutionPath,
+        endpoint: { method: endpoint.httpMethod, route: endpoint.route },
+        useAi: $("useAi").checked,
+      }),
+    });
+    if (selected !== endpoint) return;
+    lastResponse = response;
+    resetSource();
+    $("analyzeStatus").textContent = response.report.fromCache ? "Concluído (cache)" : "Concluído";
+    render(response.report.ai ? "summary" : "business");
+  } catch (err) {
+    if (selected !== endpoint) return;
+    $("analyzeStatus").textContent = err.message;
+    $("analyzeStatus").className = "error";
+  } finally {
+    if ($("analyze")) $("analyze").disabled = false;
+  }
+}
+
+function render(tab) {
+  const { report, markdown } = lastResponse;
+  const ctx = report.context;
+  const tabs = [["summary", "Resumo"], ["business", "Negócio"], ["technical", "Técnico"], ["complete", "Completo"], ["md", "Markdown"],
+    ["scenarios", `Cenários${ctx.scenarios?.scenarios?.length ? ` <span class="badge">${ctx.scenarios.scenarios.length}</span>` : ""}`]];
+  let body = "";
+  if (tab === "summary") body = report.ai ? renderDoc(report.ai) : renderSummary(ctx);
+  if (tab === "business") body = renderBusiness(ctx);
+  if (tab === "technical" || tab === "complete") body = renderTechnical(ctx, tab);
+  if (tab === "md") body = `<div class="row"><button class="secondary" id="copyMd">Copiar</button><button class="secondary" id="downloadMd">Baixar .md</button></div><pre>${esc(markdown)}</pre>`;
+  if (tab === "scenarios") body = renderScenarios(ctx, report.ai);
+
+  $("result").innerHTML = `<section>
+    <p class="muted" style="margin-top:0">analisador ${esc(report.version.analyzerVersion)}${report.version.commit ? ` · commit ${esc(report.version.commit)}` : ""}${report.version.aiModel ? ` · ${esc(report.version.aiModel)}` : ""}</p>
+    <div class="tabs">${tabs.map(([id, label]) => `<button data-tab="${id}" class="${id === tab ? "active" : ""}">${label}</button>`).join("")}</div>
+    <div class="result-grid"><div class="result-body">${body}</div><div id="codePanel" class="code-panel" hidden></div></div></section>`;
+  document.querySelectorAll("[data-tab]").forEach(b => b.addEventListener("click", () => render(b.dataset.tab)));
+  // Mantém o código aberto ao trocar de aba quando o item selecionado também aparece na nova aba.
+  if (picked && ![...document.querySelectorAll("[data-pick]")].some(el => el.dataset.pick === picked)) picked = null;
+  showSource();
+  if (tab === "technical") showFlow(ctx.callTree, "technical");
+  if (tab === "business") showFlow(ctx.businessGraph ?? ctx.callTree, "business");
+  if (tab === "scenarios") wireScenarios(ctx, report.ai);
+  if (tab === "md") {
+    $("copyMd").onclick = () => navigator.clipboard.writeText(markdown);
+    $("downloadMd").onclick = () => {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([markdown], { type: "text/markdown" }));
+      a.download = `${ctx.endpoint.httpMethod}_${ctx.endpoint.route.replace(/[^\w]+/g, "_")}.md`;
+      a.click();
+    };
+  }
+}
+
+function renderRules(rules, list) {
+  if (!rules.length) return `<p class="muted">Nenhuma encontrada.</p>`;
+  return rules.map((r, i) => `
+    <div ${r.evidence?.file && r.evidence.line ? pickAttrs(`ai:${list}:${i}`, "card") : `class="card"`}>
+      <strong>${esc(r.id)}</strong><span class="badge">confiança ${Number(r.confidence).toFixed(2)}</span>
+      <div>${esc(r.description)}</div>
+      ${r.evidence ? `<div class="muted">${esc(r.evidence.file)}:${r.evidence.line} — ${esc(r.evidence.method)}</div>
+        ${r.evidence.code ? `<pre><code>${esc(r.evidence.code)}</code></pre>` : ""}` : ""}
+    </div>`).join("");
+}
+
+function renderDoc(ai) {
+  return `
+    <h3 style="margin-top:0">Objetivo</h3><p>${esc(ai.summary)}</p>
+    <h3>Regras de negócio</h3>${renderRules(ai.businessRules, "businessRules")}
+    <h3>Validações</h3>${renderRules(ai.validations, "validations")}
+    <h3>Entidades alteradas</h3>
+    ${ai.entityChanges.map(c => `
+      <h4>${esc(c.entity)} <span class="badge">${esc(c.operation)}</span></h4>
+      <div class="table-wrap"><table><tr><th>Campo</th><th>Condição</th></tr>
+      ${c.properties.map(p => `<tr><td><code>${esc(p.name)}</code></td><td>${p.condition ? `<code>${esc(p.condition)}</code>` : "sempre"}</td></tr>`).join("")}
+      </table></div>`).join("")}
+    ${ai.uncertainties.length ? `<h3>Pontos não determinados</h3><ul>${ai.uncertainties.map(u => `<li>${esc(u)}</li>`).join("")}</ul>` : ""}`;
+}
+
+// ---- Níveis de visualização (Resumo, Negócio, Técnico, Completo) ----
+
+const categoryLabels = {
+  BUSINESS: "negócio", VALIDATION: "validação", DATA_ACCESS: "consulta", PERSISTENCE: "persistência",
+  EXTERNAL_EFFECT: "efeito externo", INFRASTRUCTURE: "infra", UTILITY: "helper", UNKNOWN: "?",
+};
+
+function conditionsOf(ids, registry, text) {
+  if (ids?.length) {
+    const tip = ids.map(id => `${id}: ${registry[id] ?? ""}`).join("\n");
+    return `<span class="cond" title="${esc(tip)}">se ${ids.map(esc).join(" ∧ ")}</span>`;
+  }
+  return text ? `<span class="cond" title="${esc(text)}">se ${esc(text.length > 90 ? text.slice(0, 90) + "…" : text)}</span>` : "";
+}
+
+/** mode: "business" | "technical" (infra colapsada) | "complete" */
+function treeHtml(node, depth, mode, registry) {
+  const name = node.summary ? `<em>${esc(node.summary)}</em>` : esc(`${node.typeName}.${node.methodName}`);
+  const tip = [
+    node.declaringType && `declarado em ${node.declaringType}`,
+    node.receiver && `receiver: ${node.receiver}`,
+    node.resolution && `resolução: ${node.resolution}`,
+    node.usage?.length && `resultado usado em: ${node.usage.join(", ")}`,
+    ...(node.reasons ?? []),
+    node.sourceFile && `${node.sourceFile}:${node.sourceLine}`,
+  ].filter(Boolean).join("\n");
+
+  const collapsed = mode === "technical" && node.category === "INFRASTRUCTURE" && !node.summary;
+  const notes = [
+    depth && node.category ? `<span class="cat ${esc(node.category)}">${esc(categoryLabels[node.category] ?? node.category)}</span>` : "",
+    mode === "business" ? conditionsOf(node.conditionIds, registry, node.condition) : conditionsOf(null, registry, node.condition),
+    node.resolvedFrom ? `<span class="muted">via ${esc(node.resolvedFrom)}</span>` : "",
+    node.ambiguous ? `<span class="warn">resolução ambígua: ${esc((node.candidates ?? []).join(", "))}</span>` : "",
+    node.alreadyVisited ? `<span class="muted">já visitado</span>` : "",
+    node.helpers?.length ? `<span class="muted">usa ${esc(node.helpers.join(", "))}</span>` : "",
+    collapsed ? `<span class="muted">+${countNodes(node) - 1} chamadas de infraestrutura</span>` : "",
+  ].filter(Boolean).join(" ");
+
+  const indent = depth ? "&nbsp;".repeat((depth - 1) * 3) + "→ " : "";
+  const dim = node.category === "UTILITY" || (mode !== "business" && node.category === "INFRASTRUCTURE") ? " dim" : "";
+  const line = `<div class="tree-line${dim}" title="${esc(tip)}">${indent}${name} ${notes}</div>`;
+  if (collapsed) return line;
+  return line + node.children.map(c => treeHtml(c, depth + 1, mode, registry)).join("");
+}
+
+const countNodes = (node) => 1 + node.children.reduce((s, c) => s + countNodes(c), 0);
+
+function statsHtml(ctx) {
+  const s = ctx.stats ?? {};
+  return `<p class="muted">Grafo de negócio: <strong>${s.businessNodes}</strong> nó(s) · técnico: ${s.technicalNodes}
+    · branches impossíveis removidos: ${s.prunedBranches} · infraestrutura colapsada: ${s.collapsedInfrastructure}
+    · helpers ocultos: ${s.hiddenHelpers} · chamadas ambíguas: ${s.ambiguousCalls}
+    · regras: ${s.businessConditions} de ${s.technicalConditions}</p>`;
+}
+
+function registryHtml(ctx) {
+  const entries = Object.entries(ctx.conditionRegistry ?? {});
+  if (!entries.length) return "";
+  return `<h3>Condições</h3><div class="table-wrap"><table><tr><th>Id</th><th>Condição</th></tr>
+    ${entries.map(([id, text]) => `<tr ${pickAttrs(`cond:${id}`)}><td><code>${esc(id)}</code></td><td><code>${esc(text)}</code></td></tr>`).join("")}</table></div>`;
+}
+
+function effectsHtml(ctx, registry) {
+  const effects = (ctx.effects ?? []).filter(e => e.kind !== "THROW" && e.kind !== "RETURN");
+  if (!effects.length) return "";
+  return `<h3>Efeitos</h3><div class="table-wrap"><table><tr><th>Classe</th><th>Efeito</th><th>Condições</th><th>Origem</th></tr>
+    ${effects.map(e => `<tr><td><span class="badge">${esc(e.class)}</span></td><td>${esc(e.description)}</td>
+      <td>${conditionsOf(e.conditionIds, registry)}</td><td class="muted">${esc(e.source?.file ?? "")}:${e.source?.line ?? ""}</td></tr>`).join("")}</table></div>`;
+}
+
+function rulesHtml(ctx) {
+  return `<h3>Regras (${ctx.conditions.length})</h3>
+    <div class="table-wrap"><table><tr><th>Tipo</th><th>Expressão</th><th>Ação</th><th>Origem</th></tr>
+    ${ctx.conditions.map((c, i) => `<tr ${pickAttrs(`rule:${i}`)}><td>${esc(c.kind)}</td><td><code>${esc(c.expression)}</code></td>
+      <td>${esc(c.action)}${c.message ? `<div class="muted">"${esc(c.message)}"</div>` : ""}</td>
+      <td class="muted">${esc(c.sourceFile)}:${c.sourceLine}</td></tr>`).join("")}
+    </table></div>`;
+}
+
+function changesHtml(ctx, registry) {
+  return `<h3>Alterações de entidades</h3>
+    ${ctx.entityChanges.map(c => `
+      <h4>${esc(c.entity)} <span class="badge">${esc(c.operation)}</span>${c.effectClass !== "PRIMARY" ? ` <span class="badge">${esc(c.effectClass)}</span>` : ""}
+        ${conditionsOf(c.conditionIds, registry)}</h4>
+      ${c.propertyChanges.length ? `<div class="table-wrap"><table><tr><th>Campo</th><th>Valor</th><th>Condições</th></tr>
+      ${c.propertyChanges.map(p => `<tr><td><code>${esc(p.property)}</code></td><td><code>${esc(p.value)}</code></td><td>${conditionsOf(p.conditionIds, registry) || "sempre"}</td></tr>`).join("")}
+      </table></div>` : ""}`).join("") || `<p class="muted">Nenhuma entidade alterada.</p>`}`;
+}
+
+/** Resumo sem IA: efeitos, regras que bloqueiam e entidades. */
+function renderSummary(ctx) {
+  const registry = ctx.conditionRegistry ?? {};
+  const blocking = ctx.conditions.filter(c => /^(throw|return|notifica)/.test(c.action) || c.kind === "validation");
+  return `${statsHtml(ctx)}
+    ${effectsHtml(ctx, registry)}
+    <h3>Regras que bloqueiam a operação (${blocking.length})</h3>
+    <ul>${blocking.map(c => `<li ${pickAttrs(`rule:${ctx.conditions.indexOf(c)}`)}>${c.message ? esc(c.message) : `<code>${esc(c.expression)}</code>`} <span class="muted">— ${esc(c.method)}</span></li>`).join("")}</ul>
+    ${changesHtml(ctx, registry)}`;
+}
+
+function renderBusiness(ctx) {
+  const registry = ctx.conditionRegistry ?? {};
+  return `${statsHtml(ctx)}
+    <h3>Grafo de negócio</h3>
+    ${flowHtml("Copiar o grafo de negócio completo como texto")}
+    ${registryHtml(ctx)}
+    ${rulesHtml(ctx)}
+    ${effectsHtml(ctx, registry)}
+    ${changesHtml(ctx, registry)}`;
+}
+
+const copyIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`;
+const downloadIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>`;
+
+// ---- Matriz de cenários (payload + pré-condições + resultado esperado) ----
+
+const scenarioKinds = { sucesso: "Sucesso", validacao: "Validação", regra: "Regra", limite: "Limite" };
+const techniqueLabels = { "decision-table": "tabela de decisão", "equivalence-partitioning": "partição de equivalência", "boundary-value": "valor-limite" };
+const statusSources = { "código": "do código", middleware: "tratamento global", validacao: "validação automática", inferido: "inferido" };
+const preKinds = { estado: "estado", contexto: "contexto", suposicao: "suposição" };
+let scenarioFilter = "all";
+
+/** Título: rótulo da IA, ou o texto montado a partir da condição que o cenário exercita. */
+function scenarioTitle(s, label) {
+  if (label?.title) return label.title;
+  const f = s.focus;
+  if (s.kind === "regra") return s.expected.messages[0] ?? (f ? capitalize(conditionText(f.expression)) : s.title);
+  if (s.kind === "sucesso" && f && s.title.startsWith("Encerra")) return `Encerra sem alterações quando ${conditionText(f.expression)}`;
+  if (s.kind === "sucesso" && f) return `Sucesso quando ${conditionText(f.value ? f.expression : `!(${f.expression})`)}`;
+  return s.title;
+}
+
+function bodyText(s) { return s.request.body === undefined ? "" : JSON.stringify(s.request.body, null, 2); }
+
+function curlOf(s) {
+  const body = s.request.body === undefined ? "" : ` \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(s.request.body).replace(/'/g, "'\\''")}'`;
+  const headers = Object.entries(s.request.headers ?? {}).map(([k, v]) => ` \\\n  -H "${k}: ${v ?? ""}"`).join("");
+  return `curl -X ${s.request.method} "{{baseUrl}}${s.request.url}"${headers}${body}`;
+}
+
+function statusClass(status) { return !status ? "s0" : status < 300 ? "s2" : status < 500 ? "s4" : "s5"; }
+
+function expectedHtml(e) {
+  const persisted = e.outcome === "erro"
+    ? (e.persisted ? `<div class="persist partial">alterações já persistidas antes do erro</div>` : `<div class="persist no">nada é gravado</div>`)
+    : (e.persisted && !e.effects.some(f => f.kind === "SAVE_CHANGES") ? `<div class="persist">persiste no banco (SaveChanges)</div>` : "");
+  return `<div class="expected">
+    <span class="status ${statusClass(e.httpStatus)}">${esc(e.httpStatus ?? "?")}</span>
+    <span class="status-src" title="origem do status">${esc(statusSources[e.statusSource] ?? e.statusSource)}</span>
+    ${e.messages.map(m => `<div class="msg">"${esc(m)}"</div>`).join("")}
+    ${e.exception ? `<div class="muted">${esc(e.exception)}</div>` : ""}
+    ${e.effects.length ? `<ul class="effects">${e.effects.map(f => `<li title="${esc(f.kind)}">${esc(f.description)}${f.properties?.length ? `: <code>${esc(f.properties.join(", "))}</code>` : ""}${f.uncertain ? " (?)" : ""}</li>`).join("")}</ul>` : ""}
+    ${persisted}
+  </div>`;
+}
+
+function preconditionsHtml(s) {
+  if (!s.preconditions.length) return `<span class="muted">—</span>`;
+  return `<ul class="pre-list">${s.preconditions.map(p =>
+    `<li title="${esc(p.expression ?? "")}"><span class="pk ${esc(p.kind)}">${esc(preKinds[p.kind] ?? p.kind)}</span>${esc(p.description)}</li>`).join("")}</ul>`;
+}
+
+function payloadHtml(s) {
+  const body = bodyText(s);
+  return `<div class="payload">
+    <div class="url"><span class="method ${esc(s.request.method)}">${esc(s.request.method)}</span> ${esc(s.request.url)}</div>
+    ${Object.keys(s.request.headers ?? {}).length ? `<div class="muted">headers: ${esc(Object.entries(s.request.headers).map(([k, v]) => `${k}: ${v}`).join("; "))}</div>` : ""}
+    ${body ? `<pre><code>${esc(body)}</code></pre>` : `<div class="muted">sem body</div>`}
+    <div class="payload-actions">
+      ${body ? `<button class="secondary" type="button" data-copy="json" data-scen="${esc(s.id)}" title="Copiar o body JSON">${copyIcon}<span>JSON</span></button>` : ""}
+      <button class="secondary" type="button" data-copy="curl" data-scen="${esc(s.id)}" title="Copiar como cURL ({{baseUrl}} = endereço da API)">${copyIcon}<span>cURL</span></button>
+    </div>
+  </div>`;
+}
+
+function renderScenarios(ctx, ai) {
+  const m = ctx.scenarios;
+  if (!m) return `<p class="muted">Matriz de cenários indisponível: analise o endpoint novamente.</p>`;
+  const labels = new Map((ai?.scenarios ?? []).map(l => [l.id, l]));
+  const counts = Object.fromEntries(Object.keys(scenarioKinds).map(k => [k, m.scenarios.filter(s => s.kind === k).length]));
+  const visible = m.scenarios.filter(s => scenarioFilter === "all" || s.kind === scenarioFilter);
+  const z3 = m.scenarios.filter(s => s.solver === "z3").length;
+
+  const chips = [["all", "Todos", m.scenarios.length], ...Object.entries(scenarioKinds).map(([k, l]) => [k, l, counts[k]])]
+    .filter(([k, , n]) => k === "all" || n > 0)
+    .map(([k, l, n]) => `<button type="button" class="chip ${scenarioFilter === k ? "on" : ""}" data-scen-filter="${k}">${l}<span class="n">${n}</span></button>`).join("");
+
+  const rows = visible.map(s => {
+    const label = labels.get(s.id);
+    return `<tr ${pickAttrs(`scen:${s.id}`)}>
+      <td class="id"><code>${esc(s.id)}</code><br><span class="kind ${esc(s.kind)}">${esc(scenarioKinds[s.kind] ?? s.kind)}</span>
+        <span class="tech">${esc(techniqueLabels[s.technique] ?? s.technique)}${s.solver === "z3" ? " · Z3" : ""}</span></td>
+      <td><div class="title">${esc(scenarioTitle(s, label))}</div>
+        ${label?.description ? `<div class="desc">${esc(label.description)}</div>` : s.focus?.detail && s.focus.detail !== s.title ? `<div class="desc">${esc(s.focus.detail)}</div>` : ""}
+        ${s.notes?.length ? `<div class="scen-notes" title="${esc(s.notes.join("\n"))}">⚠ ${esc(s.notes[0])}${s.notes.length > 1 ? ` (+${s.notes.length - 1})` : ""}</div>` : ""}</td>
+      <td>${payloadHtml(s)}</td>
+      <td>${preconditionsHtml(s)}</td>
+      <td>${expectedHtml(s.expected)}</td>
+    </tr>`;
+  }).join("");
+
+  return `<p class="muted" style="margin-top:0">${m.scenarios.length} cenário(s) gerados do código: tabela de decisão, partição de equivalência e valores-limite${z3 ? ` · ${z3} resolvido(s) pelo Z3` : ""}${ai?.scenarios?.length ? " · títulos pela IA" : ""}.
+    Clique num cenário para ver o código da regra.</p>
+    <div class="scen-toolbar">${chips}<span class="spacer"></span>
+      <button class="secondary" type="button" id="copyScenarios" title="Copiar a matriz como tabela Markdown">${copyIcon}<span>Copiar matriz</span></button>
+      <button class="secondary" type="button" id="downloadScenarios" title="Baixar a matriz em JSON">${downloadIcon}<span>Baixar .json</span></button>
+    </div>
+    <h3 style="margin-top:0">Matriz de cenários</h3>
+    ${visible.length ? `<div class="table-wrap"><table class="scen"><tr><th>Id</th><th>Cenário</th><th>Payload</th><th>Estado / pré-condições</th><th>Resultado esperado</th></tr>${rows}</table></div>`
+      : `<p class="muted">Nenhum cenário${m.scenarios.length ? " deste tipo" : ""}.</p>`}
+    ${m.notes.length ? `<h3>Observações</h3><ul>${m.notes.map(n => `<li class="warn">${esc(n)}</li>`).join("")}</ul>` : ""}
+    ${decisionTableHtml(m)}
+    ${inputsHtml(m)}`;
+}
+
+/** Tabela de decisão: uma linha por condição (validações, regras, ramos), uma coluna por cenário. */
+function decisionTableHtml(m) {
+  if (!m.conditions.length || !m.scenarios.length) return "";
+  const kindLabel = { validacao: "validação", regra: "regra", ramo: "ramo" };
+  const head = m.scenarios.map(s => `<th title="${esc(s.title)}">${esc(s.id.replace("CEN-", ""))}</th>`).join("");
+  const rows = m.conditions.map(c => `<tr ${pickAttrs(`dec:${c.id}`)}>
+      <td><span class="kind ${c.kind === "regra" ? "regra" : c.kind === "validacao" ? "validacao" : "limite"}">${esc(kindLabel[c.kind] ?? c.kind)}</span>
+        ${esc(c.label && c.kind !== "ramo" ? c.label : capitalize(conditionText(c.expression)))}${c.registryId ? ` <span class="muted">(${esc(c.registryId)})</span>` : ""}
+        <span class="cond-code">${esc(c.expression)}</span></td>
+      ${m.scenarios.map(s => { const v = s.decisions[c.id]; return v === true ? `<td class="v">V</td>` : v === false ? `<td class="f">F</td>` : `<td class="x" title="não avaliada neste cenário">–</td>`; }).join("")}
+    </tr>`).join("");
+  return `<h3>Tabela de decisão</h3>
+    <p class="muted">V = condição verdadeira, F = falsa, – = não avaliada (o fluxo parou antes ou não passa por ela).</p>
+    <div class="table-wrap"><table class="dt"><tr><th>Condição</th>${head}</tr>${rows}</table></div>`;
+}
+
+function inputsHtml(m) {
+  if (!m.inputs.length) return "";
+  return `<h3>Campos do payload</h3><div class="table-wrap"><table><tr><th>Campo</th><th>Local</th><th>Tipo</th><th>Obrigatório</th><th>Restrições</th></tr>
+    ${m.inputs.map(i => `<tr><td><code>${esc(i.name)}</code></td><td>${esc(i.location)}</td><td><code>${esc(i.type)}</code>${i.enumValues ? `<div class="muted">${esc(i.enumValues.join(", "))}</div>` : ""}</td>
+      <td>${i.required ? "sim" : ""}</td><td>${i.constraints.map(c => `<div><code>${esc(c)}</code></div>`).join("") || `<span class="muted">—</span>`}</td></tr>`).join("")}
+    </table></div>`;
+}
+
+function scenariosMarkdown(m, ai) {
+  const labels = new Map((ai?.scenarios ?? []).map(l => [l.id, l]));
+  const cell = (s) => String(s ?? "").replace(/\|/g, "\\|").replace(/\n/g, "<br>");
+  const lines = ["| Id | Cenário | Payload | Pré-condições | Resultado esperado |", "|---|---|---|---|---|"];
+  for (const s of m.scenarios) {
+    const e = s.expected;
+    const payload = `\`${s.request.method} ${s.request.url}\`${s.request.body === undefined ? "" : `<br>\`${JSON.stringify(s.request.body)}\``}`;
+    const result = [`**${e.httpStatus ?? "?"}** ${e.outcome}`, ...e.messages.map(x => `"${x}"`), ...e.effects.map(f => f.description), e.outcome === "erro" && !e.persisted ? "nada é gravado" : ""].filter(Boolean).join("<br>");
+    lines.push(`| ${s.id} | ${cell(scenarioTitle(s, labels.get(s.id)))} | ${cell(payload)} | ${cell(s.preconditions.map(p => p.description).join("\n") || "—")} | ${cell(result)} |`);
+  }
+  return lines.join("\n");
+}
+
+function wireScenarios(ctx, ai) {
+  const m = ctx.scenarios;
+  if (!m) return;
+  $("copyScenarios").onclick = async () => {
+    const label = $("copyScenarios").querySelector("span");
+    try { await navigator.clipboard.writeText(scenariosMarkdown(m, ai)); label.textContent = "Copiado"; } catch { label.textContent = "Falhou ao copiar"; }
+    setTimeout(() => label.textContent = "Copiar matriz", 1500);
+  };
+  $("downloadScenarios").onclick = () => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(m, null, 2)], { type: "application/json" }));
+    a.download = `cenarios_${ctx.endpoint.httpMethod}_${ctx.endpoint.route.replace(/[^\w]+/g, "_")}.json`;
+    a.click();
+  };
+}
+
+async function copyScenario(button) {
+  const s = lastResponse.report.context.scenarios.scenarios.find(x => x.id === button.dataset.scen);
+  if (!s) return;
+  const label = button.querySelector("span"), original = label.textContent;
+  try { await navigator.clipboard.writeText(button.dataset.copy === "curl" ? curlOf(s) : bodyText(s)); label.textContent = "Copiado"; }
+  catch { label.textContent = "Falhou"; }
+  setTimeout(() => label.textContent = original, 1500);
+}
+
+/** Fluxograma com os botões de cópia; showFlow() desenha depois que a aba entra na página. */
+const flowHtml = (graphTitle) => `<div class="flow">
+    <div class="flow-actions">
+      <button class="secondary" type="button" id="copyFlow" title="Copiar o código Mermaid do fluxograma">${copyIcon}<span>Código do fluxograma</span></button>
+      <button class="secondary" type="button" id="copyGraph" title="${esc(graphTitle)}">${copyIcon}<span>Grafo completo</span></button>
+    </div>
+    <div id="flowCanvas" class="flow-canvas"><p class="muted">Gerando fluxograma...</p></div>
+  </div>`;
+
+function renderTechnical(ctx, mode) {
+  const graph = mode === "technical"
+    ? flowHtml("Copiar o grafo completo (sem colapsar infraestrutura) como texto")
+    : `<div class="tree">${treeHtml(ctx.callTree, 0, mode, ctx.conditionRegistry ?? {})}</div>`;
+  return `${statsHtml(ctx)}
+    <h3>${mode === "technical" ? "Grafo técnico (infraestrutura colapsada)" : "Call graph bruto"}</h3>
+    ${graph}
+    <h3>Persistência</h3>
+    <ul>${ctx.persistencePoints.map(p => `<li><code>${esc(p.method)}</code> <span class="muted">${esc(p.file)}:${p.line}</span></li>`).join("") || "<li class='muted'>SaveChanges não encontrado</li>"}</ul>`;
+}
+
+// ---- Fluxograma Mermaid do grafo técnico ----
+
+/** Texto dentro de rótulos entre aspas do Mermaid: entidades HTML; "|" usa a entidade do próprio Mermaid (#124;). */
+const mermaidText = (s) => String(s ?? "").replace(/[&<>"|]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "|": "#124;" }[c]));
+const shorten = (s, max) => s.length > max ? s.slice(0, max) + "…" : s;
+
+// ---- Texto natural dos nós (sem IA): comentário XML do método ou frase montada a partir dos nomes do código ----
+
+const wordFixes = {
+  jah: "já", ja: "já", eh: "é", nao: "não", sao: "são", esta: "está", contem: "contém", cnpj: "CNPJ", cpf: "CPF",
+  cep: "CEP", api: "API", url: "URL", http: "HTTP", usuario: "usuário", usuarios: "usuários", codigo: "código",
+  codigos: "códigos", numero: "número", numeros: "números", veiculo: "veículo", veiculos: "veículos", servico: "serviço",
+  servicos: "serviços", valido: "válido", valida: "válida", validos: "válidos", invalido: "inválido", invalida: "inválida",
+  obrigatorio: "obrigatório", obrigatoria: "obrigatória", unico: "único", unica: "única", excluido: "excluído",
+  excluida: "excluída", historico: "histórico", area: "área", inicio: "início", periodo: "período", proximo: "próximo",
+  ultimo: "último", ultima: "última", maximo: "máximo", minimo: "mínimo", conteudo: "conteúdo", horario: "horário",
+  relatorio: "relatório", endereco: "endereço", enderecos: "endereços", inferiores: "inferiores", hierarquia: "hierarquia",
+};
+const accentRules = [[/cao$/, "ção"], [/coes$/, "ções"], [/sao$/, "são"], [/soes$/, "sões"], [/iveis$/, "íveis"],
+  [/ivel$/, "ível"], [/encia$/, "ência"], [/ancia$/, "ância"]];
+const fixWord = (w) => {
+  const lower = w.toLowerCase();
+  if (wordFixes[lower]) return wordFixes[lower];
+  if (/^[A-Z0-9]{2,}$/.test(w)) return w;
+  return accentRules.reduce((s, [re, to]) => s.replace(re, to), lower);
+};
+const capitalize = (s) => s ? s[0].toUpperCase() + s.slice(1) : s;
+
+/** "pCnpjJahCadastradoAsync" → ["Cnpj", "Jah", "Cadastrado"] (sem prefixo húngaro, Async ou V1). */
+function splitWords(identifier) {
+  const name = String(identifier ?? "").replace(/^_+/, "").replace(/^[a-z](?=[A-Z])/, "").replace(/^E(?=[A-Z][a-z])/, "");
+  const words = name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2").split(/[\s_]+/).filter(Boolean);
+  while (words.length > 1 && /^(Async|V\d+)$/i.test(words.at(-1))) words.pop();
+  return words;
+}
+const phrase = (identifier) => splitWords(identifier).map(fixWord).join(" ").replace(/\bjá (\S+(?:ado|ada|ido|ida)s?)\b/, "já está $1");
+
+const verbs = {
+  obter: "Obtém", get: "Obtém", buscar: "Busca", find: "Busca", listar: "Lista", list: "Lista", consultar: "Consulta",
+  carregar: "Carrega", load: "Carrega", adicionar: "Adiciona", add: "Adiciona", inserir: "Insere", insert: "Insere",
+  incluir: "Inclui", criar: "Cria", create: "Cria", gerar: "Gera", atualizar: "Atualiza", update: "Atualiza",
+  alterar: "Altera", editar: "Edita", salvar: "Salva", save: "Salva", gravar: "Grava", remover: "Remove", remove: "Remove",
+  excluir: "Exclui", delete: "Exclui", deletar: "Exclui", validar: "Valida", validate: "Valida", verificar: "Verifica",
+  check: "Verifica", calcular: "Calcula", enviar: "Envia", send: "Envia", publicar: "Publica", publish: "Publica",
+  notificar: "Notifica", notify: "Notifica", processar: "Processa", filtrar: "Filtra", sanitizar: "Sanitiza",
+  formatar: "Formata", converter: "Converte", mapear: "Mapeia", montar: "Monta", build: "Monta", registrar: "Registra",
+  cancelar: "Cancela", finalizar: "Finaliza", iniciar: "Inicia", aplicar: "Aplica", executar: "Executa", tratar: "Trata",
+  handle: "Trata", definir: "Define", set: "Define", preencher: "Preenche", retornar: "Retorna", mostrar: "Mostra",
+  exibir: "Exibe", reservar: "Reserva", faturar: "Fatura", confirmar: "Confirma", aprovar: "Aprova", ativar: "Ativa",
+  desativar: "Desativa", vincular: "Vincula", associar: "Associa", ordenar: "Ordena", contar: "Conta", count: "Conta",
+};
+const predicates = { possui: "possui", existe: "existe", tem: "tem", eh: "é", is: "é", has: "possui", can: "pode", pode: "pode", esta: "está" };
+const conjugate = (infinitive) => capitalize(infinitive.replace(/ar$/, "a").replace(/er$/, "e").replace(/ir$/, "e"));
+const verbOf = (word) => { const w = word.toLowerCase(); return verbs[w] ?? (w.length > 4 && /(ar|er|ir)$/.test(w) ? conjugate(w) : null); };
+const adjectives = new Set(["válido", "válida", "inválido", "inválida", "ativo", "ativa", "existente", "disponível", "obrigatório",
+  "obrigatória", "único", "única", "duplicado", "duplicada", "permitido", "permitida", "vazio", "vazia", "nulo", "nula"]);
+/** Palavras do nome a partir da segunda: "E" vira "e" e o verbo seguinte é conjugado ("ESalvar" → "e salva"). */
+const restPhrase = (words) => words.map((w, i) =>
+  /^e$/i.test(w) ? "e" : i > 0 && /^e$/i.test(words[i - 1]) && verbOf(w) ? verbOf(w).toLowerCase() : fixWord(w))
+  .join(" ").replace(/\bjá (\S+(?:ado|ada|ido|ida)s?)\b/, "já está $1");
+
+/** "UnidadeWebServiceApplicationService" → "unidade" (entidade de que o tipo cuida). */
+const entityOf = (typeName) => phrase(String(typeName ?? "").replace(/<.*$/, "").replace(/^I(?=[A-Z])/, "")
+  .replace(/(WebServiceApplicationService|ApplicationService|AppService|DomainService|Service|Repository|Controller|Handler|Manager|Context|Validator|Factory|Helper|Extensions|Bus)$/, ""));
+
+/** "UnidadeRepository.ObterTodos" → "Obtém todos (unidade)"; "CnpjJahCadastrado" → "Verifica se CNPJ já está cadastrado". */
+function methodText(typeName, methodName) {
+  const entity = entityOf(typeName);
+  if (methodName === "ctor") return `Cria ${entity}`;
+  const words = splitWords(methodName);
+  const first = words[0]?.toLowerCase() ?? "";
+  const rest = restPhrase(words.slice(1));
+  if (predicates[first]) {
+    // "ExistePorId" no VeiculoTipoService → "Verifica se existe (veículo tipo)".
+    const what = rest.replace(/^por id$/, "");
+    const mentionsEntity = entity && what.includes(entity.split(" ")[0].slice(0, -1));
+    return ["Verifica se", predicates[first], what, entity && !mentionsEntity ? `(${entity})` : ""].filter(Boolean).join(" ");
+  }
+  const verb = verbOf(first);
+  if (verb) {
+    const mentionsEntity = entity && rest.includes(entity.split(" ")[0].slice(0, -1));
+    return [verb, rest, entity && !mentionsEntity ? `(${entity})` : ""].filter(Boolean).join(" ");
+  }
+  const text = phrase(methodName);
+  const last = fixWord(words.at(-1) ?? "");
+  if (words.length > 1 && adjectives.has(last)) {
+    const subject = phrase(words.slice(0, -1).join(""));  // "PlacaEhValida": o "é" já está no nome
+    return `Verifica se ${subject}${/(^|\s)(é|está)$/.test(subject) ? "" : " é"} ${last}`;
+  }
+  return words.slice(1).some(w => predicates[w.toLowerCase()] || /^jah?$/i.test(w)) ? `Verifica se ${text}` : capitalize(text);
+}
+
+/** Divide no operador de primeiro nível (fora de parênteses e strings). */
+function splitTop(text, op) {
+  const parts = [];
+  let depth = 0, start = 0, quote = null;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quote) { if (c === quote && text[i - 1] !== "\\") quote = null; continue; }
+    if (c === '"' || c === "'") quote = c;
+    else if ("([{".includes(c)) depth++;
+    else if (")]}".includes(c)) depth--;
+    else if (depth === 0 && text.startsWith(op, i)) { parts.push(text.slice(start, i)); start = i + op.length; i += op.length - 1; }
+  }
+  parts.push(text.slice(start));
+  return parts.map(p => p.trim());
+}
+function unwrap(text) {
+  let t = String(text ?? "").trim();
+  while (t.startsWith("(") && t.endsWith(")")) {
+    let depth = 0, closesAtEnd = true;
+    for (let i = 0; i < t.length - 1; i++) {
+      if (t[i] === "(") depth++;
+      else if (t[i] === ")" && --depth === 0) { closesAtEnd = false; break; }
+    }
+    if (!closesAtEnd) break;
+    t = t.slice(1, -1).trim();
+  }
+  return t;
+}
+
+const linqMethods = /^(Where|Select|SelectMany|OrderBy|OrderByDescending|ThenBy|ToList|ToArray|AsQueryable|AsEnumerable|Distinct|Include)$/;
+/** Tira "id" de frases com outras palavras: "pessoa tipo id" → "pessoa tipo" (o "id" não ajuda quem lê). */
+const withoutId = (text) => { const words = text.split(" "); const kept = words.filter(w => !/^ids?$/.test(w)); return kept.length ? kept.join(" ") : text; };
+
+/** "pRequest.PessoaTipoId" → "pessoa tipo"; "veiculoTipos.ExistePorId(request.VeiculoTipoId)" → "existe veículo tipo". */
+function termText(term) {
+  const t = unwrap(term).replace(/!(?=[.[])/g, "").replace(/\?\./g, ".").replace(/^this\./, "");
+  if (/^".*"$/.test(t) || /^-?\d/.test(t)) return t;
+  if (t === "null") return "vazio";
+  if (t === "true" || t === "false") return t === "true" ? "verdadeiro" : "falso";
+  if (/^DateTime(Offset)?\.(Today|Now|UtcNow)(\.Date)?$/.test(t)) return /Today|\.Date/.test(t) ? "hoje" : "agora";
+  const members = splitTop(t, ".");
+  // LINQ no fim (Where, SelectMany(v => v.Errors)...): o que importa é a coleção ou o membro projetado.
+  while (members.length > 1 && linqMethods.test(members.at(-1).replace(/\(.*$/, ""))) {
+    const projected = members.pop().match(/=>\s*\w+\.(\w+)\)$/);
+    if (projected) { members.push(projected[1]); break; }
+  }
+  const last = members.at(-1) ?? t;
+  const call = last.match(/^(\w+)(?:<.*>)?\((.*)\)$/);
+  if (call) {
+    const arg = splitTop(call[2], ",")[0];
+    return [phrase(call[1]).replace(/ por id$/, ""), arg ? termText(arg) : ""].filter(Boolean).join(" ");
+  }
+  // Membro genérico ("Id", "Numero"...): inclui o anterior para dar sentido.
+  if (members.length > 1 && /^(Id|Value|Count|Length|Numero|Codigo|Valor|Nome)$/.test(last))
+    return withoutId(`${phrase(members.at(-2))} ${fixWord(last)}`);
+  return withoutId(phrase(last));
+}
+
+const comparisons = [[">=", "maior ou igual a"], ["<=", "menor ou igual a"], ["==", "igual a"], ["!=", "diferente de"], [">", "maior que"], ["<", "menor que"]];
+
+/** Uma parte da condição (sem && / || no primeiro nível) em português. */
+function atomText(atom, negated = false) {
+  const a = unwrap(atom);
+  if (/^!(?!=)/.test(a)) return atomText(a.slice(1), !negated);
+  if (splitTop(a, " || ").length > 1 || splitTop(a, " && ").length > 1) return `${negated ? "não " : ""}(${conditionText(a)})`;
+  const not = negated ? "não " : "";
+  let m;
+  if ((m = a.match(/^string\.IsNullOr(?:WhiteSpace|Empty)\((.+)\)$/))) return `${termText(m[1])} ${negated ? "informado" : "não informado"}`;
+  if ((m = a.match(/^(.+)\.HasValue$/))) return `${termText(m[1])} ${negated ? "não informado" : "informado"}`;
+  if ((m = a.match(/^(.+?)\s*(?:==\s*null|\bis\s+null)$/))) return `${termText(m[1])} ${negated ? "informado" : "não informado"}`;
+  if ((m = a.match(/^(.+?)\s*(?:!=\s*null|\bis\s+not\s+null)$/))) return `${termText(m[1])} ${negated ? "não informado" : "informado"}`;
+  if (/^ModelState\.IsValid$/.test(a)) return negated ? "dados da requisição inválidos" : "dados da requisição válidos";
+  if ((m = a.match(/^(.+)\.Any\((.*)\)$/))) return `${negated ? "não existe" : "existe"} ${termText(m[1])}`;
+  if ((m = a.match(/^Enum\.IsDefined\(typeof\(([\w.]+)\),\s*(.+)\)$/))) return `${termText(m[2])} ${negated ? "inválido" : "válido"}`;
+  if ((m = a.match(/^(.+?)\s+is\s+not\s+(.+)$/))) return `${termText(m[1])} ${negated ? "é" : "não é"} ${termText(m[2])}`;
+  if ((m = a.match(/^(.+?)\s+is\s+(.+)$/))) return `${termText(m[1])} ${not}é ${termText(m[2])}`;
+  for (const [op, words] of comparisons) {
+    const parts = splitTop(a, ` ${op} `);
+    if (parts.length !== 2) continue;
+    // Constante/enum à direita (Status.Cancelada, Program.HierarquiaIdRaiz): "é" lê melhor que "igual a".
+    const constant = /^[A-Z]\w*(\.\w+)+$/.test(parts[1]);
+    const text = op === "==" && constant ? "é" : op === "!=" && constant ? "não é" : words;
+    return `${not}${termText(parts[0])} ${text} ${termText(parts[1])}`;
+  }
+  return `${not}${termText(a)}`;
+}
+
+/** Condição inteira: "a && (b || c)" → "a e (b ou c)". */
+function conditionText(expression) {
+  const e = unwrap(expression);
+  const ors = splitTop(e, " || ");
+  if (ors.length > 1) return ors.map(conditionText).join(" ou ");
+  const ands = splitTop(e, " && ");
+  if (ands.length > 1) return ands.map(conditionText).join(" e ");
+  return atomText(e);
+}
+
+const exceptionNames = {
+  DomainException: "erro de regra de negócio", ValidationException: "erro de validação", ArgumentException: "argumento inválido",
+  ArgumentNullException: "argumento não informado", InvalidOperationException: "operação inválida", NotFoundException: "não encontrado",
+  KeyNotFoundException: "não encontrado", UnauthorizedAccessException: "acesso negado", HttpRequestException: "falha na chamada HTTP",
+  DbUpdateException: "falha ao gravar no banco", TimeoutException: "tempo esgotado", Exception: "qualquer erro",
+};
+const exceptionText = (type) => exceptionNames[type] ?? `erro: ${phrase(type.replace(/Exception$/, ""))}`;
+const caseText = (branch) => branch === "default" ? "outros casos"
+  : branch.split(", ").map(b => /^[A-Za-z_][\w.]*$/.test(b) ? phrase(b.split(".").at(-1)) : b).join(", ");
+
+/** Pergunta do losango: a condição em português (if, while...), o valor do switch ou "Ocorreu erro?" (catch). */
+function decisionText(step) {
+  switch (step.kind) {
+    case "foreach": {
+      const [variable, ...collection] = step.expression.split(" em ");
+      return `Há próximo ${phrase(variable)} em ${termText(collection.join(" em "))}?`;
+    }
+    case "switch": return `Qual ${termText(step.expression)}?`;
+    case "catch": return "Ocorreu erro?";
+    default: return `${capitalize(conditionText(step.expression))}?`;
+  }
+}
+
+/**
+ * Textos do fluxograma, do melhor para o mais simples: rótulo da IA (flowLabels), comentário XML do método
+ * (description), frase montada a partir dos nomes do código.
+ */
+function makeNaming(ctx, ai) {
+  const methodLabels = new Map((ai?.flowLabels?.methods ?? []).map(l => [l.key, l.label]));
+  const decisionLabels = new Map((ai?.flowLabels?.decisions ?? []).map(l => [l.key, l.label]));
+  const descriptions = new Map();
+  (function collect(node) {
+    if (!node) return;
+    if (node.description) descriptions.set(`${node.typeName}.${node.methodName}`, node.description);
+    node.children?.forEach(collect);
+  })(ctx?.callTree);
+  const method = (node) => {
+    const key = `${node.typeName}.${node.methodName}`;
+    return methodLabels.get(key) ?? descriptions.get(key) ?? methodText(node.typeName, node.methodName);
+  };
+  return {
+    root: (node) => ctx?.endpoint?.summary ?? method(node),
+    method: (node) => node.summary ?? method(node),
+    helper: (name) => { const i = name.lastIndexOf("."); return methodText(name.slice(0, i), name.slice(i + 1)).toLowerCase(); },
+    decision: (step) => decisionLabels.get(step.expression) ?? decisionText(step),
+  };
+}
+
+const flowClasses = {
+  INFRASTRUCTURE: ["infra", "fill:#eeeeee,stroke:#616161"],
+  BUSINESS: ["negocio", "fill:#e3f2fd,stroke:#1565c0"],
+  DATA_ACCESS: ["consulta", "fill:#e8f5e9,stroke:#2e7d32"],
+  VALIDATION: ["validacao", "fill:#fff3e0,stroke:#ef6c00"],
+  PERSISTENCE: ["persistencia", "fill:#f3e5f5,stroke:#7b1fa2"],
+  EXTERNAL_EFFECT: ["efeitoexterno", "fill:#ffebee,stroke:#c62828"],
+  UTILITY: ["helper", "fill:#e0f7fa,stroke:#00838f"],
+  UNKNOWN: ["desconhecido", "fill:#fffde7,stroke:#827717"],
+  // Estruturas de controle (convenção de fluxograma: losango para decisão e laço, terminal arredondado para saída).
+  DECISION: ["decisao", "fill:#ffffff,stroke:#424242"],
+  LOOP: ["laco", "fill:#fce4ec,stroke:#ad1457"],
+  TERMINAL: ["terminal", "fill:#eceff1,stroke:#455a64"],
+};
+
+const loopKinds = new Set(["while", "do", "for", "foreach"]);
+
+/** Quebra em linhas de até max caracteres, cortando depois de espaço, ponto, vírgula ou parêntese (o losango cresce com a largura). */
+function wrapLines(text, max) {
+  const lines = [""];
+  for (const token of text.split(/(?<=[\s.,(])/)) {
+    if (lines.at(-1).length + token.length > max && lines.at(-1).trim()) lines.push("");
+    lines[lines.length - 1] += token;
+  }
+  return lines.map(l => l.trim());
+}
+const mermaidLines = (text, max) => wrapLines(text, max).map(mermaidText).join("<br/>");
+const exitLabels = { throw: "lança exceção", return: "retorna", continue: "próxima iteração", break: "sai do laço" };
+
+/** Estruturas de controle da chamada; relatórios sem "control" usam a condição como um if. */
+const controlOf = (child) => child.control
+  ?? (child.condition ? [{ kind: "if", key: `cond:${child.condition}`, expression: child.condition, branch: "sim" }] : []);
+
+/**
+ * Corpo de um método como árvore de regiões: cada estrutura de controle (mesma chave) agrupa, por ramo,
+ * as chamadas e as estruturas internas. Guardas ficam com o resto do bloco no ramo "não".
+ */
+function regionOf(node) {
+  const root = { items: [] };
+  for (const child of node.children) {
+    let seq = root;
+    for (const step of controlOf(child)) {
+      let s = seq.items.find(i => i.step?.key === step.key);
+      if (!s) seq.items.push(s = { step, branches: new Map(), exit: null });
+      s.exit ??= step.exit ?? null;
+      if (!s.branches.has(step.branch)) s.branches.set(step.branch, { items: [] });
+      seq = s.branches.get(step.branch);
+    }
+    seq.items.push({ child });
+  }
+  return root;
+}
+
+/**
+ * Trecho de código de cada nó: onde a chamada acontece no método chamador (não a declaração, que pode ser uma
+ * interface ou classe base genérica), a estrutura de controle no método que a contém, ou a declaração (raiz).
+ */
+const nodeSource = (node) => node.sourceFile && node.sourceLine ? { file: node.sourceFile, line: node.sourceLine } : null;
+const callSource = (node) => node.callFile && node.callLine
+  ? { file: node.callFile, line: node.callLine, endLine: node.callEndLine || node.callLine } : nodeSource(node);
+const stepSource = (owner, step) => owner.sourceFile && step.line
+  ? { file: owner.sourceFile, line: step.line, endLine: step.endLine || step.line } : nodeSource(owner);
+
+/**
+ * Fluxograma top-down com um nó por chamada (como no grafo técnico), em linguagem natural (naming): objetivo do
+ * método, categoria, infraestrutura colapsada e "já visitado". Entre o método e as chamadas entram as estruturas de
+ * controle: if/switch/catch como losango com ramos Sim/Não (ou caso/exceção), laços como losango com seta de retorno,
+ * guardas com o terminal de saída. Devolve também o trecho de código de cada nó (sources: id do nó → local).
+ */
+function flowchartOf(root, mode = "technical", naming = makeNaming(null, null)) {
+  const isCollapsed = (node, depth) => mode === "technical" && depth > 0 && node.category === "INFRASTRUCTURE" && !node.summary;
+  const sources = new Map();
+
+  // Ids: nome do método em maiúsculas; numerado quando o mesmo nome aparece mais de uma vez (OBTERTODOS1, OBTERTODOS2...).
+  const baseOf = (node) => String(node.methodName ?? "").replace(/\W/g, "").toUpperCase() || "N";
+  const totals = new Map(["A"].map(b => [b, 2]));
+  (function count(node, depth) {
+    if (depth) totals.set(baseOf(node), (totals.get(baseOf(node)) ?? 0) + 1);
+    if (!isCollapsed(node, depth)) node.children.forEach(c => count(c, depth + 1));
+  })(root, 0);
+  const used = new Map();
+  const idOf = (node) => {
+    const base = baseOf(node), n = (used.get(base) ?? 0) + 1;
+    used.set(base, n);
+    return totals.get(base) > 1 ? `${base}${n}` : base;
+  };
+  const counters = new Map();
+  const nextId = (prefix) => `${prefix}_${counters.set(prefix, (counters.get(prefix) ?? 0) + 1).get(prefix)}`;
+
+  const classes = new Map();
+  const classify = (key, id) => {
+    const [cls] = flowClasses[key] ?? flowClasses.UNKNOWN;
+    classes.set(cls, [...(classes.get(cls) ?? []), id]);
+  };
+  const labelOf = (node, id, ancestors) => {
+    classify(node.category, id);
+    sources.set(id, callSource(node));
+    // Técnico: infraestrutura colapsada aqui. Negócio: nó-resumo já vem do backend com a contagem (inclui o próprio nó).
+    const infra = isCollapsed(node, 1) ? countNodes(node) - 1 : node.summary && node.collapsedCount ? node.collapsedCount - 1 : 0;
+    const recursion = node.alreadyVisited && ancestors.includes(`${node.typeName}.${node.methodName}`);
+    return [
+      mermaidLines(shorten(naming.method(node), 110), 38),
+      `<b>${mermaidText(categoryLabels[node.category] ?? node.category ?? "?")}</b>`,
+      infra && `+${infra} ${infra === 1 ? "chamada" : "chamadas"} de infraestrutura`,
+      node.helpers?.length && `usa: ${mermaidText(node.helpers.map(naming.helper).join(", "))}`,
+      node.ambiguous && `<i>resolução ambígua</i>`,
+      node.alreadyVisited && `<i>${recursion ? "recursão / " : ""}já visitado</i>`,
+    ].filter(Boolean).join("<br/>");
+  };
+
+  // Losango da estrutura: pergunta (if, laços), valor avaliado (switch) ou "Ocorreu erro?" (catch).
+  const decisionOf = (step, owner) => {
+    const loop = loopKinds.has(step.kind);
+    const id = nextId(loop ? "LACO" : step.kind === "switch" ? "ESCOLHA" : step.kind === "catch" ? "CAPTURA" : "SE");
+    classify(loop ? "LOOP" : "DECISION", id);
+    sources.set(id, stepSource(owner, step));
+    return { id, loop, shape: `${id}{"${mermaidLines(shorten(naming.decision(step), 80), 24)}"}` };
+  };
+  const branchLabel = (step, branch) =>
+    step.kind === "switch" ? caseText(branch)
+      : step.kind === "catch" ? exceptionText(branch)
+      : branch === "sim" ? "Sim" : branch === "não" ? "Não" : branch;
+  const branchOrder = (b) => b === "sim" ? 0 : b === "não" ? 1 : 2;
+  // Saída da guarda (lança exceção, retorna...): mostra o mesmo trecho do if.
+  const exit = (from, label, kind, source) => {
+    const id = nextId("FIM");
+    classify("TERMINAL", id);
+    sources.set(id, source);
+    lines.push(`    ${from} ${label ? `-->|"${label}"|` : "-->"} ${id}(["${exitLabels[kind] ?? mermaidText(kind)}"])`, "");
+  };
+
+  const section = (title) => ["", "    %% =========================================================",
+    `    %% ${title.toUpperCase()}`, "    %% =========================================================", ""];
+  const lines = ["flowchart TD", "", `    A(["${mermaidLines(shorten(naming.root(root), 110), 44)}"])`];
+  sources.set("A", nodeSource(root));
+  const deferred = [];
+
+  /**
+   * Liga cada item da sequência a partir de fromId. Devolve onde o último item termina ({ id, label }): a chamada,
+   * o fim de cada ramo de uma decisão ou a saída implícita dela ("Não" sem else). Daí parte a seta de retorno do laço.
+   * owner: método cujo corpo está sendo desenhado (as estruturas de controle estão no arquivo dele).
+   */
+  function emit(fromId, label, seq, depth, path, defer, owner) {
+    let ends = [];
+    for (const item of seq.items) {
+      const arrow = label ? `-->|"${mermaidText(label)}"|` : "-->";
+      if (item.child) {
+        const id = idOf(item.child);
+        lines.push(`    ${fromId} ${arrow} ${id}["${labelOf(item.child, id, path)}"]`, "");
+        if (defer) deferred.push({ child: item.child, id });
+        else walk(item.child, id, depth + 1, path);
+        ends = [{ id }];
+        continue;
+      }
+      const { step } = item, d = decisionOf(step, owner), source = sources.get(d.id);
+      lines.push(`    ${fromId} ${arrow} ${d.shape}`, "");
+      // Guarda sem chamadas no corpo: o "Sim" vai direto para a saída (lança exceção, retorna...).
+      if (item.exit && !item.branches.has("sim")) exit(d.id, "Sim", item.exit, source);
+      ends = [];
+      const branches = [...item.branches].sort(([a], [b]) => branchOrder(a) - branchOrder(b));
+      for (const [branch, sub] of branches) {
+        const subEnds = emit(d.id, branchLabel(step, branch), sub, depth, path, defer, owner);
+        if (d.loop && branch === "sim") subEnds.forEach(e => lines.push(`    ${e.id} -.->|"${e.label ?? "repete"}"| ${d.id}`, ""));
+        else if (item.exit && branch === "sim") subEnds.forEach(e => exit(e.id, e.label, item.exit, source));
+        else ends.push(...subEnds);
+      }
+      // Laço termina pelo "Não"; if sem else (e switch sem default) segue adiante pela saída implícita.
+      if (d.loop) ends = [{ id: d.id, label: "Não" }];
+      else if (!item.branches.has("não") && !item.branches.has("default"))
+        ends.push({ id: d.id, label: step.kind === "switch" ? "outros casos" : "Não" });
+    }
+    return ends;
+  }
+
+  function walk(node, id, depth, ancestors) {
+    if (isCollapsed(node, depth)) return;
+    emit(id, null, regionOf(node), depth, [...ancestors, `${node.typeName}.${node.methodName}`], false, node);
+  }
+
+  // Corpo do endpoint primeiro; depois uma seção por subárvore das chamadas diretas.
+  const rootPath = [`${root.typeName}.${root.methodName}`];
+  lines.push(...section(`${root.typeName}.${root.methodName}`));
+  emit("A", null, regionOf(root), 0, rootPath, true, root);
+  for (const { child, id } of deferred) {
+    if (isCollapsed(child, 1) || !child.children.length) continue;
+    lines.push(...section(`${child.typeName}.${child.methodName}`).slice(1));
+    walk(child, id, 1, rootPath);
+  }
+
+  lines.push(...section("Estilos").slice(1));
+  lines.push(...Object.values(flowClasses).map(([cls, style]) => `    classDef ${cls} ${style},stroke-width:2px`), "");
+  lines.push(...Object.values(flowClasses).filter(([cls]) => classes.has(cls)).map(([cls]) => `    class ${classes.get(cls).join(",")} ${cls}`));
+  return { code: lines.join("\n").replace(/\n{3,}/g, "\n\n"), sources };
+}
+
+/** Grafo completo (sem colapsar nada) em texto indentado, com todos os detalhes de cada chamada. */
+function graphText(node, depth = 0) {
+  const name = `${node.typeName}.${node.methodName}`;
+  const parts = [`${"  ".repeat(depth)}${depth ? "→ " : ""}${node.summary ? `${node.summary} (${name})` : name}`,
+    depth && node.category ? `[${categoryLabels[node.category] ?? node.category}]` : "",
+    node.condition ? `se ${node.condition}` : "",
+    node.resolvedFrom ? `via ${node.resolvedFrom}` : "",
+    node.ambiguous ? `resolução ambígua: ${(node.candidates ?? []).join(", ")}` : "",
+    node.alreadyVisited ? "já visitado" : "",
+    node.helpers?.length ? `usa ${node.helpers.join(", ")}` : "",
+    node.sourceFile ? `(${node.sourceFile}:${node.sourceLine})` : "",
+  ];
+  return [parts.filter(Boolean).join(" "), ...node.children.map(c => graphText(c, depth + 1))].join("\n");
+}
+
+// Layout ELK: setas ortogonais em faixas que contornam os nós, como no Mermaid Live. Sem ele, cai no dagre padrão.
+let mermaidModule = null;
+const loadMermaid = () => mermaidModule ??= Promise.all([
+  import("https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs"),
+  import("https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@1/dist/mermaid-layout-elk.esm.min.mjs").catch(() => null),
+]).then(([m, elk]) => {
+  if (elk) m.default.registerLayoutLoaders(elk.default);
+  return { mermaid: m.default, layout: elk ? "elk" : "dagre" };
+}).catch(err => { mermaidModule = null; throw err; });
+
+function copyButton(id, text) {
+  const btn = $(id);
+  btn.onclick = async () => {
+    const label = btn.querySelector("span"), original = label.textContent;
+    try { await navigator.clipboard.writeText(text); label.textContent = "Copiado"; }
+    catch { label.textContent = "Falhou ao copiar"; }
+    setTimeout(() => label.textContent = original, 1500);
+  };
+}
+
+/**
+ * Zoom (roda do mouse, centrado no cursor) e arrasto do fluxograma, como no Mermaid Live. Abre ajustado à área.
+ * onNodeClick(id): clique (sem arrastar) num nó.
+ */
+function panZoom(canvas, svgMarkup, onNodeClick) {
+  canvas.innerHTML = `<div class="flow-stage">${svgMarkup}</div>
+    <div class="flow-zoom">
+      <button class="secondary" type="button" data-zoom="out" title="Diminuir zoom">−</button>
+      <span></span>
+      <button class="secondary" type="button" data-zoom="in" title="Aumentar zoom">+</button>
+      <button class="secondary" type="button" data-zoom="fit" title="Ajustar à área (duplo clique)">Ajustar</button>
+    </div>`;
+  const stage = canvas.querySelector(".flow-stage"), svg = stage.querySelector("svg"), level = canvas.querySelector(".flow-zoom span");
+  // O Mermaid gera o SVG com largura 100%; tamanho natural fixo para o transform cuidar da escala.
+  const { width, height } = svg.viewBox.baseVal;
+  svg.setAttribute("width", width);
+  svg.setAttribute("height", height);
+  svg.style.maxWidth = "none";
+  // Pontas de seta proporcionais à linha de 2px (padrão do Mermaid: 8px).
+  svg.querySelectorAll("marker[id$='pointEnd'], marker[id$='pointStart']").forEach(m => {
+    m.setAttribute("markerWidth", 11);
+    m.setAttribute("markerHeight", 11);
+  });
+
+  let scale = 1, x = 0, y = 0;
+  const apply = () => {
+    stage.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
+    canvas.style.backgroundPosition = `${x}px ${y}px`;
+    canvas.style.backgroundSize = `${Math.max(6, 18 * scale)}px ${Math.max(6, 18 * scale)}px`;
+    level.textContent = `${Math.round(scale * 100)}%`;
+  };
+  const fit = () => {
+    const top = 52, pad = 16, w = canvas.clientWidth, h = canvas.clientHeight;
+    scale = Math.min((w - 2 * pad) / width, (h - top - pad) / height, 1);
+    x = (w - width * scale) / 2;
+    y = top + Math.max(0, (h - top - pad - height * scale) / 2);
+    apply();
+  };
+  const zoomAt = (factor, cx, cy) => {
+    const next = Math.min(8, Math.max(0.05, scale * factor));
+    x = cx - (cx - x) * next / scale;
+    y = cy - (cy - y) * next / scale;
+    scale = next;
+    apply();
+  };
+  const center = () => [canvas.clientWidth / 2, canvas.clientHeight / 2];
+
+  canvas.addEventListener("wheel", e => {
+    e.preventDefault();
+    const r = canvas.getBoundingClientRect(), delta = e.deltaY * (e.deltaMode === 1 ? 16 : 1);
+    zoomAt(Math.exp(-delta * 0.0015), e.clientX - r.left, e.clientY - r.top);
+  }, { passive: false });
+
+  // Arrasta só enquanto o botão esquerdo está pressionado (como no Mermaid Live). A captura no pointerdown garante
+  // o pointerup mesmo soltando fora da área; sem mover alguns pixels, é um clique no nó (onNodeClick).
+  let drag = null;
+  const endDrag = () => { drag = null; canvas.classList.remove("dragging"); };
+  canvas.addEventListener("pointerdown", e => {
+    if (e.button !== 0 || e.target.closest("button")) return;
+    e.preventDefault();  // sem seleção de texto nem arrasto nativo do navegador
+    drag = { id: e.pointerId, sx: e.clientX - x, sy: e.clientY - y, cx: e.clientX, cy: e.clientY, moved: false, target: e.target };
+    canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener("pointermove", e => {
+    if (drag?.id !== e.pointerId) return;
+    if (!(e.buttons & 1)) { endDrag(); return; }  // botão já solto (ex.: fora da janela)
+    if (!drag.moved && Math.hypot(e.clientX - drag.cx, e.clientY - drag.cy) < 4) return;
+    if (!drag.moved) {
+      drag.moved = true;
+      canvas.classList.add("dragging");
+    }
+    x = e.clientX - drag.sx;
+    y = e.clientY - drag.sy;
+    apply();
+  });
+  canvas.addEventListener("pointerup", e => {
+    if (drag?.id !== e.pointerId) return;
+    // Id do nó no SVG do Mermaid: "<svg>-flowchart-<id do nó>-<n>".
+    const node = !drag.moved && drag.target.closest?.("g.node");
+    const id = node?.id.match(/-flowchart-(.+)-\d+$/)?.[1];
+    endDrag();
+    if (id) onNodeClick?.(id);
+  });
+  canvas.addEventListener("pointercancel", endDrag);
+  canvas.addEventListener("lostpointercapture", e => { if (drag?.id === e.pointerId) endDrag(); });
+  canvas.addEventListener("dragstart", e => e.preventDefault());
+  canvas.addEventListener("dblclick", e => { if (!e.target.closest("button")) fit(); });
+
+  canvas.querySelector('[data-zoom="in"]').onclick = () => zoomAt(1.25, ...center());
+  canvas.querySelector('[data-zoom="out"]').onclick = () => zoomAt(0.8, ...center());
+  canvas.querySelector('[data-zoom="fit"]').onclick = fit;
+  fit();
+}
+
+let flowSeq = 0;
+/** mode: "technical" (colapsa a infraestrutura) | "business" (o grafo já vem resumido). */
+async function showFlow(root, mode) {
+  const seq = ++flowSeq;
+  const { context, ai } = lastResponse.report;
+  const { code, sources } = flowchartOf(root, mode, makeNaming(context, ai));
+  copyButton("copyFlow", code);
+  copyButton("copyGraph", graphText(root));
+  try {
+    const { mermaid, layout } = await loadMermaid();
+    mermaid.initialize({
+      startOnLoad: false, securityLevel: "strict", maxTextSize: 500000, maxEdges: 5000, theme: "default", layout,
+      flowchart: { htmlLabels: true },
+    });
+    const { svg } = await mermaid.render(`flow${seq}`, code);
+    if (seq === flowSeq && $("flowCanvas")) panZoom($("flowCanvas"), svg, (id) => openCodePopup(sources.get(id) ?? null));
+  } catch (err) {
+    if (seq === flowSeq && $("flowCanvas")) {
+      $("flowCanvas").classList.add("flow-error");
+      $("flowCanvas").innerHTML = `<p class="error">Não foi possível gerar o fluxograma: ${esc(err.message ?? err)}</p><pre>${esc(code)}</pre>`;
+    }
+  }
+}
+
+// ---- Código da regra, validação ou condição selecionada ----
+
+let picked = null;              // data-pick do item selecionado: "rule:3", "cond:C1", "ai:validations:0"
+const sourceCache = new Map();  // requisição → Promise<{ file, line, endLine, lines }>
+
+const pickAttrs = (key, cls = "") =>
+  `class="${cls} pick${picked === key ? " picked" : ""}" data-pick="${esc(key)}" tabindex="0"`;
+
+function resetSource() {
+  picked = null;
+  sourceCache.clear();
+}
+
+/** Onde está o código do item: arquivo/linha (regra, evidência da IA) ou o texto da condição do registro. */
+function pickTarget(key) {
+  const { context: ctx, ai } = lastResponse.report;
+  const [kind, a, b] = key.split(":");
+  if (kind === "rule") {
+    const c = ctx.conditions[Number(a)];
+    return c?.sourceFile ? { file: c.sourceFile, line: c.sourceLine } : null;
+  }
+  if (kind === "cond") return ctx.conditionRegistry?.[a] ? { condition: ctx.conditionRegistry[a] } : null;
+  if (kind === "scen" || kind === "dec") {
+    const m = ctx.scenarios;
+    // Cenário: a regra que interrompe; sucesso/limite: a condição exercitada ou o próprio endpoint.
+    const s = kind === "scen" ? m?.scenarios.find(x => x.id === a) : null;
+    const source = kind === "dec" ? m?.conditions.find(c => c.id === a)?.source
+      : s?.expected.source ?? m?.conditions.find(c => c.expression === s?.focus?.expression)?.source
+        ?? { file: ctx.endpoint.sourceFile, line: ctx.endpoint.sourceLine };
+    return source?.file && source.line ? { file: source.file, line: source.line } : null;
+  }
+  if (kind === "ai") {
+    const evidence = ai?.[a]?.[Number(b)]?.evidence;
+    return evidence?.file && evidence.line ? { file: evidence.file, line: evidence.line } : null;
+  }
+  return null;
+}
+
+/** Métodos do grafo (negócio primeiro) onde procurar a origem de uma condição do registro. */
+function graphMethods(ctx) {
+  const seen = new Set(), methods = [];
+  const walk = (node) => {
+    if (!node) return;
+    const id = `${node.sourceFile}:${node.sourceLine}`;
+    if (node.sourceFile && !seen.has(id)) { seen.add(id); methods.push({ file: node.sourceFile, line: node.sourceLine }); }
+    node.children?.forEach(walk);
+  };
+  walk(ctx.businessGraph);
+  walk(ctx.callTree);
+  return methods;
+}
+
+function loadSource(target) {
+  const id = JSON.stringify(target);
+  if (!sourceCache.has(id)) {
+    const request = target.condition
+      ? api("/api/projects/source/condition", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ solutionPath, condition: target.condition, methods: graphMethods(lastResponse.report.context) }),
+        })
+      : api(`/api/projects/source?path=${encodeURIComponent(solutionPath)}&file=${encodeURIComponent(target.file)}&line=${target.line}${target.endLine ? `&endLine=${target.endLine}` : ""}`);
+    sourceCache.set(id, request);
+    request.catch(() => sourceCache.delete(id));
+  }
+  return sourceCache.get(id);
+}
+
+function pick(key) {
+  picked = key === picked ? null : key;
+  document.querySelectorAll("[data-pick]").forEach(el => el.classList.toggle("picked", el.dataset.pick === picked));
+  showSource();
+}
+
+function codeHead(file, range) {
+  return `<div class="code-head">
+    <span class="code-file" title="${esc(file)}">${esc(file)}</span>
+    ${range ? `<span class="code-range">${range}</span>` : ""}
+    <button class="code-close" type="button" title="Fechar (Esc)" aria-label="Fechar código">×</button>
+  </div>`;
+}
+
+/** Mostra o trecho de target no painel (lateral das regras ou popup do fluxograma); isCurrent descarta respostas antigas. */
+async function renderCode(panel, target, isCurrent) {
+  panel.innerHTML = codeHead(target?.file ?? "", "")
+    + `<div class="code-msg muted">${target ? "Carregando código..." : "Sem localização no código para este item."}</div>`;
+  if (!target) return;
+
+  try {
+    const view = await loadSource(target);
+    if (!isCurrent()) return;
+    // Começa com algumas linhas de contexto em volta do trecho; o resto é revelado pelos botões de expandir.
+    codeViews[panel.id] = {
+      view,
+      from: Math.max(1, view.line - CONTEXT_LINES),
+      to: Math.min(view.lines.length, view.endLine + CONTEXT_LINES),
+    };
+    const range = view.endLine > view.line ? `linhas ${view.line}–${view.endLine}` : `linha ${view.line}`;
+    panel.innerHTML = codeHead(view.file, range) + `<div class="code-body"><div class="code-lines">${codeLinesHtml(codeViews[panel.id])}</div></div>`;
+  } catch (err) {
+    if (!isCurrent()) return;
+    panel.innerHTML = codeHead(target.file ?? "", "") + `<div class="code-msg error">${esc(err.message)}</div>`;
+  }
+}
+
+function showSource() {
+  const panel = $("codePanel");
+  if (!panel) return;
+  panel.parentElement.classList.toggle("with-code", !!picked);
+  panel.hidden = !picked;
+  if (!picked) { panel.innerHTML = ""; return; }
+  const key = picked;
+  renderCode(panel, pickTarget(key), () => picked === key);
+}
+
+/** Clique num nó do fluxograma: o código daquela etapa num popup. */
+let popupSeq = 0;
+function openCodePopup(target) {
+  const dialog = $("codeDialog"), seq = ++popupSeq;
+  if (!dialog.open) dialog.showModal();
+  renderCode($("codePopup"), target, () => seq === popupSeq && dialog.open);
+}
+
+const CONTEXT_LINES = 10;  // linhas mostradas acima/abaixo do trecho e reveladas a cada clique em expandir
+const codeViews = {};      // id do painel → { view, from, to }: código carregado e intervalo de linhas visível
+
+function codeLinesHtml({ view, from, to }) {
+  const expand = (direction, hidden) => {
+    const where = direction === "up" ? "acima" : "abaixo";
+    const icon = direction === "up" ? "m6 15 6-6 6 6" : "m6 9 6 6 6-6";
+    const title = `Mostrar mais ${Math.min(CONTEXT_LINES, hidden)} linha(s) ${where}`;
+    return `<div class="code-expand">
+      <button type="button" data-expand="${direction}" title="${title}" aria-label="${title}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="${icon}"/></svg>
+      </button><span>${hidden} linha(s) ${where}</span></div>`;
+  };
+  const lines = view.lines.slice(from - 1, to).map((text, i) => {
+    const n = from + i;
+    const hl = n >= view.line && n <= view.endLine ? " hl" : "";
+    return `<div class="code-line${hl}"><span class="n">${n}</span><span class="t">${esc(text) || " "}</span></div>`;
+  }).join("");
+  return (from > 1 ? expand("up", from - 1) : "") + lines + (to < view.lines.length ? expand("down", view.lines.length - to) : "");
+}
+
+function expandCode(direction, panel) {
+  const codeView = codeViews[panel?.id];
+  if (!codeView) return;
+  if (direction === "up") codeView.from = Math.max(1, codeView.from - CONTEXT_LINES);
+  else codeView.to = Math.min(codeView.view.lines.length, codeView.to + CONTEXT_LINES);
+  const lines = panel.querySelector(".code-lines");
+  if (!lines) return;
+  lines.innerHTML = codeLinesHtml(codeView);
+  // Mantém o foco no botão (se ainda houver linhas a revelar) para expandir várias vezes pelo teclado.
+  lines.querySelector(`[data-expand="${direction}"]`)?.focus({ preventScroll: true });
+}
+// ---- Conta do Claude (rodapé da barra lateral) ----
+
+const claudeIcon = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2l1.8 6.6L20 6l-4.2 5.2L22 12l-6.4 1.6L19 19l-5.6-3.4L12 22l-1.4-6.4L5 19l3.4-5.4L2 12l6.2-.8L4 6l6.2 2.6z"/></svg>`;
+const plans = { pro: "Pro", max: "Max", team: "Team", enterprise: "Enterprise" };
+
+async function refreshAuth(refresh) {
+  try {
+    renderAuth(await api(`/api/auth/status?refresh=${refresh}`));
+  } catch (err) {
+    $("claudeFooter").innerHTML = `<span class="footer-note error">${esc(err.message)}</span>`;
+  }
+}
+
+function renderAuth(s) {
+  authState = s;
+  let html;
+  if (!s.cliInstalled) {
+    html = `<span class="footer-note">Claude Code não encontrado —
+      <a href="https://claude.com/claude-code" target="_blank" rel="noopener">instale</a> para usar o plano mensal.</span>`;
+  } else if (s.usesSubscription) {
+    const plan = plans[s.subscriptionType] ?? s.subscriptionType ?? "";
+    html = `<div class="account-row" title="${esc([s.email, plan && `plano ${plan}`, s.orgName].filter(Boolean).join(" · "))}">
+        <span class="dot"></span><span class="email">${esc(s.email ?? "conectado")}</span>
+        <button class="secondary" id="logoutBtn">Sair</button>
+      </div>
+      <div class="selects">
+        <select id="modelSelect" title="Modelo do Claude usado na análise" disabled><option>carregando...</option></select>
+        <select id="effortSelect" title="Effort: quanto o modelo raciocina antes de responder" disabled></select>
+      </div>`;
+  } else {
+    const note = s.loggedIn ? `<span class="footer-note"><span class="dot warn" style="display:inline-block"></span> Claude Code logado com conta do Console (API).</span>` : "";
+    html = `${note}<button class="claude-btn" id="loginBtn">${claudeIcon} Entrar com Claude</button>`;
+  }
+  $("claudeFooter").innerHTML = html;
+
+  $("loginBtn")?.addEventListener("click", openLogin);
+  $("logoutBtn")?.addEventListener("click", logout);
+  if (s.usesSubscription) {
+    $("modelSelect").addEventListener("change", () => {
+      if ($("modelSelect").value === "__refresh") { loadModels(true); return; }
+      selectModel($("modelSelect").value, $("effortSelect").value);
+    });
+    $("effortSelect").addEventListener("change", () => selectModel($("modelSelect").value, $("effortSelect").value));
+    loadModels(false);
+  }
+  updateAiControls(false);
+}
+
+// ---- Modelo e effort (plano mensal) ----
+
+const effortLabels = { low: "baixo", medium: "médio", high: "alto", xhigh: "extra alto", max: "máximo" };
+let modelState = null; // { models, model, effort }
+
+async function loadModels(refresh) {
+  const select = $("modelSelect");
+  if (!select) return;
+  select.disabled = $("effortSelect").disabled = true;
+  select.innerHTML = `<option>${refresh ? "verificando..." : "carregando..."}</option>`;
+  $("effortSelect").innerHTML = "";
+  try {
+    modelState = await api(`/api/auth/models?refresh=${refresh}`);
+    renderModels();
+  } catch (err) {
+    select.innerHTML = `<option>erro ao carregar</option>`;
+    select.title = err.message;
+  }
+}
+
+function renderModels() {
+  const select = $("modelSelect"), effort = $("effortSelect");
+  if (!select || !modelState) return;
+  const { models, model: current } = modelState;
+
+  select.innerHTML = models.map(m => `<option value="${esc(m.id)}" ${m.available ? "" : "disabled"} title="${esc(m.reason ?? "")}">
+    ${esc(m.name.replace(/^Claude /, ""))}${m.available ? "" : " (indisponível)"}</option>`).join("")
+    + `<option value="__refresh">↻ Verificar modelos da conta</option>`;
+  select.value = current;
+  select.disabled = false;
+  const unavailable = models.filter(m => !m.available);
+  select.title = "Modelo do Claude usado na análise" +
+    (unavailable.length ? "\n\nIndisponíveis nesta conta:\n" + unavailable.map(m => `• ${m.name}: ${m.reason ?? ""}`).join("\n") : "");
+
+  const chosen = models.find(m => m.id === current);
+  const efforts = chosen?.efforts ?? [];
+  effort.innerHTML = efforts.length
+    ? efforts.map(e => `<option value="${e}">Effort: ${effortLabels[e] ?? e}</option>`).join("")
+    : `<option value="">Effort: não suportado</option>`;
+  effort.value = efforts.includes(modelState.effort) ? modelState.effort : (chosen?.defaultEffort ?? "");
+  effort.disabled = efforts.length === 0;
+}
+
+async function selectModel(model, effort) {
+  const target = modelState?.models.find(m => m.id === model);
+  // Ao trocar de modelo, mantém o effort se ele for suportado; senão usa o padrão do modelo.
+  if (target && !target.efforts.includes(effort)) effort = target.defaultEffort ?? "";
+  try {
+    const saved = await api("/api/auth/model", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, effort: effort || null }),
+    });
+    modelState = { ...modelState, ...saved };
+  } catch (err) {
+    alert(err.message);
+  }
+  renderModels();
+}
+
+// ---- Login ----
+
+function showStep(step) {
+  $("loginStep1").hidden = step !== 1;
+  $("loginStep2").hidden = step !== 2;
+  $("loginError1").textContent = $("loginError2").textContent = "";
+}
+
+function openLogin() {
+  showStep(1);
+  $("loginCode").value = "";
+  $("loginDialog").showModal();
+  $("loginEmail").focus();
+}
+
+async function startLogin() {
+  // Abre a aba já no clique, para o navegador não bloquear o pop-up.
+  const tab = window.open("about:blank", "_blank");
+  $("loginStart").disabled = true;
+  try {
+    const { loginUrl } = await api("/api/auth/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: $("loginEmail").value.trim() || null }),
+    });
+    $("loginLink").href = loginUrl;
+    if (tab) tab.location.href = loginUrl;
+    showStep(2);
+    $("loginCode").focus();
+  } catch (err) {
+    tab?.close();
+    $("loginError1").textContent = err.message;
+  } finally {
+    $("loginStart").disabled = false;
+  }
+}
+
+async function confirmLogin() {
+  $("loginConfirm").disabled = true;
+  $("loginError2").textContent = "";
+  try {
+    const status = await api("/api/auth/code", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: $("loginCode").value.trim() }),
+    });
+    $("loginDialog").close();
+    renderAuth(status);
+  } catch (err) {
+    $("loginError2").textContent = err.message;
+  } finally {
+    $("loginConfirm").disabled = false;
+  }
+}
+
+async function logout() {
+  if (!confirm("Sair da conta do Claude?\n\nIsso desconecta o Claude Code desta máquina (vale também para o terminal e outras sessões do Claude Code).")) return;
+  try {
+    renderAuth(await api("/api/auth/logout", { method: "POST" }));
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+// ---- Eventos ----
+
+$("load").addEventListener("click", () => loadEndpoints(true));
+$("browse").addEventListener("click", browse);
+$("fileName").addEventListener("click", browse);
+$("search").addEventListener("input", renderGroups);
+$("search").addEventListener("keydown", (e) => { if (e.key === "Escape") { $("search").value = ""; renderGroups(); $("search").blur(); } });
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); $("search").focus(); $("search").select(); }
+  if (e.key === "Escape" && picked && document.activeElement !== $("search") && !$("loginDialog").open && !$("codeDialog").open) pick(null);
+});
+// Clique (ou Enter/Espaço) numa regra, validação ou condição mostra o código; clicar de novo fecha.
+$("result").addEventListener("click", (e) => {
+  if (e.target.closest(".code-close")) { pick(null); return; }
+  const copy = e.target.closest("[data-copy]");
+  if (copy) { copyScenario(copy); return; }
+  const filter = e.target.closest("[data-scen-filter]");
+  if (filter) { scenarioFilter = filter.dataset.scenFilter; render("scenarios"); return; }
+  const expand = e.target.closest("[data-expand]");
+  if (expand) { expandCode(expand.dataset.expand, $("codePanel")); return; }
+  const item = e.target.closest("[data-pick]");
+  // Selecionando texto da linha: não troca o código.
+  if (item && !window.getSelection()?.toString()) pick(item.dataset.pick);
+});
+$("result").addEventListener("keydown", (e) => {
+  const item = e.target.closest?.("[data-pick]");
+  if (item && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); pick(item.dataset.pick); }
+});
+// Popup de código do fluxograma: fecha no ×, no Esc (nativo do dialog) ou clicando fora.
+$("codeDialog").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget || e.target.closest(".code-close")) { $("codeDialog").close(); return; }
+  const expand = e.target.closest("[data-expand]");
+  if (expand) expandCode(expand.dataset.expand, $("codePopup"));
+});
+$("loginStart").addEventListener("click", startLogin);
+$("loginConfirm").addEventListener("click", confirmLogin);
+$("loginEmail").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); startLogin(); } });
+$("loginCode").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); confirmLogin(); } });
+document.querySelectorAll("[data-close]").forEach(b => b.addEventListener("click", () => $("loginDialog").close()));
+$("loginDialog").addEventListener("close", () => {
+  if (!$("loginStep2").hidden) api("/api/auth/cancel", { method: "POST" }).catch(() => {});
+  refreshAuth(true);
+});
+
+init().catch(err => { $("loadStatus").textContent = err.message; $("loadStatus").className = "project-status error"; });
+</script>
+</body>
+</html>
