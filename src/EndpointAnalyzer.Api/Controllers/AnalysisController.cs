@@ -1,5 +1,6 @@
 using EndpointAnalyzer.Application;
 using EndpointAnalyzer.Core.Models;
+using EndpointAnalyzer.Runtime;
 using Microsoft.AspNetCore.Mvc;
 
 namespace EndpointAnalyzer.Api.Controllers;
@@ -18,7 +19,16 @@ public record AnalysisRequest
 
     /// <summary>Nulo = usa IA quando estiver configurada.</summary>
     public bool? UseAi { get; init; }
+
+    /// <summary>Com IA: valida a matriz de cenários com a API em execução. Nulo = Runtime:Enabled.</summary>
+    public bool? ValidateRuntime { get; init; }
+
+    /// <summary>Token da API analisada (header Authorization das requisições da validação em runtime).</summary>
+    public string? ApiToken { get; init; }
 }
+
+/// <summary>{ "endpoint": { "method": "POST", "route": "/api/x" }, "token": "eyJ..." } (token com ou sem "Bearer ").</summary>
+public record ApiTokenRequest(string? SolutionPath, EndpointSelector? Endpoint, string? EndpointId, string Token);
 
 public record AnalysisResponse(EndpointAnalysisReport Report, string Markdown);
 
@@ -43,14 +53,25 @@ public class AnalysisController(EndpointAnalysisService service, IConfiguration 
         return Content(ReportRenderer.Markdown(report), "text/markdown; charset=utf-8");
     }
 
+    /// <summary>Sobe o serviço do endpoint (como na análise) e confere se o token é aceito: { valid, message }.</summary>
+    [HttpPost("token")]
+    public async Task<ActionResult<ApiTokenCheck>> CheckToken(ApiTokenRequest request, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.Token)) throw new ArgumentException("Informe o token da API.");
+        var solution = SolutionPath.Resolve(request.SolutionPath, configuration, environment);
+        var endpoint = await service.FindEndpointAsync(solution, EndpointId(request.EndpointId, request.Endpoint), cancellationToken);
+        return Ok(await service.CheckApiTokenAsync(solution, endpoint, request.Token, cancellationToken));
+    }
+
+    private static string EndpointId(string? id, EndpointSelector? endpoint) =>
+        id ?? (endpoint is { } e ? $"{e.Method.ToUpperInvariant()} {e.Route}" : null)
+        ?? throw new ArgumentException("Informe 'endpoint' ({ method, route }) ou 'endpointId'.");
+
     private async Task<EndpointAnalysisReport> RunAsync(AnalysisRequest request, CancellationToken cancellationToken)
     {
         var solution = SolutionPath.Resolve(request.SolutionPath, configuration, environment);
-        var id = request.EndpointId
-            ?? (request.Endpoint is { } e ? $"{e.Method.ToUpperInvariant()} {e.Route}" : null)
-            ?? throw new ArgumentException("Informe 'endpoint' ({ method, route }) ou 'endpointId'.");
-
-        var endpoint = await service.FindEndpointAsync(solution, id, cancellationToken);
-        return await service.AnalyzeAsync(solution, endpoint, request.UseAi ?? await service.IsAiAvailableAsync(cancellationToken), cancellationToken);
+        var endpoint = await service.FindEndpointAsync(solution, EndpointId(request.EndpointId, request.Endpoint), cancellationToken);
+        return await service.AnalyzeAsync(solution, endpoint, request.UseAi ?? await service.IsAiAvailableAsync(cancellationToken),
+            request.ValidateRuntime, request.ApiToken, cancellationToken);
     }
 }

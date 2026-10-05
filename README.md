@@ -12,10 +12,11 @@ Especificação completa: [`endpoint-analyzer-projeto.md`](endpoint-analyzer-pro
 src/
   EndpointAnalyzer.Core             modelos (EndpointInfo, CallNode, ConditionInfo, EntityChange...) e IAiProvider
   EndpointAnalyzer.Scanner          SolutionLoader, EndpointScanner, MethodResolver, CallGraphBuilder,
-                                    InterfaceResolver, DependencyInjectionMap, SyntaxConditions
+                                    InterfaceResolver, DependencyInjectionMap, MessageHandlerMap, SyntaxConditions
   EndpointAnalyzer.ChangeDetection  ConditionAnalyzer, EntityChangeAnalyzer, EntityCatalog
   EndpointAnalyzer.Context          AnalysisContextBuilder, SecretSanitizer
   EndpointAnalyzer.AI               ClaudeProvider, PromptBuilder, AnalysisResultSchema
+  EndpointAnalyzer.Runtime          validação da matriz com a API em execução (AppRunner, catálogo, IA, execução, reconciliação)
   EndpointAnalyzer.Application      EndpointAnalysisService (orquestra), cache, versionamento, ReportRenderer
   EndpointAnalyzer.Api              API REST + interface web (wwwroot/index.html)
   EndpointAnalyzer.Cli              linha de comando
@@ -84,6 +85,7 @@ A barra lateral segue o Scalar. Os endpoints aparecem agrupados pela tag do Open
 | POST | `/api/projects/source/condition` | `{ "condition": "x != null", "methods": [{ "file", "line" }] }` → código de onde vem a condição do registro |
 | POST | `/api/analysis` | `{ "endpoint": { "method": "POST", "route": "/api/programacoes" }, "useAi": true }` → relatório + Markdown |
 | POST | `/api/analysis/markdown` | mesmo corpo, devolve `text/markdown` |
+| POST | `/api/analysis/token` | `{ "endpoint": { "method": "POST", "route": "/api/x" }, "token": "eyJ..." }` → sobe o serviço do endpoint (como na análise) e confere se o token é aceito: `{ valid, message }` |
 | GET | `/api/auth/status` | conta do Claude Code (e-mail, plano) e origem da IA ativa |
 | POST | `/api/auth/login` | `{ "email": "..." }` → URL de login da conta do Claude |
 | POST | `/api/auth/code` | `{ "code": "..." }` → conclui o login com o código exibido após autorizar |
@@ -100,6 +102,7 @@ Configuração em `appsettings.json` (`Analyzer`, `Claude`). A chave da API **n�
 
 - **Endpoints:** controllers (`[ApiController]`, `ControllerBase` ou sufixo `Controller`), `[Route]` do controller e da classe base, `[HttpPost/Put/Patch("template")]`, tokens `[controller]`/`[action]`/`[area]`.
 - **Call graph:** chamadas, construtores e métodos de entidades. Interfaces e métodos abstratos são resolvidos para a implementação, usando o DI (`AddScoped<I, T>()`) quando há mais de uma. Também evita loops (métodos já visitados), respeita `MaxCallDepth` (20) e ignora `System.*`, `Microsoft.*`, `Newtonsoft.*`, `AutoMapper.*`, `Serilog.*` e código sem fonte.
+- **Comandos e eventos (CQRS):** `mediator.Send(command)`, `bus.SendCommand(command)`, `Publish(evento)`... seguem até o `Handle` do handler da mensagem, inclusive quando o despacho passa por uma biblioteca sem fonte (MediatR). Handlers reconhecidos: `IRequestHandler<T>`/`IRequestHandler<T, R>`, `INotificationHandler<T>`, `ICommandHandler<T>`, `IEventHandler<T>`, `IConsumer<T>`, `IHandleMessages<T>` e qualquer interface ou classe base genérica terminada em `Handler`/`Consumer`. O handler entra como filho de quem envia (não do barramento, que é infraestrutura), com as regras, alterações e persistência dele. `DomainNotification` e eventos técnicos (histórico, log) não expandem handlers. Nos cenários, `Mapper.Map<Command>(viewModel)` liga as propriedades do comando aos campos de mesmo nome do payload.
 - **Condições:** `if`, `switch` (statement e expression), `throw`, `?? throw`, `cond ? x : throw`, `ThrowIfNull`/`Guard`, DataAnnotations dos DTOs e regras `RuleFor` do FluentValidation.
 - **Condição de cada alteração:** combina os `if`/`else`/`switch`/ternários, as guardas anteriores (`if (x) throw;` → vale `!x`) e as condições do caminho desde o endpoint.
 - **Entidades:** `DbSet<T>` e `modelBuilder.Entity<T>()` (ou uma heurística quando não há DbContext). Detecta `Add/Update/Remove`, `ExecuteUpdate/ExecuteDelete`, métodos de repositório (`Adicionar`, `Atualizar`, `Excluir`...), `new Entidade { ... }`, atribuições de propriedades e `SaveChanges`.
@@ -114,6 +117,7 @@ O analisador segue só o que influencia o comportamento do endpoint, não tudo q
 |---|---|---|
 | DIResolver | `Scanner/DependencyInjectionMap.cs` | Registros `AddScoped/Transient/Singleton` (inclusive `TryAdd*` e genéricos abertos `typeof(IRepository<>)`), só dos projetos do host do endpoint |
 | Resolução de chamadas | `Scanner/CallResolver.cs` | Prioridade: receiver concreto → DI pelo tipo do receiver → construtor (inclusive `: base(...)` e construtor primário) → atribuição → busca. Sobrando várias implementações, a chamada fica **ambígua** e não é expandida |
+| Handlers de mensagens | `Scanner/MessageHandlerMap.cs` | Comando/evento → `Handle` do handler (`IRequestHandler<T>`, `INotificationHandler<T>`...), preferindo os projetos do host. A chamada `Send`/`Publish` (ou feita num `*Bus`/`*Mediator`/`*Dispatcher`) ganha o handler como filho, com estratégia `handler da mensagem` |
 | GenericTypeResolver | `Scanner/ExecutionContext.cs` | Contexto por nó com genéricos (`TEntity = Veiculo`), `this` concreto (herança contextual) e tipos/valores dos argumentos |
 | BranchFeasibilityAnalyzer | `Scanner/BranchFeasibilityAnalyzer.cs` | Corta branches impossíveis: `is`/`switch` por tipo, null checks, bools e enums conhecidos (ex.: `DomainNotification` nunca é `ProgramacaoTransporteEvent`) |
 | Data flow | `Scanner/ValueUsageAnalyzer.cs` | Para onde vai o resultado de cada chamada (condição, retorno, exceção, argumento, atribuição). Consultas só ficam quando influenciam uma decisão |
@@ -152,9 +156,38 @@ Aba **Cenários** (e seção "Matriz de cenários" no Markdown): cada cenário t
 
 O resultado esperado vem da simulação do fluxo com os valores encontrados (primeira regra que dispara, ou sucesso com os efeitos). A IA só escreve título e descrição de cada cenário (`scenarios` no JSON); a chave do cache passou a ser o prompt, que não leva as datas concretas do payload.
 
+## Validação dos cenários em runtime (só com IA)
+
+Especificação: [`analise-ia-validacao-dinamica-cenarios.md`](analise-ia-validacao-dinamica-cenarios.md). Projeto `src/EndpointAnalyzer.Runtime`.
+
+Sem IA nada muda: a matriz é a estática e nenhum projeto é iniciado. Com IA (e `Runtime:Enabled`, padrão), a matriz estática vira **candidata** e é validada com a API rodando de verdade; a aba **Cenários** e o Markdown passam a mostrar a **matriz validada** (a estática continua disponível na alternância "Estática (candidata)").
+
+| Etapa | Onde | O que faz |
+|---|---|---|
+| AppRunner | `AppRunner.cs` | `dotnet build` do projeto do endpoint e execução do executável gerado (`bin/Debug/...`) em `http://localhost:{porta livre}`, com a pasta do projeto como diretório de trabalho (content root, como na IDE) e sem herdar o `ASPNETCORE_ENVIRONMENT`/`DOTNET_ENVIRONMENT` do analisador; aguarda o serviço responder e o encerra no fim. Ambiente, configuração e conexão com o banco são os do próprio projeto (responsabilidade do usuário) |
+| EndpointCatalog | `EndpointCatalog.cs` | `EndpointScanner` com todos os verbos (GET inclusive): parâmetros, DTOs e formato da resposta. Requisições fora do catálogo são recusadas |
+| ScenarioRequirementPlanner | `ScenarioRequirementPlanner.cs` | IA: condições e suposições → requisitos de dados ("Veículo existente com Disponivel = true") |
+| DataAcquisitionPlanner | `DataAcquisitionPlanner.cs` | IA escolhe os endpoints (prioritariamente GET) em rodadas curtas; os dados vão para o contexto com a execução de onde vieram e só contam como **verificados** se aparecem na resposta |
+| ScenarioContext | `ScenarioContext.cs` | Dados reais reutilizados entre cenários + fatos do estado (válidos até a próxima escrita bem-sucedida) |
+| RuntimePayloadMaterializer | `RuntimePayloadMaterializer.cs` + `Scenarios/ScenarioModel.cs` | IA liga as variáveis aos dados reais; o **mesmo solver/Z3 e a mesma simulação** da geração estática conferem os valores e montam rota, query, headers e body. Valores que contradizem o cenário, ou que mudam o resultado simulado, são recusados antes da request |
+| ScenarioExecutor | `ScenarioExecutor.cs` | Executa e registra status, corpo, exceção, tempo e payload. Bloqueia escrita com `Runtime:AllowWrites = false` e requisições além do limite |
+| ScenarioExplorer | `ScenarioExplorer.cs` | Confirma o caminho feliz (baseline) e, a partir dele, muda só o necessário em cada cenário; quando não confere, a IA vê a resposta e propõe outros dados (limites de tentativas, rodadas e requests) |
+| MatrixReconciler | `MatrixReconciler.cs` + `OutcomeMatcher.cs` | Classifica: **confirmado**, **descoberto em runtime**, **não materializado**, **inconclusivo**, **inalcançável** |
+
+Regras contra falso positivo:
+- **Confirmado** só quando o status confere **e** algo identifica a regra: a mensagem esperada na resposta, o campo nos erros de validação (mensagem padrão do framework) ou um status que nenhuma outra regra do endpoint produz. A IA nunca confirma um cenário.
+- Uma execução que falhou não remove o cenário. **Inalcançável** (fora da matriz final, listado com a evidência) exige a justificativa da IA, 2+ execuções com payload aceito pelo solver, todo o estado lido comprovado por dados reais e o mesmo resultado, previsto por outro cenário.
+- Resultados que nenhum cenário prevê viram **descoberto em runtime** (RT-01...).
+
+Na SampleApi, por exemplo, os validators do FluentValidation não rodam automaticamente (falta `AddFluentValidationAutoValidation`): os cenários estáticos "data padrão → 400" e "veiculoId = 0 → 400" são retirados como inalcançáveis, com as execuções que mostram o 422/404 das regras do service.
+
+Configuração (`Runtime` no appsettings): `Enabled`, `Project` (.csproj do serviço, quando não é o projeto do controller), `AllowWrites` (padrão `true`), `Headers` (ex.: `Authorization` do usuário de testes), `MaxRequests`, `MaxAcquisitionRounds`, `MaxAttemptsPerScenario`, `MaxExplorationRounds`, `MaxScenarios`. Na API, `"validateRuntime": false` desliga por requisição; na CLI, `--no-runtime`.
+
+**Token da API:** o campo no card do endpoint, abaixo de "Validar os cenários com a API em execução", recebe o token do serviço analisado (com ou sem `Bearer `). Ao informar (Enter ou sair do campo), o analisador sobe o serviço do endpoint, do mesmo jeito que na validação em runtime (mesmo projeto, `dotnet build` e executável), e chama um GET que exige autenticação sem e com o token: ✓ quando o token é aceito, ✗ quando o serviço responde 401/403. Na análise, o token vai no header `Authorization` de todas as requisições da validação em runtime (não aparece no relatório nem nos prompts da IA). Na API, `"apiToken"` no corpo de `/api/analysis`; na CLI, `--token <token>`.
+
 ## Fica para depois (seção 42 da especificação)
 
-Minimal APIs (`MapPost`), MediatR, eventos/mensageria, `CodexProvider`, persistência em SQLite/PostgreSQL e análise em runtime (`SaveChangesInterceptor`).
+Minimal APIs (`MapPost`), mensageria entre serviços (filas e consumidores em outros processos), `CodexProvider`, persistência em SQLite/PostgreSQL e captura das alterações em runtime (`SaveChangesInterceptor`).
 
 ## Testes
 

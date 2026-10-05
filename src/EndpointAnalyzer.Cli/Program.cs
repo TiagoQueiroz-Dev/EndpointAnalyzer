@@ -12,10 +12,12 @@ using Microsoft.Extensions.DependencyInjection;
 // Opções: --json (imprime o relatório em JSON), --out <arquivo ou pasta>,
 //         --ai-mode auto|subscription|api (assinatura do Claude via Claude Code ou API)
 //         --view negocio|tecnico|completo (grafo exibido na análise estática)
+//         --no-runtime (com --ai, não valida os cenários com a API em execução)
+//         --token <token> (token da API analisada, enviado no header Authorization da validação em runtime)
 
 if (args.Length == 0 || args[0] is "-h" or "--help")
 {
-    Console.WriteLine("Uso: EndpointAnalyzer.Cli <solucao.sln|projeto.csproj> [--endpoint \"POST /api/rota\"] [--all] [--ai] [--ai-mode auto|subscription|api] [--json] [--out caminho]");
+    Console.WriteLine("Uso: EndpointAnalyzer.Cli <solucao.sln|projeto.csproj> [--endpoint \"POST /api/rota\"] [--all] [--ai] [--ai-mode auto|subscription|api] [--no-runtime] [--token token] [--json] [--out caminho]");
     return 1;
 }
 
@@ -28,6 +30,8 @@ var useAi = args.Contains("--ai");
 var asJson = args.Contains("--json");
 var all = args.Contains("--all");
 var view = Option("--view") ?? "negocio"; // negocio | tecnico | completo
+var validateRuntime = !args.Contains("--no-runtime");
+var apiToken = Option("--token");
 
 var services = new ServiceCollection()
     .AddEndpointAnalyzer(configureClaude: o =>
@@ -87,8 +91,8 @@ try
 
     foreach (var endpoint in selected)
     {
-        if (useAi) Console.Error.WriteLine($"Analisando {endpoint.Id} com IA...");
-        var report = await service.AnalyzeAsync(solutionPath, endpoint, useAi);
+        if (useAi) Console.Error.WriteLine($"Analisando {endpoint.Id} com IA{(validateRuntime ? " e validando os cenários em runtime" : "")}...");
+        var report = await service.AnalyzeAsync(solutionPath, endpoint, useAi, validateRuntime, apiToken);
 
         var output = asJson
             ? JsonSerializer.Serialize(report, jsonOptions)

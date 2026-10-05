@@ -14,7 +14,9 @@ builder.Services.AddEndpointAnalyzer(
     // A chave da API vem de ANTHROPIC_API_KEY (ou user-secrets "Claude:ApiKey"); nunca do appsettings versionado.
     claude => builder.Configuration.GetSection("Claude").Bind(claude),
     // Plano mensal: usa o Claude Code da máquina, logado com a conta do Claude.
-    claudeCode => builder.Configuration.GetSection("ClaudeCode").Bind(claudeCode));
+    claudeCode => builder.Configuration.GetSection("ClaudeCode").Bind(claudeCode),
+    // Validação dos cenários com a API analisada em execução (só na análise com IA).
+    runtime => builder.Configuration.GetSection("Runtime").Bind(runtime));
 
 builder.Services.AddControllers().AddJsonOptions(o =>
 {

@@ -58,6 +58,7 @@ public class ProjectsController(EndpointAnalysisService service, SourceViewer so
     {
         defaultSolution = SolutionPath.Resolve(null, configuration, environment),
         aiAvailable = await service.IsAiAvailableAsync(cancellationToken),
+        runtimeValidation = service.RuntimeValidationEnabled,
     });
 }
 

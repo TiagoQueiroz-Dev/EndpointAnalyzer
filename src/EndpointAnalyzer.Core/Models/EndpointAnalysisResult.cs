@@ -93,6 +93,9 @@ public class EndpointAnalysisReport
     public AnalysisVersion Version { get; set; } = new();
 
     public bool FromCache { get; set; }
+
+    /// <summary>Validação dos cenários com a API em execução (só na análise com IA; nulo quando não rodou).</summary>
+    public RuntimeValidation? Runtime { get; set; }
 }
 
 public class AnalysisVersion

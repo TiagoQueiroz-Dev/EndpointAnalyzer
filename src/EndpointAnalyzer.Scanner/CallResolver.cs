@@ -15,6 +15,7 @@ public static class ResolutionStrategies
     public const string Assignment = "atribuição";
     public const string Search = "busca por implementações";
     public const string ThisType = "this concreto";
+    public const string MessageHandler = "handler da mensagem";
 }
 
 public sealed record CallTarget(IMethodSymbol Method, INamedTypeSymbol? ThisType, string? Via, string Strategy);

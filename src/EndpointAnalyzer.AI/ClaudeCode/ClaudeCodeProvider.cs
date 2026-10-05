@@ -21,6 +21,18 @@ public class ClaudeCodeProvider(ClaudeCodeOptions options) : IAiProvider
 
     public async Task<EndpointAnalysisResult> AnalyzeAsync(EndpointAnalysisContext context, CancellationToken cancellationToken = default)
     {
+        var result = await RunAsync(PromptBuilder.SystemPrompt, SchemaJson, PromptBuilder.BuildUserPrompt(context), cancellationToken);
+        return ParseResult(result.Output, result.Error);
+    }
+
+    public async Task<JsonElement> CompleteJsonAsync(AiJsonRequest request, CancellationToken cancellationToken = default)
+    {
+        var result = await RunAsync(request.SystemPrompt, JsonSerializer.Serialize(request.Schema), request.UserPrompt, cancellationToken);
+        return ParseStructured(result.Output, result.Error);
+    }
+
+    private async Task<ProcessResult> RunAsync(string systemPrompt, string schemaJson, string userPrompt, CancellationToken cancellationToken)
+    {
         // Diretório neutro: não carrega CLAUDE.md, hooks ou configurações de projeto.
         var workingDirectory = Path.Combine(Path.GetTempPath(), "EndpointAnalyzer", "claude-code");
         Directory.CreateDirectory(workingDirectory);
@@ -29,9 +41,9 @@ public class ClaudeCodeProvider(ClaudeCodeOptions options) : IAiProvider
         {
             "-p",
             "--output-format", "json",
-            "--json-schema", SchemaJson,
+            "--json-schema", schemaJson,
             "--model", options.Model,
-            "--system-prompt", PromptBuilder.SystemPrompt,
+            "--system-prompt", systemPrompt,
             "--tools", "",
             "--setting-sources", "",
             "--no-session-persistence",
@@ -40,16 +52,19 @@ public class ClaudeCodeProvider(ClaudeCodeOptions options) : IAiProvider
 
         var info = ProcessRunner.StartInfo(options.Executable, arguments, workingDirectory);
 
-        var result = await ProcessRunner.RunAsync(
+        return await ProcessRunner.RunAsync(
             info,
-            PromptBuilder.BuildUserPrompt(context),
+            userPrompt,
             TimeSpan.FromMinutes(options.TimeoutMinutes),
             cancellationToken);
-
-        return ParseResult(result.Output, result.Error);
     }
 
-    public static EndpointAnalysisResult ParseResult(string output, string error)
+    public static EndpointAnalysisResult ParseResult(string output, string error) =>
+        ParseStructured(output, error).Deserialize<EndpointAnalysisResult>(JsonOptions)
+        ?? throw new AiProviderException("Resposta vazia do Claude Code.");
+
+    /// <summary>Objeto de "structured_output" da saída JSON do `claude -p`.</summary>
+    public static JsonElement ParseStructured(string output, string error)
     {
         JsonDocument document;
         try
@@ -75,8 +90,7 @@ public class ClaudeCodeProvider(ClaudeCodeOptions options) : IAiProvider
             if (!root.TryGetProperty("structured_output", out var structured) || structured.ValueKind != JsonValueKind.Object)
                 throw new AiProviderException("O Claude Code não devolveu a saída estruturada.");
 
-            return structured.Deserialize<EndpointAnalysisResult>(JsonOptions)
-                ?? throw new AiProviderException("Resposta vazia do Claude Code.");
+            return structured.Clone();
         }
     }
 }

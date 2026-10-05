@@ -131,8 +131,18 @@ public static class ReportRenderer
             sb.AppendLine();
         }
 
-        if (context.Scenarios is { } matrix)
+        // Com IA, a matriz exibida é a validada em runtime; sem IA (ou se a validação falhou), a estática.
+        if (report.Runtime is { Matrix: { } validated } runtime)
+            AppendValidatedScenarios(sb, runtime, validated, ai?.Scenarios);
+        else if (context.Scenarios is { } matrix)
+        {
+            if (report.Runtime is { } failed)
+            {
+                sb.AppendLine($"> Validação em runtime não executada: {failed.Error ?? failed.Status}. Abaixo, a matriz estática (candidata).");
+                sb.AppendLine();
+            }
             AppendScenarios(sb, matrix, ai?.Scenarios);
+        }
 
         sb.AppendLine("## Fluxo");
         sb.AppendLine();
@@ -185,6 +195,60 @@ public static class ReportRenderer
             sb.AppendLine();
         }
     }
+
+    private static readonly Dictionary<string, string> ValidationLabels = new()
+    {
+        [ScenarioValidationStatuses.Confirmed] = "CONFIRMADO",
+        [ScenarioValidationStatuses.Discovered] = "DESCOBERTO EM RUNTIME",
+        [ScenarioValidationStatuses.NotMaterialized] = "NÃO MATERIALIZADO",
+        [ScenarioValidationStatuses.Inconclusive] = "INCONCLUSIVO",
+        [ScenarioValidationStatuses.Unreachable] = "INALCANÇÁVEL",
+    };
+
+    /// <summary>Matriz validada: cada cenário com o status da reconciliação, o payload real usado e o resultado observado.</summary>
+    private static void AppendValidatedScenarios(StringBuilder sb, RuntimeValidation runtime, ValidatedMatrix matrix, List<ScenarioLabel>? labels)
+    {
+        sb.AppendLine("## Matriz de cenários (validada em runtime)");
+        sb.AppendLine();
+        sb.AppendLine($"Serviço em {runtime.BaseUrl} (escrita {(runtime.WritesAllowed ? "permitida" : "desligada")}) · {runtime.Stats.Requests} requisição(ões) · " +
+                      $"{runtime.Stats.AiCalls} chamada(s) à IA · {runtime.DurationMs / 1000.0:0.#}s.");
+        sb.AppendLine();
+        sb.AppendLine(string.Join(" · ", ScenarioValidationStatuses.All.Where(k => matrix.Counts.GetValueOrDefault(k) > 0)
+            .Select(k => $"**{matrix.Counts[k]}** {ValidationLabels[k].ToLowerInvariant()}")));
+        sb.AppendLine();
+
+        sb.AppendLine("| Id | Status | Cenário | Payload usado | Esperado | Observado | Evidência |");
+        sb.AppendLine("|---|---|---|---|---|---|---|");
+        foreach (var s in matrix.Scenarios) sb.AppendLine(ValidatedRow(s, labels));
+        sb.AppendLine();
+
+        if (matrix.Removed.Count > 0)
+        {
+            sb.AppendLine("### Retirados da matriz (inalcançáveis)");
+            sb.AppendLine();
+            sb.AppendLine("| Id | Status | Cenário | Payload usado | Esperado | Observado | Evidência |");
+            sb.AppendLine("|---|---|---|---|---|---|---|");
+            foreach (var s in matrix.Removed) sb.AppendLine(ValidatedRow(s, labels));
+            sb.AppendLine();
+        }
+
+        foreach (var note in runtime.Notes) sb.AppendLine($"> {OneLine(note)}");
+        if (runtime.Notes.Count > 0) sb.AppendLine();
+    }
+
+    private static string ValidatedRow(ValidatedScenario s, List<ScenarioLabel>? labels)
+    {
+        var title = labels?.FirstOrDefault(l => l.Id == s.Id)?.Title ?? s.Title;
+        var payload = s.Request is { } r ? $"`{r.Method} {r.Url}`" + (r.Body is { } body ? $"<br>`{Shorten(body.ToJsonString(), 300)}`" : "") : "—";
+        var expected = $"**{s.Expected.HttpStatus?.ToString() ?? "?"}** {s.Expected.Outcome}" + string.Concat(s.Expected.Messages.Take(2).Select(m => $"<br>\"{m}\""));
+        var observed = s.Observed is { } o ? $"**{o.HttpStatus?.ToString() ?? "—"}**{(o.Body is { Length: > 0 } b ? $"<br>`{Shorten(b, 200)}`" : "")}{(o.Exception is null ? "" : $"<br>{o.Exception}")}" : "—";
+        var evidence = string.Join("<br>", s.Evidence.Concat(s.Reasons.Select(x => "⚠ " + x)).Concat(s.Bindings.Select(x => $"{x.Variable} = {x.Value} ({x.Origin}{(x.Source is null ? "" : ": " + x.Source)})")));
+        return $"| {s.Id}{(s.ExecutionId is null ? "" : $"<br>{s.ExecutionId}")} | {ValidationLabels.GetValueOrDefault(s.Status, s.Status)} | {Escape(title)}<br>_{s.Kind}_ | {Escape(payload)} | {Escape(expected)} | {Escape(OneLine(observed))} | {Escape(OneLine(evidence))} |";
+    }
+
+    private static string OneLine(string text) => text.ReplaceLineEndings(" ");
+
+    private static string Shorten(string text, int max) => text.Length <= max ? text : text[..max] + "…";
 
     private static void AppendRules(StringBuilder sb, string title, List<BusinessRule> rules)
     {

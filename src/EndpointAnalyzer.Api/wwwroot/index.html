@@ -40,6 +40,19 @@
   .project button.icon { display: flex; align-items: center; justify-content: center; width: 34px; padding: 0; flex: none; }
   .project button.icon svg { width: 16px; height: 16px; }
   .project-status { padding: 0 14px 4px; font-size: 12px; min-height: 18px; }
+  .api-token { position: relative; width: min(480px, 100%); }
+  .api-token input { width: 100%; padding: 7px 34px 7px 32px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
+                     color: var(--text); font: 12.5px ui-monospace, Consolas, monospace; }
+  .api-token input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .api-token input.ok { border-color: var(--post); } .api-token input.fail { border-color: var(--delete); }
+  .api-token > svg { position: absolute; left: 10px; top: 50%; width: 14px; height: 14px; transform: translateY(-50%); color: var(--muted); }
+  .token-state { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); width: 20px; height: 20px; display: grid; place-items: center; border-radius: 50%; }
+  .token-state svg { width: 13px; height: 13px; }
+  .token-state.ok { background: var(--post); color: #fff; } .token-state.fail { background: var(--delete); color: #fff; }
+  .token-state.checking { border: 2px solid var(--border); border-top-color: var(--accent); width: 16px; height: 16px; animation: token-spin .8s linear infinite; }
+  @keyframes token-spin { to { transform: translateY(-50%) rotate(360deg); } }
+  .token-msg { margin-top: 4px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+  .token-msg.fail { color: var(--delete); }
   .search { position: relative; margin: 4px 10px 8px; }
   .search input[type=text] { width: 100%; padding: 8px 56px 8px 32px; border-radius: 8px; }
   .search svg { position: absolute; left: 10px; top: 50%; width: 14px; height: 14px; transform: translateY(-50%); color: var(--muted); }
@@ -162,6 +175,30 @@
   .dt th:first-child, .dt td:first-child { text-align: left; position: sticky; left: 0; background: var(--panel); min-width: 260px; }
   .dt td.v { color: var(--post); font-weight: 700; } .dt td.f { color: var(--muted); } .dt td.x { color: var(--border); }
   .dt .cond-code { display: block; font: 11px ui-monospace, Consolas, monospace; color: var(--muted); overflow-wrap: anywhere; }
+
+  /* ---- Matriz validada em runtime ---- */
+  .rt-summary { border: 1px solid var(--border); border-left: 3px solid var(--post); border-radius: 6px; padding: 8px 12px; margin: 0 0 10px; }
+  .rt-summary.failed { border-left-color: var(--delete); } .rt-summary.partial { border-left-color: var(--put); }
+  .rt-summary .muted { display: block; font-size: 12.5px; margin-top: 2px; }
+  .rt-summary pre { margin: 6px 0 0; white-space: pre-wrap; }
+  .view-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; margin-right: 6px; }
+  .view-toggle button { border: 0; border-radius: 0; background: var(--panel); color: var(--muted); padding: 4px 10px; font-size: 12.5px; font-weight: 500; }
+  .view-toggle button.on { background: var(--active); color: var(--text); }
+  .vstatus { display: inline-block; font: 700 10.5px system-ui, sans-serif; padding: 1px 7px; border-radius: 8px; margin-top: 4px; border: 1px solid currentColor; letter-spacing: .02em; text-transform: uppercase; }
+  .vstatus.confirmado { color: var(--post); } .vstatus.descoberto { color: var(--patch); } .vstatus.nao-materializado { color: var(--put); }
+  .vstatus.inconclusivo { color: var(--muted); } .vstatus.inalcancavel { color: var(--delete); }
+  .observed { margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border); }
+  .observed .lbl, .expected .lbl { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; margin-right: 4px; }
+  .observed pre { max-height: 160px; overflow: auto; white-space: pre-wrap; word-break: break-all; margin: 4px 0 0; font-size: 11.5px; }
+  .ev-list { margin: 0; padding-left: 16px; font-size: 12.5px; }
+  .ev-list li { margin-bottom: 3px; } .ev-list li.ok::marker { content: "✓ "; color: var(--post); } .ev-list li.warn::marker { content: "⚠ "; }
+  .ev-list li.warn { color: var(--put); font-size: 12px; }
+  .pre-list .pk.real { color: var(--post); }
+  details.rt { border: 1px solid var(--border); border-radius: 6px; margin: 8px 0; padding: 6px 10px; }
+  details.rt > summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+  details.rt pre { white-space: pre-wrap; word-break: break-all; max-height: 240px; overflow: auto; font-size: 11.5px; }
+  table.exec td { font-size: 12.5px; } table.exec td.url { font: 12px ui-monospace, Consolas, monospace; overflow-wrap: anywhere; min-width: 220px; }
+  .verified { color: var(--post); font-weight: 600; } .unverified { color: var(--put); font-weight: 600; }
 
   /* ---- Fluxograma (Mermaid) do grafo técnico ---- */
   .flow { position: relative; background: var(--code); border-radius: 6px; }
@@ -321,6 +358,7 @@ let endpoints = [];
 let selected = null;
 let lastResponse = null;
 let authState = null;
+let runtimeAvailable = false;   // Runtime:Enabled no servidor
 let openGroups = new Set(store.get("ea.openGroups", []));
 let openProjects = new Set(store.get("ea.openProjects", []));
 
@@ -333,6 +371,7 @@ async function api(url, options) {
 
 async function init() {
   const info = await api("/api/projects/info");
+  runtimeAvailable = !!info.runtimeValidation;
   // O último arquivo escolhido tem prioridade sobre o padrão do appsettings.
   setSolution(store.get("ea.solutionPath", null) ?? info.defaultSolution ?? "");
   if (solutionPath) loadEndpoints(false);
@@ -378,6 +417,70 @@ async function browse() {
   } finally {
     $("browse").disabled = $("fileName").disabled = false;
   }
+}
+
+// ---- Token da API analisada (header Authorization da validação em runtime) ----
+
+const tokenOkIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>`;
+const tokenFailIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17"/></svg>`;
+let tokenCheckSeq = 0;
+
+function apiToken() { return $("apiToken")?.value.trim() ?? ""; }
+
+/** Token e resultado por projeto, guardados só na sessão do navegador: { [projeto]: { token, state, message } }. */
+function tokenStore() { try { return JSON.parse(sessionStorage.getItem("ea.apiTokens")) ?? {}; } catch { return {}; } }
+
+function saveToken(project, entry) {
+  const all = tokenStore();
+  if (entry.token) all[project] = entry; else delete all[project];
+  try { sessionStorage.setItem("ea.apiTokens", JSON.stringify(all)); } catch { }
+}
+
+/** state: "" (não validado), "checking", "ok" (✓) ou "fail" (✗). */
+function showTokenState(state, message) {
+  if (!$("tokenState")) return;
+  const el = $("tokenState");
+  el.className = `token-state ${state}`;
+  el.innerHTML = state === "ok" ? tokenOkIcon : state === "fail" ? tokenFailIcon : "";
+  el.title = message ?? "";
+  el.setAttribute("aria-label", state === "ok" ? "Token válido" : state === "fail" ? "Token inválido" : state === "checking" ? "Validando o token" : "");
+  $("apiToken").className = state === "ok" || state === "fail" ? state : "";
+  const show = state === "checking" || state === "fail";
+  $("tokenMsg").hidden = !show || !message;
+  $("tokenMsg").textContent = show ? message ?? "" : "";
+  $("tokenMsg").className = `token-msg ${state === "fail" ? "fail" : ""}`;
+}
+
+/** Sobe o serviço do endpoint selecionado (como na análise) e confere se ele aceita o token. */
+async function checkToken(force) {
+  const endpoint = selected;
+  if (!endpoint) return;
+  const token = apiToken();
+  const saved = tokenStore()[endpoint.project];
+  if (!token) { tokenCheckSeq++; saveToken(endpoint.project, {}); showTokenState("", null); return; }
+  if (!force && saved?.token === token && saved.state) return;
+  const seq = ++tokenCheckSeq;
+  saveToken(endpoint.project, { token, state: "", message: null });
+  showTokenState("checking", `Subindo ${endpoint.project} para testar o token...`);
+  let result;
+  try {
+    result = await api("/api/analysis/token", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ solutionPath, endpoint: { method: endpoint.httpMethod, route: endpoint.route }, token }),
+    });
+  } catch (err) {
+    result = { valid: false, message: err.message };
+  }
+  const state = result.valid ? "ok" : "fail";
+  if (tokenStore()[endpoint.project]?.token === token) saveToken(endpoint.project, { token, state, message: result.message });
+  if (seq === tokenCheckSeq && selected?.project === endpoint.project) showTokenState(state, result.message);
+}
+
+/** Ao abrir um endpoint: o token já informado para o projeto dele, com o resultado da verificação. */
+function restoreToken() {
+  const saved = selected ? tokenStore()[selected.project] : null;
+  $("apiToken").value = saved?.token ?? "";
+  showTokenState(saved?.state ?? "", saved?.message);
 }
 
 // ---- Endpoints agrupados (como o Scalar) ----
@@ -511,12 +614,42 @@ function renderEndpointPanel() {
       <label class="check"><input id="useAi" type="checkbox"> <span id="useAiLabel">Usar IA</span></label>
       <span id="aiModeSlot"></span>
     </div>
+    <div class="row" id="runtimeRow" ${runtimeAvailable ? "" : "hidden"}>
+      <label class="check" title="Sobe a API analisada, busca dados reais pelos endpoints e executa cada cenário para validar a matriz">
+        <input id="validateRuntime" type="checkbox"> <span>Validar os cenários com a API em execução</span></label>
+    </div>
+    <div id="tokenRow" ${runtimeAvailable ? "" : "hidden"}>
+      <div class="row">
+        <div class="api-token">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="m10.8 12.2 8.2-8.2"/><path d="m16 7 3 3"/><path d="m14 9 2 2"/></svg>
+          <input id="apiToken" type="password" placeholder="Token da API (Authorization)" autocomplete="off" spellcheck="false"
+                 aria-label="Token da API analisada" title="Token enviado no header Authorization (com ou sem &quot;Bearer&quot;). Enter ou sair do campo para validar.">
+          <span id="tokenState" class="token-state" role="status" aria-live="polite"></span>
+        </div>
+      </div>
+      <div id="tokenMsg" class="token-msg" hidden></div>
+    </div>
     <div class="row">
       <button id="analyze">ANALISAR</button>
       <span id="analyzeStatus" class="muted"></span>
     </div>`;
   $("analyze").addEventListener("click", analyze);
+  $("validateRuntime").checked = store.get("ea.validateRuntime", true);
+  $("validateRuntime").addEventListener("change", ev => store.set("ea.validateRuntime", ev.target.checked));
+  $("useAi").addEventListener("change", updateRuntimeControl);
+  $("validateRuntime").addEventListener("change", updateRuntimeControl);
+  $("apiToken").addEventListener("change", () => checkToken(false));
+  $("apiToken").addEventListener("keydown", ev => { if (ev.key === "Enter") { ev.preventDefault(); checkToken(true); } });
+  restoreToken();
   updateAiControls(true);
+}
+
+/** A validação em runtime só existe na análise com IA. */
+function updateRuntimeControl() {
+  if (!$("validateRuntime")) return;
+  $("validateRuntime").disabled = !$("useAi").checked;
+  // O token só é usado na validação em runtime.
+  $("apiToken").disabled = !$("useAi").checked || !$("validateRuntime").checked;
 }
 
 /** Atualiza a caixa "Usar IA" e o seletor de origem conforme a conta. */
@@ -541,6 +674,7 @@ function updateAiControls(initial) {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: ev.target.value }),
     })));
   }
+  updateRuntimeControl();
 }
 
 // ---- Análise ----
@@ -550,7 +684,9 @@ async function analyze() {
   const endpoint = selected;
   $("analyze").disabled = true;
   $("analyzeStatus").className = "muted";
-  $("analyzeStatus").textContent = $("useAi").checked ? "Analisando com IA (pode levar alguns minutos)..." : "Analisando...";
+  const runtime = runtimeAvailable && $("useAi").checked && $("validateRuntime").checked;
+  $("analyzeStatus").textContent = runtime ? "Analisando com IA e validando os cenários com a API em execução (pode levar vários minutos)..."
+    : $("useAi").checked ? "Analisando com IA (pode levar alguns minutos)..." : "Analisando...";
   try {
     const response = await api("/api/analysis", {
       method: "POST",
@@ -559,12 +695,19 @@ async function analyze() {
         solutionPath,
         endpoint: { method: endpoint.httpMethod, route: endpoint.route },
         useAi: $("useAi").checked,
+        validateRuntime: runtime,
+        apiToken: runtime && apiToken() ? apiToken() : null,
       }),
     });
     if (selected !== endpoint) return;
     lastResponse = response;
     resetSource();
-    $("analyzeStatus").textContent = response.report.fromCache ? "Concluído (cache)" : "Concluído";
+    const rt = response.report.runtime;
+    $("analyzeStatus").textContent = (response.report.fromCache ? "Concluído (cache)" : "Concluído")
+      + (!rt ? "" : rt.status === "falhou" ? " · a validação em runtime falhou (veja a aba Cenários)"
+        : ` · ${rt.matrix?.counts?.confirmado ?? 0} de ${rt.matrix?.scenarios?.length ?? 0} cenário(s) confirmado(s) em runtime`);
+    scenarioView = rt?.matrix ? "validated" : "static";
+    scenarioFilter = "all";
     render(response.report.ai ? "summary" : "business");
   } catch (err) {
     if (selected !== endpoint) return;
@@ -579,13 +722,15 @@ function render(tab) {
   const { report, markdown } = lastResponse;
   const ctx = report.context;
   const tabs = [["summary", "Resumo"], ["business", "Negócio"], ["technical", "Técnico"], ["complete", "Completo"], ["md", "Markdown"],
-    ["scenarios", `Cenários${ctx.scenarios?.scenarios?.length ? ` <span class="badge">${ctx.scenarios.scenarios.length}</span>` : ""}`]];
+    ["scenarios", report.runtime?.matrix
+      ? `Cenários <span class="badge" title="confirmados em runtime / total">${report.runtime.matrix.counts.confirmado ?? 0}/${report.runtime.matrix.scenarios.length}</span>`
+      : `Cenários${ctx.scenarios?.scenarios?.length ? ` <span class="badge">${ctx.scenarios.scenarios.length}</span>` : ""}`]];
   let body = "";
   if (tab === "summary") body = report.ai ? renderDoc(report.ai) : renderSummary(ctx);
   if (tab === "business") body = renderBusiness(ctx);
   if (tab === "technical" || tab === "complete") body = renderTechnical(ctx, tab);
   if (tab === "md") body = `<div class="row"><button class="secondary" id="copyMd">Copiar</button><button class="secondary" id="downloadMd">Baixar .md</button></div><pre>${esc(markdown)}</pre>`;
-  if (tab === "scenarios") body = renderScenarios(ctx, report.ai);
+  if (tab === "scenarios") body = renderScenarios(ctx, report.ai, report.runtime);
 
   $("result").innerHTML = `<section>
     <p class="muted" style="margin-top:0">analisador ${esc(report.version.analyzerVersion)}${report.version.commit ? ` · commit ${esc(report.version.commit)}` : ""}${report.version.aiModel ? ` · ${esc(report.version.aiModel)}` : ""}</p>
@@ -597,7 +742,7 @@ function render(tab) {
   showSource();
   if (tab === "technical") showFlow(ctx.callTree, "technical");
   if (tab === "business") showFlow(ctx.businessGraph ?? ctx.callTree, "business");
-  if (tab === "scenarios") wireScenarios(ctx, report.ai);
+  if (tab === "scenarios") wireScenarios(ctx, report.ai, report.runtime);
   if (tab === "md") {
     $("copyMd").onclick = () => navigator.clipboard.writeText(markdown);
     $("downloadMd").onclick = () => {
@@ -752,7 +897,7 @@ const downloadIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
 
 const scenarioKinds = { sucesso: "Sucesso", validacao: "Validação", regra: "Regra", limite: "Limite" };
 const techniqueLabels = { "decision-table": "tabela de decisão", "equivalence-partitioning": "partição de equivalência", "boundary-value": "valor-limite" };
-const statusSources = { "código": "do código", middleware: "tratamento global", validacao: "validação automática", inferido: "inferido" };
+const statusSources = { "código": "do código", middleware: "tratamento global", validacao: "validação automática", inferido: "inferido", runtime: "observado em runtime" };
 const preKinds = { estado: "estado", contexto: "contexto", suposicao: "suposição" };
 let scenarioFilter = "all";
 
@@ -777,7 +922,8 @@ function curlOf(s) {
 function statusClass(status) { return !status ? "s0" : status < 300 ? "s2" : status < 500 ? "s4" : "s5"; }
 
 function expectedHtml(e) {
-  const persisted = e.outcome === "erro"
+  // Descoberto em runtime: só o que foi observado (não há previsão de persistência).
+  const persisted = e.statusSource === "runtime" ? "" : e.outcome === "erro"
     ? (e.persisted ? `<div class="persist partial">alterações já persistidas antes do erro</div>` : `<div class="persist no">nada é gravado</div>`)
     : (e.persisted && !e.effects.some(f => f.kind === "SAVE_CHANGES") ? `<div class="persist">persiste no banco (SaveChanges)</div>` : "");
   return `<div class="expected">
@@ -809,9 +955,14 @@ function payloadHtml(s) {
   </div>`;
 }
 
-function renderScenarios(ctx, ai) {
+function renderScenarios(ctx, ai, runtime) {
+  if (runtime?.matrix && scenarioView === "validated") return renderValidated(ctx, ai, runtime);
   const m = ctx.scenarios;
   if (!m) return `<p class="muted">Matriz de cenários indisponível: analise o endpoint novamente.</p>`;
+  return (runtime ? runtimeSummaryHtml(runtime) : "") + renderStaticScenarios(m, ai, runtime);
+}
+
+function renderStaticScenarios(m, ai, runtime) {
   const labels = new Map((ai?.scenarios ?? []).map(l => [l.id, l]));
   const counts = Object.fromEntries(Object.keys(scenarioKinds).map(k => [k, m.scenarios.filter(s => s.kind === k).length]));
   const visible = m.scenarios.filter(s => scenarioFilter === "all" || s.kind === scenarioFilter);
@@ -835,9 +986,9 @@ function renderScenarios(ctx, ai) {
     </tr>`;
   }).join("");
 
-  return `<p class="muted" style="margin-top:0">${m.scenarios.length} cenário(s) gerados do código: tabela de decisão, partição de equivalência e valores-limite${z3 ? ` · ${z3} resolvido(s) pelo Z3` : ""}${ai?.scenarios?.length ? " · títulos pela IA" : ""}.
+  return `<p class="muted" style="margin-top:0">${runtime ? "Matriz estática (candidata): " : ""}${m.scenarios.length} cenário(s) gerados do código: tabela de decisão, partição de equivalência e valores-limite${z3 ? ` · ${z3} resolvido(s) pelo Z3` : ""}${ai?.scenarios?.length ? " · títulos pela IA" : ""}.
     Clique num cenário para ver o código da regra.</p>
-    <div class="scen-toolbar">${chips}<span class="spacer"></span>
+    <div class="scen-toolbar">${runtime?.matrix ? viewToggleHtml() : ""}${chips}<span class="spacer"></span>
       <button class="secondary" type="button" id="copyScenarios" title="Copiar a matriz como tabela Markdown">${copyIcon}<span>Copiar matriz</span></button>
       <button class="secondary" type="button" id="downloadScenarios" title="Baixar a matriz em JSON">${downloadIcon}<span>Baixar .json</span></button>
     </div>
@@ -886,29 +1037,188 @@ function scenariosMarkdown(m, ai) {
   return lines.join("\n");
 }
 
-function wireScenarios(ctx, ai) {
+function wireScenarios(ctx, ai, runtime) {
+  const validated = runtime?.matrix && scenarioView === "validated";
   const m = ctx.scenarios;
-  if (!m) return;
+  if (!m || !$("copyScenarios")) return;
   $("copyScenarios").onclick = async () => {
     const label = $("copyScenarios").querySelector("span");
-    try { await navigator.clipboard.writeText(scenariosMarkdown(m, ai)); label.textContent = "Copiado"; } catch { label.textContent = "Falhou ao copiar"; }
+    try { await navigator.clipboard.writeText(validated ? validatedMarkdown(runtime.matrix, ai) : scenariosMarkdown(m, ai)); label.textContent = "Copiado"; }
+    catch { label.textContent = "Falhou ao copiar"; }
     setTimeout(() => label.textContent = "Copiar matriz", 1500);
   };
   $("downloadScenarios").onclick = () => {
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([JSON.stringify(m, null, 2)], { type: "application/json" }));
-    a.download = `cenarios_${ctx.endpoint.httpMethod}_${ctx.endpoint.route.replace(/[^\w]+/g, "_")}.json`;
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(validated ? runtime : m, null, 2)], { type: "application/json" }));
+    a.download = `cenarios${validated ? "_validados" : ""}_${ctx.endpoint.httpMethod}_${ctx.endpoint.route.replace(/[^\w]+/g, "_")}.json`;
     a.click();
   };
 }
 
+/** Cenário do botão de cópia: na matriz validada, com o payload real usado na execução. */
+function scenarioForCopy(id) {
+  const rt = lastResponse.report.runtime?.matrix;
+  if (rt && scenarioView === "validated") {
+    const v = [...rt.scenarios, ...rt.removed].find(x => x.id === id);
+    if (v?.request) return v;
+  }
+  return lastResponse.report.context.scenarios.scenarios.find(x => x.id === id);
+}
+
 async function copyScenario(button) {
-  const s = lastResponse.report.context.scenarios.scenarios.find(x => x.id === button.dataset.scen);
+  const s = scenarioForCopy(button.dataset.scen);
   if (!s) return;
   const label = button.querySelector("span"), original = label.textContent;
   try { await navigator.clipboard.writeText(button.dataset.copy === "curl" ? curlOf(s) : bodyText(s)); label.textContent = "Copiado"; }
   catch { label.textContent = "Falhou"; }
   setTimeout(() => label.textContent = original, 1500);
+}
+
+// ---- Matriz validada em runtime (AppRunner → dados reais → execução → reconciliação) ----
+
+const validationKinds = {
+  confirmado: "Confirmado", descoberto: "Descoberto em runtime", "nao-materializado": "Não materializado",
+  inconclusivo: "Inconclusivo", inalcancavel: "Inalcançável",
+};
+const validationHelp = {
+  confirmado: "comportamento reproduzido em runtime: status e mensagem (ou campo) conferem com o esperado",
+  descoberto: "resultado observado em runtime que a análise estática não previu",
+  "nao-materializado": "o cenário parece válido, mas não foi possível obter o estado (dados) necessário",
+  inconclusivo: "executado sem reproduzir o esperado, ou ainda há condições não resolvidas",
+  inalcancavel: "código e runtime demonstram que o cenário não pode ocorrer (retirado da matriz)",
+};
+const phaseLabels = { aquisicao: "aquisição", baseline: "baseline", cenario: "cenário", exploracao: "exploração" };
+let scenarioView = "validated";   // validated | static
+let validatedFilter = "all";
+
+function viewToggleHtml() {
+  return `<span class="view-toggle" role="group" aria-label="Matriz exibida">
+    <button type="button" data-scen-view="validated" class="${scenarioView === "validated" ? "on" : ""}">Validada em runtime</button>
+    <button type="button" data-scen-view="static" class="${scenarioView === "static" ? "on" : ""}">Estática (candidata)</button></span>`;
+}
+
+function runtimeSummaryHtml(rt) {
+  const failed = rt.status === "falhou";
+  const title = failed ? "A validação em runtime falhou: a matriz abaixo é a estática (candidata)"
+    : rt.status === "parcial" ? "Matriz validada em runtime (parcial: limite atingido)" : "Matriz validada em runtime";
+  const where = rt.baseUrl ? `serviço em ${esc(rt.baseUrl)} · escrita ${rt.writesAllowed ? "permitida" : "desligada"} · ` : "";
+  return `<div class="rt-summary ${failed ? "failed" : rt.status === "parcial" ? "partial" : ""}">
+    <b>${title}</b>
+    <span class="muted">${where}${rt.stats.requests} requisição(ões) · ${rt.stats.aiCalls} chamada(s) à IA · ${(rt.durationMs / 1000).toFixed(1)}s</span>
+    ${rt.error ? `<pre class="error">${esc(rt.error)}</pre>` : ""}
+  </div>`;
+}
+
+function prettyBody(body) {
+  if (!body) return "";
+  try { return JSON.stringify(JSON.parse(body), null, 2); } catch { return body; }
+}
+
+function observedHtml(o) {
+  if (!o) return `<div class="observed"><span class="lbl">observado</span><span class="muted">não executado</span></div>`;
+  const body = prettyBody(o.body);
+  return `<div class="observed"><span class="lbl">observado</span>
+    <span class="status ${statusClass(o.httpStatus)}">${esc(o.httpStatus ?? "—")}</span> <span class="status-src">${o.elapsedMs} ms</span>
+    ${o.exception ? `<div class="warn">${esc(o.exception)}</div>` : ""}
+    ${body ? `<pre><code>${esc(body.length > 1200 ? body.slice(0, 1200) + "…" : body)}</code></pre>` : ""}</div>`;
+}
+
+function realStateHtml(s) {
+  const items = [
+    ...s.bindings.map(b => `<li title="${esc(b.source ?? "")}"><span class="pk real">${b.origin === "fato" ? "fato" : "dado real"}</span><code>${esc(b.variable)} = ${esc(b.value)}</code>${b.source ? ` <span class="muted">(${esc(b.source)})</span>` : ""}</li>`),
+    ...s.preconditions.map(p => `<li title="${esc(p.expression ?? "")}"><span class="pk ${esc(p.kind)}">${esc(preKinds[p.kind] ?? p.kind)}</span>${esc(p.description)}</li>`),
+  ];
+  return items.length ? `<ul class="pre-list">${items.join("")}</ul>` : `<span class="muted">—</span>`;
+}
+
+function evidenceHtml(s) {
+  const items = [...s.evidence.map(e => `<li class="ok">${esc(e)}</li>`), ...s.reasons.map(r => `<li class="warn">${esc(r)}</li>`)];
+  return items.length ? `<ul class="ev-list">${items.join("")}</ul>` : `<span class="muted">—</span>`;
+}
+
+function validatedRows(list, labels) {
+  const statics = lastResponse.report.context.scenarios?.scenarios ?? [];
+  return list.map(s => {
+    const label = labels.get(s.id);
+    const original = statics.find(x => x.id === s.id);
+    const title = label?.title ?? (original ? scenarioTitle(original, null) : s.title);
+    return `<tr ${original ? pickAttrs(`scen:${s.id}`) : ""}>
+      <td class="id"><code>${esc(s.id)}</code><br><span class="vstatus ${esc(s.status)}" title="${esc(validationHelp[s.status] ?? "")}">${esc(validationKinds[s.status] ?? s.status)}</span>
+        <span class="tech">${esc(scenarioKinds[s.kind] ?? s.kind)}${s.attempts ? ` · ${s.attempts} execução(ões)` : ""}${s.executionId ? ` · ${esc(s.executionId)}` : ""}</span></td>
+      <td><div class="title">${esc(title)}</div>${label?.description ? `<div class="desc">${esc(label.description)}</div>` : ""}</td>
+      <td>${s.request ? payloadHtml(s) : `<span class="muted">—</span>`}</td>
+      <td>${realStateHtml(s)}</td>
+      <td><span class="lbl muted">esperado</span>${expectedHtml(s.expected)}${observedHtml(s.observed)}</td>
+      <td>${evidenceHtml(s)}</td>
+    </tr>`;
+  }).join("");
+}
+
+function validatedTable(list, labels) {
+  return `<div class="table-wrap"><table class="scen"><tr><th>Id</th><th>Cenário</th><th>Payload usado</th><th>Dados reais / pré-condições</th><th>Esperado × observado</th><th>Evidência</th></tr>${validatedRows(list, labels)}</table></div>`;
+}
+
+function renderValidated(ctx, ai, rt) {
+  const m = rt.matrix;
+  const labels = new Map((ai?.scenarios ?? []).map(l => [l.id, l]));
+  const visible = m.scenarios.filter(s => validatedFilter === "all" || s.status === validatedFilter);
+  const chips = [["all", "Todos", m.scenarios.length], ...Object.entries(validationKinds).filter(([k]) => k !== "inalcancavel").map(([k, l]) => [k, l, m.scenarios.filter(s => s.status === k).length])]
+    .filter(([k, , n]) => k === "all" || n > 0)
+    .map(([k, l, n]) => `<button type="button" class="chip ${validatedFilter === k ? "on" : ""}" data-vfilter="${k}" title="${esc(validationHelp[k] ?? "")}">${l}<span class="n">${n}</span></button>`).join("");
+
+  return `${runtimeSummaryHtml(rt)}
+    <p class="muted" style="margin-top:0">Cada cenário da matriz estática foi materializado com dados reais (conferidos pelo solver) e executado na API.
+      Só é <b>confirmado</b> quando o status e a mensagem (ou o campo da validação) conferem; nada é retirado sem evidência. Clique num cenário para ver o código da regra.</p>
+    <div class="scen-toolbar">${viewToggleHtml()}${chips}<span class="spacer"></span>
+      <button class="secondary" type="button" id="copyScenarios" title="Copiar a matriz validada como tabela Markdown">${copyIcon}<span>Copiar matriz</span></button>
+      <button class="secondary" type="button" id="downloadScenarios" title="Baixar a validação em JSON (matriz, execuções e contexto)">${downloadIcon}<span>Baixar .json</span></button>
+    </div>
+    <h3 style="margin-top:0">Matriz validada</h3>
+    ${visible.length ? validatedTable(visible, labels) : `<p class="muted">Nenhum cenário${m.scenarios.length ? " com este status" : ""}.</p>`}
+    ${m.removed.length ? `<h3>Retirados da matriz (inalcançáveis)</h3>
+      <p class="muted">Código e runtime mostram que estes cenários não podem ocorrer: ficam aqui com a evidência, fora da matriz final.</p>
+      ${validatedTable(m.removed, labels)}` : ""}
+    ${rt.notes.length ? `<h3>Observações</h3><ul>${rt.notes.map(n => `<li class="warn">${esc(n)}</li>`).join("")}</ul>` : ""}
+    ${runtimeDetailsHtml(rt)}`;
+}
+
+function runtimeDetailsHtml(rt) {
+  const requirements = rt.requirements.length ? `<details class="rt"><summary>Requisitos de dados (${rt.requirements.length})</summary>
+    <div class="table-wrap"><table><tr><th>Id</th><th>Requisito</th><th>Cenários</th><th>Status</th></tr>
+    ${rt.requirements.map(r => `<tr><td><code>${esc(r.id)}</code></td><td>${esc(r.description)}${r.constraints.length ? `<div class="muted"><code>${esc(r.constraints.join("; "))}</code></div>` : ""}</td>
+      <td>${esc(r.scenarios.join(", "))}</td><td>${esc(r.status)}${r.reason ? `<div class="muted">${esc(r.reason)}</div>` : ""}</td></tr>`).join("")}</table></div></details>` : "";
+
+  const context = rt.context.length ? `<details class="rt"><summary>Contexto: dados reais encontrados (${rt.context.length})</summary>
+    <div class="table-wrap"><table><tr><th>Dado</th><th>Valor</th><th>Fonte</th></tr>
+    ${rt.context.map(c => `<tr><td><code>${esc(c.key)}</code><div class="muted">${esc(c.description)}</div></td><td><code>${esc(c.value.length > 300 ? c.value.slice(0, 300) + "…" : c.value)}</code></td>
+      <td>${esc(c.executionId ?? "—")} ${c.verified ? `<span class="verified" title="os valores aparecem na resposta da execução">verificado</span>` : `<span class="unverified" title="a IA não mostrou de onde veio o dado">não verificado</span>`}</td></tr>`).join("")}</table></div></details>` : "";
+
+  const executions = rt.executions.length ? `<details class="rt"><summary>Execuções (${rt.executions.length})</summary>
+    <div class="table-wrap"><table class="exec"><tr><th>Id</th><th>Fase</th><th>Requisição</th><th>Resultado</th></tr>
+    ${rt.executions.map(e => `<tr><td><code>${esc(e.id)}</code>${e.scenarioId ? `<div class="muted">${esc(e.scenarioId)}${e.attempt ? ` #${e.attempt}` : ""}</div>` : ""}</td>
+      <td>${esc(phaseLabels[e.phase] ?? e.phase)}</td>
+      <td class="url"><span class="method ${esc(e.method)}">${esc(e.method)}</span> ${esc(e.url)}${e.reason ? `<div class="muted">${esc(e.reason)}</div>` : ""}
+        ${e.requestBody !== undefined ? `<details><summary class="muted">body</summary><pre>${esc(JSON.stringify(e.requestBody, null, 2))}</pre></details>` : ""}</td>
+      <td>${e.blocked ? `<span class="warn">bloqueada</span>` : `<span class="status ${statusClass(e.status)}">${esc(e.status ?? "—")}</span> <span class="status-src">${e.elapsedMs} ms</span>`}
+        ${e.exception ? `<div class="warn">${esc(e.exception)}</div>` : ""}
+        ${e.responseBody ? `<details><summary class="muted">resposta</summary><pre>${esc(prettyBody(e.responseBody))}</pre></details>` : ""}</td></tr>`).join("")}
+    </table></div></details>` : "";
+
+  const log = rt.log.length ? `<details class="rt"><summary>Linha do tempo</summary><pre>${esc(rt.log.join("\n"))}</pre></details>` : "";
+  return `<h3>Detalhes da validação</h3>${requirements}${context}${executions}${log}`;
+}
+
+function validatedMarkdown(m, ai) {
+  const labels = new Map((ai?.scenarios ?? []).map(l => [l.id, l]));
+  const cell = (s) => String(s ?? "").replace(/\|/g, "\\|").replace(/\n/g, "<br>");
+  const lines = ["| Id | Status | Cenário | Payload usado | Esperado | Observado | Evidência |", "|---|---|---|---|---|---|---|"];
+  for (const s of [...m.scenarios, ...m.removed]) {
+    const payload = s.request ? `\`${s.request.method} ${s.request.url}\`${s.request.body === undefined ? "" : `<br>\`${JSON.stringify(s.request.body)}\``}` : "—";
+    const expected = [`**${s.expected.httpStatus ?? "?"}** ${s.expected.outcome}`, ...s.expected.messages.map(x => `"${x}"`)].join("<br>");
+    const observed = s.observed ? `**${s.observed.httpStatus ?? "—"}** ${(s.observed.body ?? "").slice(0, 200)}` : "—";
+    lines.push(`| ${s.id} | ${validationKinds[s.status] ?? s.status} | ${cell(labels.get(s.id)?.title ?? s.title)} | ${cell(payload)} | ${cell(expected)} | ${cell(observed)} | ${cell([...s.evidence, ...s.reasons.map(r => "⚠ " + r)].join("\n"))} |`);
+  }
+  return lines.join("\n");
 }
 
 /** Fluxograma com os botões de cópia; showFlow() desenha depois que a aba entra na página. */
@@ -1857,6 +2167,10 @@ $("result").addEventListener("click", (e) => {
   if (copy) { copyScenario(copy); return; }
   const filter = e.target.closest("[data-scen-filter]");
   if (filter) { scenarioFilter = filter.dataset.scenFilter; render("scenarios"); return; }
+  const vfilter = e.target.closest("[data-vfilter]");
+  if (vfilter) { validatedFilter = vfilter.dataset.vfilter; render("scenarios"); return; }
+  const view = e.target.closest("[data-scen-view]");
+  if (view) { scenarioView = view.dataset.scenView; render("scenarios"); return; }
   const expand = e.target.closest("[data-expand]");
   if (expand) { expandCode(expand.dataset.expand, $("codePanel")); return; }
   const item = e.target.closest("[data-pick]");

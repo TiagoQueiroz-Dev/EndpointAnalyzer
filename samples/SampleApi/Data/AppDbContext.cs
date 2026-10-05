@@ -16,4 +16,6 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<Cadastro.Motivo> Motivos => Set<Cadastro.Motivo>();
 
     public DbSet<Cadastro.HistoricoVeiculo> HistoricosVeiculo => Set<Cadastro.HistoricoVeiculo>();
+
+    public DbSet<Pedidos.Pedido> Pedidos => Set<Pedidos.Pedido>();
 }

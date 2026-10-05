@@ -428,7 +428,7 @@ public class RelevanceAnalyzer(AnalyzerOptions analyzerOptions) : IRelevanceAnal
             else if (info.SubtreeDomainError || RelevanceOptions.ContainsAny(name, ["Erro", "Error", "Problema", "Notif"]))
                 summary = info.Parent?.IsRoot == true ? "Retorna erro de validação" : "Notifica erro de validação";
             else if (info.SubtreeBusinessEvent is { } businessEvent)
-                summary = $"Publica evento {businessEvent.Target}";
+                summary = businessEvent.Kind == SinkKinds.Send ? $"Envia comando {businessEvent.Target}" : $"Publica evento {businessEvent.Target}";
 
             if (summary is null) return null;
 

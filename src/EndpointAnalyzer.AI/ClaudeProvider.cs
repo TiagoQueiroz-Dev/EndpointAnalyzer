@@ -36,6 +36,20 @@ public class ClaudeProvider(ClaudeOptions options) : IAiProvider
 
     public async Task<EndpointAnalysisResult> AnalyzeAsync(EndpointAnalysisContext context, CancellationToken cancellationToken = default)
     {
+        var json = await CompleteAsync(PromptBuilder.SystemPrompt, AnalysisResultSchema.Create(), PromptBuilder.BuildUserPrompt(context), cancellationToken);
+        return JsonSerializer.Deserialize<EndpointAnalysisResult>(json, JsonOptions)
+            ?? throw new AiProviderException("Resposta vazia da IA.");
+    }
+
+    public async Task<JsonElement> CompleteJsonAsync(AiJsonRequest request, CancellationToken cancellationToken = default)
+    {
+        var json = await CompleteAsync(request.SystemPrompt, new Dictionary<string, JsonElement>(request.Schema), request.UserPrompt, cancellationToken);
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.Clone();
+    }
+
+    private async Task<string> CompleteAsync(string system, Dictionary<string, JsonElement> schema, string user, CancellationToken cancellationToken)
+    {
         var response = await _client.Beta.Messages.Create(new MessageCreateParams
         {
             Model = options.Model,
@@ -43,13 +57,13 @@ public class ClaudeProvider(ClaudeOptions options) : IAiProvider
             // Se o modelo recusar por política, o servidor tenta o fallback padrão na mesma chamada.
             Betas = [FallbackBeta],
             Fallbacks = new Default(),
-            System = PromptBuilder.SystemPrompt,
+            System = system,
             OutputConfig = new BetaOutputConfig
             {
                 Effort = ParseEffort(options.Effort),
-                Format = new BetaJsonOutputFormat { Schema = AnalysisResultSchema.Create() },
+                Format = new BetaJsonOutputFormat { Schema = schema },
             },
-            Messages = [new() { Role = Role.User, Content = PromptBuilder.BuildUserPrompt(context) }],
+            Messages = [new() { Role = Role.User, Content = user }],
         }, cancellationToken);
 
         if (response.StopReason == "refusal")
@@ -57,12 +71,9 @@ public class ClaudeProvider(ClaudeOptions options) : IAiProvider
         if (response.StopReason == "max_tokens")
             throw new AiProviderException($"Resposta truncada: limite de {options.MaxTokens} tokens atingido. Aumente MaxTokens.");
 
-        var json = string.Concat(response.Content
+        return string.Concat(response.Content
             .Select(b => b.TryPickText(out var text) ? text.Text : null)
             .Where(t => t is not null));
-
-        return JsonSerializer.Deserialize<EndpointAnalysisResult>(json, JsonOptions)
-            ?? throw new AiProviderException("Resposta vazia da IA.");
     }
 
     private static Effort ParseEffort(string effort) => effort.ToLowerInvariant() switch

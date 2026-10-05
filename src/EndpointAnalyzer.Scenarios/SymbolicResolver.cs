@@ -216,6 +216,12 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
                 or "GetValueOrDefault" or "ToString" && invocation.ArgumentList.Arguments.Count == 0)
             return Term(receiver, scope, depth + 1);
 
+        // mapper.Map<AdicionarPedidoCommand>(viewModel): o AutoMapper copia as propriedades de mesmo nome do payload.
+        if (method.Name == "Map" && method.ContainingNamespace?.ToDisplayString().StartsWith("AutoMapper", StringComparison.Ordinal) == true
+            && invocation.ArgumentList.Arguments.Count == 1
+            && Term(invocation.ArgumentList.Arguments[0].Expression, scope, depth + 1) is VarTerm { Var: { Origin: VarOrigin.Input, Kind: VarKind.Object }, Measure: Measure.Value } source)
+            return source;
+
         // DateTime.Today.AddDays(n)
         if (receiver is not null && method.Name == "AddDays" && Term(receiver, scope, depth + 1) is NowTerm now
             && invocation.ArgumentList.Arguments.Count == 1 && Constant(invocation.ArgumentList.Arguments[0].Expression, scope.Model) is ConstTerm { Number: { } days })
@@ -312,7 +318,10 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
             return vars.Input(parameter) is { } v ? new VarTerm(v) : null;
 
         if (CallSiteOf(method) is not { } site) return null;
-        var argument = Argument(site.Syntax, method.Symbol, parameter);
+        // Handler de mensagem (mediator.Send(command) → Handle(command, ct)): só o parâmetro da mensagem vem da chamada.
+        var argument = MessageOf(method) is { } message
+            ? parameter.Ordinal == message.ParameterOrdinal ? message.Argument : null
+            : Argument(site.Syntax, method.Symbol, parameter);
         if (argument is not null) return Term(argument, ScopeOf(site.Caller), depth + 1);
         return parameter.HasExplicitDefaultValue ? ConstantValue(parameter.ExplicitDefaultValue, parameter.ExplicitDefaultValue?.ToString() ?? "null") : null;
     }
@@ -354,7 +363,7 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
     /// </summary>
     private Term? MemberOfThis(ISymbol symbol, Scope scope, int depth)
     {
-        if (scope.Method is { } method && method != graph.EntryPoint && CallSiteOf(method) is { } site
+        if (scope.Method is { } method && method != graph.EntryPoint && CallSiteOf(method) is { } site && MessageOf(method) is null
             && site.Syntax is InvocationExpressionSyntax { Expression: MemberAccessExpressionSyntax { Expression: var receiver } }
             && receiver is not (ThisExpressionSyntax or BaseExpressionSyntax)
             && Term(receiver, ScopeOf(site.Caller), depth + 1) is VarTerm { Measure: Measure.Value } owner && owner.Var.Kind == VarKind.Object)
@@ -706,6 +715,10 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
     /// <summary>Chamador e sintaxe da chamada que levou a este método no grafo.</summary>
     public (SyntaxNode Syntax, AnalyzedMethod Caller)? CallSiteOf(AnalyzedMethod method) =>
         method.Caller?.CallSites.FirstOrDefault(cs => cs.Node == method.Node) is { } site ? (site.Syntax, method.Caller) : null;
+
+    /// <summary>Mensagem recebida quando o método é o handler despachado pela chamada (mediator.Send(command)).</summary>
+    private static DispatchedMessage? MessageOf(AnalyzedMethod method) =>
+        method.Caller?.CallSites.FirstOrDefault(cs => cs.Node == method.Node)?.Message;
 
     private static ExpressionSyntax? Argument(SyntaxNode call, IMethodSymbol callee, IParameterSymbol parameter)
     {

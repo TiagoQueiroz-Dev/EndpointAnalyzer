@@ -47,7 +47,14 @@ public sealed class AnalyzedMethod
             : $"{method.ContainingType.Name}.{method.Name}";
 }
 
-public sealed record CallSite(SyntaxNode Syntax, CallNode Node, IReadOnlyList<string> Usage);
+/// <param name="Message">
+/// Chamada despachada para o handler de uma mensagem (mediator.Send(command) → CommandHandler.Handle):
+/// o argumento com a mensagem e o parâmetro do handler que a recebe.
+/// </param>
+public sealed record CallSite(SyntaxNode Syntax, CallNode Node, IReadOnlyList<string> Usage, DispatchedMessage? Message = null);
+
+/// <summary>Mensagem (comando, request, evento) enviada a um handler: argumento da chamada e parâmetro do handler (-1 se não há).</summary>
+public sealed record DispatchedMessage(ExpressionSyntax Argument, ITypeSymbol Type, int ParameterOrdinal);
 
 public sealed class CallGraph
 {
@@ -82,7 +89,8 @@ public class CallGraphBuilder(AnalyzerOptions options, IMethodResolver methodRes
 
         var host = loaded.Solution.Projects.FirstOrDefault(p => p.Name == endpoint.Project);
         var di = await DependencyInjectionMap.BuildAsync(loaded.Solution, host, cancellationToken);
-        var walker = new Walker(loaded, options, new CallResolver(loaded.Solution, di), cancellationToken);
+        var handlers = await MessageHandlerMap.BuildAsync(loaded.Solution, host, cancellationToken);
+        var walker = new Walker(loaded, options, new CallResolver(loaded.Solution, di), handlers, cancellationToken);
 
         var context = new AnalysisExecutionContext
         {
@@ -101,10 +109,16 @@ public class CallGraphBuilder(AnalyzerOptions options, IMethodResolver methodRes
         };
     }
 
-    private sealed class Walker(LoadedSolution loaded, AnalyzerOptions options, CallResolver resolver, CancellationToken ct)
+    private sealed class Walker(LoadedSolution loaded, AnalyzerOptions options, CallResolver resolver, MessageHandlerMap handlers, CancellationToken ct)
     {
+        private static readonly string[] DispatcherTypeSuffixes = ["Bus", "Mediator", "MediatorHandler", "Dispatcher", "Sender", "Publisher"];
+
         // VisitedMethods: evita loops A → B → C → A. A chave inclui o contexto (genéricos e this concreto).
         private readonly HashSet<string> _visited = [];
+
+        // Mensagens já despachadas para o handler no caminho atual: o barramento (InMemoryBus.SendCommand → _mediator.Send)
+        // não despacha de novo, por dentro, a mesma mensagem.
+        private readonly HashSet<string> _dispatching = [];
         private int _nextId;
 
         public List<AnalyzedMethod> Methods { get; } = [];
@@ -182,8 +196,11 @@ public class CallGraphBuilder(AnalyzerOptions options, IMethodResolver methodRes
             };
             Methods.Add(analyzed);
 
-            foreach (var (syntax, called) in FindCalls(analyzed))
+            foreach (var (syntax, called, follow) in FindCalls(analyzed))
             {
+                var dispatch = Dispatch(syntax, called, analyzed);
+                if (!follow && dispatch is null) continue;
+
                 var condition = SyntaxConditions.GetEnclosingCondition(syntax, declaration);
                 var control = SyntaxConditions.GetControlPath(syntax, declaration);
                 var childPath = SyntaxConditions.Combine(pathCondition, condition);
@@ -191,16 +208,52 @@ public class CallGraphBuilder(AnalyzerOptions options, IMethodResolver methodRes
                 var (callStart, callEnd) = CallSiteLines(syntax);
                 var callFile = loaded.RelativePath(syntax.SyntaxTree.FilePath);
 
-                var callResolution = await resolver.ResolveAsync(syntax, called, analyzed, ct);
-                foreach (var target in callResolution.Targets)
+                void Add(CallNode child, DispatchedMessage? message = null)
                 {
-                    var childContext = ChildContext(analyzed, syntax, target);
-                    var child = await VisitAsync(target.Method, childContext, depth + 1, condition, childPath, analyzed, (target, callResolution));
                     child.Usage = usage.ToList();
                     child.Control = control;
                     (child.CallFile, child.CallLine, child.CallEndLine) = (callFile, callStart, callEnd);
                     node.Children.Add(child);
-                    analyzed.CallSites.Add(new CallSite(syntax, child, usage));
+                    analyzed.CallSites.Add(new CallSite(syntax, child, usage, message));
+                }
+
+                // Durante o despacho, o barramento com fonte (InMemoryBus.SendCommand → _mediator.Send) não despacha de novo a mensagem.
+                var messageKey = dispatch is { } pending ? MessageKey(pending.Message.Type) : null;
+                var dispatching = messageKey is not null && _dispatching.Add(messageKey);
+                try
+                {
+                    if (follow)
+                    {
+                        var callResolution = await resolver.ResolveAsync(syntax, called, analyzed, ct);
+                        foreach (var target in callResolution.Targets)
+                        {
+                            var childContext = ChildContext(analyzed, syntax, target);
+                            Add(await VisitAsync(target.Method, childContext, depth + 1, condition, childPath, analyzed, (target, callResolution)));
+                        }
+                    }
+
+                    // mediator.Send(command) / bus.SendCommand(command): segue para o Handle do handler da mensagem,
+                    // como filho do chamador (e não do barramento, que é infraestrutura e seria colapsado).
+                    if (dispatch is { } d)
+                    {
+                        var receiver = (syntax as InvocationExpressionSyntax)?.Expression is MemberAccessExpressionSyntax access
+                            ? access.Expression.ToString()
+                            : null;
+                        foreach (var handler in d.Handlers)
+                        {
+                            var target = new CallTarget(handler.Method, handler.Type,
+                                d.Message.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat), ResolutionStrategies.MessageHandler);
+                            var message = d.Message with { ParameterOrdinal = MessageParameter(handler.Method, d.Message.Type) };
+                            var childContext = HandlerContext(analyzed, handler, message);
+                            var child = await VisitAsync(handler.Method, childContext, depth + 1, condition, childPath, analyzed,
+                                (target, new CallResolution([target], receiver)));
+                            Add(child, message);
+                        }
+                    }
+                }
+                finally
+                {
+                    if (dispatching) _dispatching.Remove(messageKey!);
                 }
             }
 
@@ -265,7 +318,83 @@ public class CallGraphBuilder(AnalyzerOptions options, IMethodResolver methodRes
             };
         }
 
-        private IEnumerable<(SyntaxNode Syntax, IMethodSymbol Method)> FindCalls(AnalyzedMethod method)
+        /// <summary>
+        /// Chamada que envia uma mensagem para um handler da solução: mediator.Send(command), bus.SendCommand(command),
+        /// publisher.Publish(evento)... O argumento é um tipo com handler (IRequestHandler&lt;T&gt;, INotificationHandler&lt;T&gt;...).
+        /// Erros de domínio (DomainNotification) e eventos técnicos (histórico, log) não expandem os handlers.
+        /// </summary>
+        private (DispatchedMessage Message, IReadOnlyList<MessageHandler> Handlers)? Dispatch(SyntaxNode syntax, IMethodSymbol called, AnalyzedMethod caller)
+        {
+            if (handlers.Count == 0 || syntax is not InvocationExpressionSyntax { ArgumentList.Arguments.Count: > 0 } invocation) return null;
+
+            var dispatcher = RelevanceOptions.StartsWithAny(called.Name, options.Relevance.PublishMethodPrefixes)
+                || RelevanceOptions.EndsWithAny(called.ContainingType.Name, DispatcherTypeSuffixes)
+                || (invocation.Expression is MemberAccessExpressionSyntax access
+                    && caller.ResolveType(caller.Model.GetTypeInfo(access.Expression, ct).Type) is { } receiverType
+                    && RelevanceOptions.EndsWithAny(receiverType.Name, DispatcherTypeSuffixes));
+            if (!dispatcher) return null;
+
+            foreach (var argument in invocation.ArgumentList.Arguments)
+            {
+                var type = caller.Context.KnownTypeOf(argument.Expression, caller.Model, caller.Declaration)?.Type;
+                if (type is null || type.SpecialType != SpecialType.None) continue;
+
+                var found = handlers.HandlersOf(type);
+                if (found.Count == 0) continue;
+                if (_dispatching.Contains(MessageKey(type))) return null;
+
+                var followed = found.Where(h => IsCommand(h, type) || !IsDomainErrorOrInfraEvent(type)).ToList();
+                return followed.Count == 0 ? null : (new DispatchedMessage(argument.Expression, type, -1), followed);
+            }
+
+            return null;
+        }
+
+        /// <summary>Comandos/requests sempre têm o handler seguido, mesmo com "Erro" ou "Log" no nome.</summary>
+        private static bool IsCommand(MessageHandler handler, ITypeSymbol message) =>
+            RelevanceOptions.ContainsAny(handler.Interface.Name, ["Request", "Command", "Query", "Consumer"])
+            || RelevanceOptions.EndsWithAny(message.Name, ["Command", "Comando", "Request", "Query"]);
+
+        private bool IsDomainErrorOrInfraEvent(ITypeSymbol message)
+        {
+            for (var t = message; t is not null; t = t.BaseType)
+                if (RelevanceOptions.ContainsAny(t.Name, options.Relevance.DomainErrorEventContains)
+                    || RelevanceOptions.ContainsAny(t.Name, options.Relevance.InfraEventContains))
+                    return true;
+            return false;
+        }
+
+        private static string MessageKey(ITypeSymbol type) => type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+
+        /// <summary>Parâmetro do Handle que recebe a mensagem: Handle(AdicionarPedidoCommand request, CancellationToken ct) → 0.</summary>
+        private static int MessageParameter(IMethodSymbol handle, ITypeSymbol message)
+        {
+            var key = MessageKey(message);
+            return handle.Parameters.FirstOrDefault(p => MessageKey(p.Type) == key)?.Ordinal ?? -1;
+        }
+
+        /// <summary>Contexto do Handle: this = handler e o tipo conhecido da mensagem no parâmetro que a recebe.</summary>
+        private static AnalysisExecutionContext HandlerContext(AnalyzedMethod caller, MessageHandler handler, DispatchedMessage message)
+        {
+            var arguments = new Dictionary<string, KnownType>();
+            if (message.ParameterOrdinal >= 0
+                && caller.Context.KnownTypeOf(message.Argument, caller.Model, caller.Declaration) is { } type)
+                arguments[AnalysisExecutionContext.ParameterKey(handler.Method.Parameters[message.ParameterOrdinal].OriginalDefinition)] = type;
+
+            return new AnalysisExecutionContext
+            {
+                Method = handler.Method,
+                ThisType = handler.Type,
+                Generics = GenericTypeMap.For(handler.Method, handler.Type),
+                Arguments = arguments,
+            };
+        }
+
+        /// <summary>
+        /// Chamadas do método. Follow = false para as que não são expandidas (bibliotecas sem fonte, como IMediator.Send),
+        /// mas que ainda podem despachar uma mensagem para um handler da solução.
+        /// </summary>
+        private IEnumerable<(SyntaxNode Syntax, IMethodSymbol Method, bool Follow)> FindCalls(AnalyzedMethod method)
         {
             foreach (var syntax in method.Declaration.DescendantNodes())
             {
@@ -284,13 +413,12 @@ public class CallGraphBuilder(AnalyzerOptions options, IMethodResolver methodRes
                 if (called.MethodKind is MethodKind.LocalFunction or MethodKind.AnonymousFunction) continue;
                 if (called.IsImplicitlyDeclared) continue;
                 if (called.MethodKind == MethodKind.Constructor && IsException(called.ContainingType)) continue;
-                if (options.IsIgnored(called)) continue;
 
                 // Sem código-fonte: só segue se for interface/abstrato do projeto (pode ter implementação).
-                if (!called.HasSource() && called.ContainingType.TypeKind != TypeKind.Interface) continue;
-                if (!called.HasSource() && !called.ContainingType.HasSource()) continue;
+                var follow = !options.IsIgnored(called)
+                    && (called.HasSource() || (called.ContainingType.TypeKind == TypeKind.Interface && called.ContainingType.HasSource()));
 
-                yield return (syntax, called);
+                yield return (syntax, called, follow);
             }
         }
 

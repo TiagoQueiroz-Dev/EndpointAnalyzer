@@ -102,7 +102,8 @@ public class EffectSinkDetector(RelevanceOptions options)
             {
                 EventKinds.BusinessEvent => EffectClasses.Secondary,
                 _ => EffectClasses.Infrastructure,
-            }, eventType.Name, kind == EventKinds.DomainError ? "notifica erro de domínio" : $"publica {eventType.Name}", invocation);
+            }, eventType.Name, kind == EventKinds.DomainError ? "notifica erro de domínio"
+                : sink == SinkKinds.Send ? $"envia {eventType.Name}" : $"publica {eventType.Name}", invocation);
             effect.EventKind = kind;
             return effect;
         }

@@ -4,6 +4,7 @@ using SampleApi.Cadastro;
 using SampleApi.Data;
 using SampleApi.Dtos;
 using SampleApi.Exceptions;
+using SampleApi.Pedidos;
 using SampleApi.Repositories;
 using SampleApi.Services;
 using SampleApi.Validators;
@@ -31,6 +32,12 @@ builder.Services.AddScoped<IMotivoService, MotivoService>();
 builder.Services.AddScoped<ICadastroVeiculoService, CadastroVeiculoService>();
 builder.Services.AddScoped<ICadastroVeiculoAppService, CadastroVeiculoAppService>();
 builder.Services.AddScoped<IMediatorHandler, InMemoryBus>();
+
+// Pedidos (CQRS com MediatR)
+builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssemblyContaining<Program>());
+builder.Services.AddAutoMapper(typeof(Program));
+builder.Services.AddScoped<IPedidoRepository, PedidoRepository>();
+builder.Services.AddScoped<IPedidoBus, PedidoBus>();
 
 var app = builder.Build();
 

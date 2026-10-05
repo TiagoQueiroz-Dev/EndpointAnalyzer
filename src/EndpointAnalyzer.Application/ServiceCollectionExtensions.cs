@@ -4,6 +4,7 @@ using EndpointAnalyzer.ChangeDetection;
 using EndpointAnalyzer.ChangeDetection.Relevance;
 using EndpointAnalyzer.Context;
 using EndpointAnalyzer.Core.Interfaces;
+using EndpointAnalyzer.Runtime;
 using EndpointAnalyzer.Scanner;
 using EndpointAnalyzer.Scenarios;
 using Microsoft.Extensions.DependencyInjection;
@@ -21,10 +22,14 @@ public static class ServiceCollectionExtensions
         this IServiceCollection services,
         Action<AnalyzerOptions>? configureAnalyzer = null,
         Action<ClaudeOptions>? configureClaude = null,
-        Action<ClaudeCodeOptions>? configureClaudeCode = null)
+        Action<ClaudeCodeOptions>? configureClaudeCode = null,
+        Action<RuntimeOptions>? configureRuntime = null)
     {
         var analyzerOptions = new AnalyzerOptions();
         configureAnalyzer?.Invoke(analyzerOptions);
+
+        var runtimeOptions = new RuntimeOptions();
+        configureRuntime?.Invoke(runtimeOptions);
 
         var claudeOptions = new ClaudeOptions();
         configureClaude?.Invoke(claudeOptions);
@@ -46,6 +51,12 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IAnalysisContextBuilder, AnalysisContextBuilder>();
         services.AddSingleton<IScenarioGenerator, ScenarioGenerator>();
         services.AddSingleton(new AnalysisCache(AnalysisCache.DefaultDirectory));
+
+        // Validação dos cenários com a API em execução (só na análise com IA).
+        services.AddSingleton(runtimeOptions);
+        services.AddSingleton<IAppRunner, AppRunner>();
+        services.AddSingleton<RuntimeValidationService>();
+        services.AddSingleton<ApiTokenChecker>();
 
         // Plano mensal: Claude Code da máquina.
         services.AddSingleton(claudeCodeOptions);

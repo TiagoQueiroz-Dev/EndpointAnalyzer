@@ -9,6 +9,12 @@ namespace EndpointAnalyzer.Scenarios;
 public interface IScenarioGenerator
 {
     Task<ScenarioMatrix> GenerateAsync(CallGraph graph, EndpointAnalysisContext context, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Mesma matriz de <see cref="GenerateAsync"/>, mantendo as restrições de cada cenário para a validação em runtime
+    /// materializar o payload com dados reais (solver + simulação do fluxo).
+    /// </summary>
+    Task<ScenarioModel> GenerateModelAsync(CallGraph graph, EndpointAnalysisContext context, CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -22,11 +28,14 @@ public interface IScenarioGenerator
 /// Cada cenário é resolvido pelo solver (o Z3 só nas restrições complexas) e o resultado esperado vem da simulação
 /// do fluxo com os valores encontrados: a primeira regra que dispara, ou o sucesso com os efeitos que acontecem.
 /// </summary>
-public class ScenarioGenerator : IScenarioGenerator
+public partial class ScenarioGenerator : IScenarioGenerator
 {
     public const int MaxScenarios = 80;
 
-    public async Task<ScenarioMatrix> GenerateAsync(CallGraph graph, EndpointAnalysisContext context, CancellationToken cancellationToken = default)
+    public async Task<ScenarioMatrix> GenerateAsync(CallGraph graph, EndpointAnalysisContext context, CancellationToken cancellationToken = default) =>
+        (await GenerateModelAsync(graph, context, cancellationToken)).Matrix;
+
+    public async Task<ScenarioModel> GenerateModelAsync(CallGraph graph, EndpointAnalysisContext context, CancellationToken cancellationToken = default)
     {
         try
         {
@@ -37,11 +46,12 @@ public class ScenarioGenerator : IScenarioGenerator
             var solution = await ExceptionStatusMap.BuildAsync(graph.Solution, cancellationToken);
             var validations = await ValidationRuleExtractor.ExtractAsync(graph, input, resolver, cancellationToken);
             var flow = FlowModel.Build(graph, context, resolver, solution);
-            return new Run(context, input, vars, resolver, validations, flow, solution).Execute();
+            var run = new Run(context, input, vars, resolver, validations, flow, solution);
+            return new ScenarioModel(run.Execute(), run);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return new ScenarioMatrix { Notes = [$"Não foi possível gerar os cenários: {ex.Message}"] };
+            return new ScenarioModel(new ScenarioMatrix { Notes = [$"Não foi possível gerar os cenários: {ex.Message}"] }, null);
         }
     }
 
@@ -60,7 +70,7 @@ public class ScenarioGenerator : IScenarioGenerator
         bool ValidationFailed,
         List<string> Notes);
 
-    private sealed class Run
+    internal sealed partial class Run
     {
         private readonly EndpointAnalysisContext _context;
         private readonly InputModel _input;
@@ -76,6 +86,11 @@ public class ScenarioGenerator : IScenarioGenerator
         private readonly List<EarlyExit> _exits;
         private readonly Dictionary<string, Assignment?> _solved = [];
         private readonly List<string> _notes = [];
+
+        /// <summary>Restrições, valores e simulação de cada cenário gerado (por id), para a materialização em runtime.</summary>
+        private readonly Dictionary<string, Entry> _entries = [];
+
+        private sealed record Entry(Scenario Scenario, List<Pred> Constraints, bool HidePreconditions, Assignment Assignment, Outcome Outcome, InputField? MismatchField);
 
         public Run(EndpointAnalysisContext context, InputModel input, VarTable vars, SymbolicResolver resolver,
             List<ValidationRule> validations, FlowModel flow, ExceptionStatusMap solution)
@@ -114,6 +129,7 @@ public class ScenarioGenerator : IScenarioGenerator
 
             var conditions = DecisionConditions(branches);
             var scenarios = new List<Scenario>();
+            var entries = new Dictionary<Scenario, Entry>(ReferenceEqualityComparer.Instance);
             var seen = new HashSet<string>();
             var effectSignatures = new HashSet<string>();
             foreach (var candidate in candidates)
@@ -133,14 +149,21 @@ public class ScenarioGenerator : IScenarioGenerator
                 if (!seen.Add(Signature(scenario))) continue;
                 if (candidate.Kind == ScenarioKinds.Success) effectSignatures.Add(effects);
                 scenarios.Add(scenario);
+                entries[scenario] = new Entry(scenario, candidate.Constraints, candidate.HidePreconditions, assignment, outcome, null);
             }
 
-            if (scenarios.Count < MaxScenarios && TypeMismatch(scenarios.FirstOrDefault(s => s.Kind == ScenarioKinds.Success), conditions) is { } mismatch)
+            var happyScenario = scenarios.FirstOrDefault(s => s.Kind == ScenarioKinds.Success);
+            if (scenarios.Count < MaxScenarios && TypeMismatch(happyScenario, conditions, out var mismatchField) is { } mismatch)
+            {
                 scenarios.Add(mismatch);
+                var happyEntry = entries[happyScenario!];
+                entries[mismatch] = happyEntry with { Scenario = mismatch, HidePreconditions = true, MismatchField = mismatchField };
+            }
 
             var order = new[] { ScenarioKinds.Success, ScenarioKinds.Validation, ScenarioKinds.Rule, ScenarioKinds.Boundary };
             scenarios = scenarios.OrderBy(s => Array.IndexOf(order, s.Kind)).ToList();
             for (var i = 0; i < scenarios.Count; i++) scenarios[i].Id = $"CEN-{i + 1:00}";
+            foreach (var scenario in scenarios) _entries[scenario.Id] = entries[scenario];
 
             if (_solver.Z3Error is { } z3) _notes.Add($"Z3 indisponível ({z3}): restrições com mais de uma variável ficaram sem cenário.");
             if (!_solution.FluentAutoValidation && _validations.Any(v => v.Origin == "FluentValidation"))
@@ -265,8 +288,9 @@ public class ScenarioGenerator : IScenarioGenerator
         /// Partição inválida de tipo: texto num campo numérico/data/bool/enum do body. O model binding falha e o
         /// ModelState fica inválido (400 automático com [ApiController], ou o if (!ModelState.IsValid) do controller).
         /// </summary>
-        private Scenario? TypeMismatch(Scenario? happy, List<(DecisionCondition Condition, Func<Assignment, Outcome, bool?> Value)> conditions)
+        private Scenario? TypeMismatch(Scenario? happy, List<(DecisionCondition Condition, Func<Assignment, Outcome, bool?> Value)> conditions, out InputField? mismatchField)
         {
+            mismatchField = null;
             if (happy?.Request.Body is not System.Text.Json.Nodes.JsonObject body) return null;
             var modelState = _flow.Rules.FirstOrDefault(r => r.IsModelStateCheck);
             if (!_flow.ApiController && modelState is null) return null;
@@ -275,6 +299,7 @@ public class ScenarioGenerator : IScenarioGenerator
                 .FirstOrDefault(f => f.Kind is VarKind.Int or VarKind.Decimal or VarKind.Date or VarKind.Bool or VarKind.Guid || (f.Kind == VarKind.Enum && !_solution.EnumsAsStrings));
             if (field is null || !body.ContainsKey(field.Name)) return null;
 
+            mismatchField = field;
             var mutated = (System.Text.Json.Nodes.JsonObject)body.DeepClone();
             mutated[field.Name] = "abc";
             var (status, source) = ValidationStatus();

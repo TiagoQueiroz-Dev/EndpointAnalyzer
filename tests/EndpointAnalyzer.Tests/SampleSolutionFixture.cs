@@ -20,6 +20,8 @@ public sealed class SampleSolutionFixture : IAsyncLifetime
 
     public SourceViewer Sources { get; private set; } = null!;
 
+    public SolutionCache Solutions { get; private set; } = null!;
+
     public IReadOnlyList<EndpointInfo> Endpoints { get; private set; } = [];
 
     private readonly Dictionary<string, EndpointAnalysisContext> _contexts = [];
@@ -27,13 +29,15 @@ public sealed class SampleSolutionFixture : IAsyncLifetime
     public async Task InitializeAsync()
     {
         var provider = new ServiceCollection()
-            .AddEndpointAnalyzer()
+            // A validação em runtime (sobe a SampleApi) tem testes próprios: aqui fica desligada.
+            .AddEndpointAnalyzer(configureRuntime: o => o.Enabled = false)
             .AddSingleton(new AnalysisCache(CacheDirectory))
             .AddSingleton<IAiProviderSelector>(new SingleAiProviderSelector(Ai))
             .BuildServiceProvider();
 
         Service = provider.GetRequiredService<EndpointAnalysisService>();
         Sources = provider.GetRequiredService<SourceViewer>();
+        Solutions = provider.GetRequiredService<SolutionCache>();
         Endpoints = await Service.ListEndpointsAsync(SolutionPath);
     }
 
