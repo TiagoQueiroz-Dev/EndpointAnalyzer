@@ -10,6 +10,7 @@
     --hover: #eef0f4; --active: #e4e9f5; --accent: #2f5fd0; --accent-text: #ffffff; --code: #f0f2f5;
     --post: #1f8a4c; --put: #b26a00; --patch: #7a4cc2; --delete: #c0392b; --get: #2f6fd0; --danger: #c0392b; --claude: #c4633f;
     --hl: #fbe9a6; --hl-border: #d9a800;
+    --scroll-thumb: #c5cbd6; --scroll-thumb-hover: #2f5fd0;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -17,9 +18,22 @@
       --hover: #1b1f25; --active: #222832; --accent: #6b93f0; --accent-text: #0e1116; --code: #242a33;
       --post: #4cc584; --put: #f0a940; --patch: #b593f0; --delete: #ef7a6d; --get: #6ba6f0; --danger: #ef7a6d; --claude: #c4633f;
       --hl: rgba(240, 169, 64, .2); --hl-border: #f0a940;
+      --scroll-thumb: #3a414c; --scroll-thumb-hover: #6b93f0;
     }
   }
   * { box-sizing: border-box; }
+
+  /* Scroll (página, barra lateral, código, tabelas, fluxograma...): fino, trilho transparente, destaque no accent. */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 10px; border: 2px solid transparent; background-clip: padding-box; min-height: 32px; }
+  ::-webkit-scrollbar-thumb:hover { background-color: var(--scroll-thumb-hover); }
+  ::-webkit-scrollbar-thumb:active { background-color: var(--accent); }
+  ::-webkit-scrollbar-button { display: none; }
+  /* Firefox não tem os pseudo-elementos; no Chrome, scrollbar-color desligaria o estilo acima. */
+  @supports not selector(::-webkit-scrollbar) {
+    * { scrollbar-width: thin; scrollbar-color: var(--scroll-thumb) transparent; }
+  }
   /* Sem height fixo no body: o sticky da barra lateral precisa de um contêiner que cresça com o conteúdo. */
   body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
          display: grid; grid-template-columns: 300px minmax(0, 1fr); align-items: start; }
@@ -108,6 +122,11 @@
   button:disabled { opacity: .5; cursor: default; }
   label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
   .row { display: flex; gap: 10px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+  .row > .spacer { flex: 1; }
+  .report-actions { display: flex; gap: 6px; }
+  .report-actions[hidden] { display: none; }
+  .report-actions button { display: flex; align-items: center; gap: 6px; padding: 5px 10px; font-size: 12.5px; }
+  .report-actions button svg { width: 14px; height: 14px; flex: none; }
   .muted { color: var(--muted); font-size: 13px; }
   .error { color: var(--danger); }
   .breadcrumb { font-size: 13px; color: var(--muted); margin-bottom: 4px; }
@@ -144,19 +163,43 @@
   .chip { padding: 4px 10px; border-radius: 14px; border: 1px solid var(--border); background: var(--panel); color: var(--muted); font-size: 12.5px; font-weight: 500; }
   .chip.on { border-color: var(--accent); color: var(--text); background: var(--active); }
   .chip .n { margin-left: 4px; opacity: .7; }
+  .jump-bar { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+  .jump-bar .chip { cursor: pointer; }
+  .complete-sec { scroll-margin-top: 12px; border-top: 1px solid var(--border); margin-top: 20px; }
+  .jump-bar + .complete-sec { border-top: 0; margin-top: 8px; }
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; }
+  .stat { display: flex; flex-direction: column; gap: 2px; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+  .stat .v { font-size: 18px; font-weight: 600; } .stat .l { font-size: 12px; color: var(--muted); }
+  pre.log { white-space: pre-wrap; word-break: break-word; max-height: 420px; overflow: auto; font-size: 11.5px; }
   .scen-toolbar button.secondary { display: flex; align-items: center; gap: 6px; padding: 5px 10px; font-size: 12.5px; }
   .scen-toolbar button svg, .payload-actions button svg { width: 13px; height: 13px; }
-  table.scen td { padding: 8px; }
-  table.scen td.id { white-space: nowrap; }
-  table.scen .title { font-weight: 600; }
-  table.scen .desc { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+  /* Grid: largura mínima por coluna (colgroup) e scroll horizontal quando não cabe, sem esmagar as colunas. */
+  .scenario-grid-container { width: 100%; overflow-x: auto; border: 1px solid var(--border); border-radius: 6px; }
+  .scenario-grid { min-width: 1400px; width: 100%; table-layout: fixed; }
+  .scenario-grid th { background: var(--code); font-size: 12px; font-weight: 600; color: var(--muted);
+                      text-transform: uppercase; letter-spacing: .03em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 8px 10px; }
+  .scenario-grid td { padding: 10px; overflow-wrap: anywhere; }
+  .scenario-grid tbody tr:last-child td { border-bottom: 0; }
+  .scenario-grid .title { font-weight: 600; }
+  .scenario-grid .desc { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+  .scenario-grid .req { font: 12px ui-monospace, Consolas, monospace; }
+  .scenario-grid .req .method { padding: 0; margin-right: 2px; }
+  .clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .cell-btn { display: inline-flex; align-items: center; gap: 4px; margin-top: 6px; padding: 2px 8px; font-size: 11.5px; font-weight: 500; }
+  .cell-btn svg { width: 13px; height: 13px; flex: none; }
+  .pre-more > summary { cursor: pointer; font-size: 13px; color: var(--accent); list-style-position: inside; }
+  .pre-more[open] > summary { margin-bottom: 4px; }
+  .scen-dialog { padding: 0; width: min(760px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow: auto; }
+  .scen-dialog #scenDetail { padding: 16px 20px 20px; }
+  .scen-dialog-head { display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; }
+  .scen-dialog-head h2 { font-size: 16px; margin: 0; }
+  .scen-dialog-close { padding: 0 9px; font-size: 18px; line-height: 1.5; flex: none; }
+  .scen-dialog h4 { margin: 16px 0 6px; }
+  .scen-dialog .req { font: 12.5px ui-monospace, Consolas, monospace; overflow-wrap: anywhere; }
+  .scen-dialog pre { max-height: 45vh; overflow: auto; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
   .kind { display: inline-block; font: 600 10.5px system-ui, sans-serif; padding: 1px 7px; border-radius: 8px; border: 1px solid var(--border); color: var(--muted); margin-top: 4px; }
   .kind.sucesso { color: var(--post); border-color: var(--post); } .kind.validacao { color: var(--patch); border-color: var(--patch); }
   .kind.regra { color: var(--delete); border-color: var(--delete); } .kind.limite { color: var(--get); border-color: var(--get); }
-  .tech { display: block; font-size: 11px; color: var(--muted); margin-top: 3px; }
-  .payload { min-width: 240px; max-width: 420px; }
-  .payload .url { font: 12px ui-monospace, Consolas, monospace; overflow-wrap: anywhere; }
-  .payload pre { max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-all; margin: 4px 0 0; font-size: 12px; }
   .payload-actions { display: flex; gap: 4px; margin-top: 4px; }
   .payload-actions button { display: flex; align-items: center; gap: 4px; padding: 2px 8px; font-size: 11.5px; font-weight: 500; }
   .pre-list { margin: 0; padding-left: 16px; font-size: 13px; }
@@ -167,7 +210,7 @@
   .status.s2 { background: var(--post); } .status.s4 { background: var(--put); } .status.s5 { background: var(--delete); } .status.s0 { background: var(--muted); }
   .status-src { font-size: 11.5px; color: var(--muted); margin-left: 4px; }
   .expected .msg { font-size: 13px; margin-top: 3px; }
-  .expected .effects { margin: 4px 0 0; padding-left: 16px; font-size: 12.5px; color: var(--muted); }
+  .expected .effects { margin-top: 4px; font-size: 12.5px; color: var(--muted); }
   .expected .persist { font-size: 12px; margin-top: 4px; }
   .expected .persist.no { color: var(--muted); } .expected .persist.partial { color: var(--delete); }
   .scen-notes { font-size: 11.5px; color: var(--put); margin-top: 4px; }
@@ -187,9 +230,6 @@
   .vstatus { display: inline-block; font: 700 10.5px system-ui, sans-serif; padding: 1px 7px; border-radius: 8px; margin-top: 4px; border: 1px solid currentColor; letter-spacing: .02em; text-transform: uppercase; }
   .vstatus.confirmado { color: var(--post); } .vstatus.descoberto { color: var(--patch); } .vstatus.nao-materializado { color: var(--put); }
   .vstatus.inconclusivo { color: var(--muted); } .vstatus.inalcancavel { color: var(--delete); }
-  .observed { margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border); }
-  .observed .lbl, .expected .lbl { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; margin-right: 4px; }
-  .observed pre { max-height: 160px; overflow: auto; white-space: pre-wrap; word-break: break-all; margin: 4px 0 0; font-size: 11.5px; }
   .ev-list { margin: 0; padding-left: 16px; font-size: 12.5px; }
   .ev-list li { margin-bottom: 3px; } .ev-list li.ok::marker { content: "✓ "; color: var(--post); } .ev-list li.warn::marker { content: "⚠ "; }
   .ev-list li.warn { color: var(--put); font-size: 12px; }
@@ -342,6 +382,10 @@
 
 <dialog id="codeDialog" class="code-dialog" aria-label="Código da etapa do fluxograma">
   <div id="codePopup" class="code-panel"></div>
+</dialog>
+
+<dialog id="scenDialog" class="scen-dialog" aria-labelledby="scenDialogTitle">
+  <div id="scenDetail"></div>
 </dialog>
 
 <script>
@@ -632,6 +676,11 @@ function renderEndpointPanel() {
     <div class="row">
       <button id="analyze">ANALISAR</button>
       <span id="analyzeStatus" class="muted"></span>
+      <span class="spacer"></span>
+      <span id="reportActions" class="report-actions" hidden>
+        <button class="secondary" type="button" id="copyMd" title="Copiar o relatório em Markdown">${copyIcon}<span>Copiar relatório</span></button>
+        <button class="secondary" type="button" id="downloadMd" title="Baixar o relatório em Markdown">${downloadIcon}<span>Baixar .md</span></button>
+      </span>
     </div>`;
   $("analyze").addEventListener("click", analyze);
   $("validateRuntime").checked = store.get("ea.validateRuntime", true);
@@ -721,15 +770,14 @@ async function analyze() {
 function render(tab) {
   const { report, markdown } = lastResponse;
   const ctx = report.context;
-  const tabs = [["summary", "Resumo"], ["business", "Negócio"], ["technical", "Técnico"], ["complete", "Completo"], ["md", "Markdown"],
+  const tabs = [["summary", "Resumo"], ["business", "Negócio"], ["complete", "Completo"],
     ["scenarios", report.runtime?.matrix
       ? `Cenários <span class="badge" title="confirmados em runtime / total">${report.runtime.matrix.counts.confirmado ?? 0}/${report.runtime.matrix.scenarios.length}</span>`
       : `Cenários${ctx.scenarios?.scenarios?.length ? ` <span class="badge">${ctx.scenarios.scenarios.length}</span>` : ""}`]];
   let body = "";
   if (tab === "summary") body = report.ai ? renderDoc(report.ai) : renderSummary(ctx);
-  if (tab === "business") body = renderBusiness(ctx);
-  if (tab === "technical" || tab === "complete") body = renderTechnical(ctx, tab);
-  if (tab === "md") body = `<div class="row"><button class="secondary" id="copyMd">Copiar</button><button class="secondary" id="downloadMd">Baixar .md</button></div><pre>${esc(markdown)}</pre>`;
+  if (tab === "business") body = renderBusiness();
+  if (tab === "complete") body = renderComplete(ctx, report.runtime);
   if (tab === "scenarios") body = renderScenarios(ctx, report.ai, report.runtime);
 
   $("result").innerHTML = `<section>
@@ -740,18 +788,26 @@ function render(tab) {
   // Mantém o código aberto ao trocar de aba quando o item selecionado também aparece na nova aba.
   if (picked && ![...document.querySelectorAll("[data-pick]")].some(el => el.dataset.pick === picked)) picked = null;
   showSource();
-  if (tab === "technical") showFlow(ctx.callTree, "technical");
   if (tab === "business") showFlow(ctx.businessGraph ?? ctx.callTree, "business");
   if (tab === "scenarios") wireScenarios(ctx, report.ai, report.runtime);
-  if (tab === "md") {
-    $("copyMd").onclick = () => navigator.clipboard.writeText(markdown);
-    $("downloadMd").onclick = () => {
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(new Blob([markdown], { type: "text/markdown" }));
-      a.download = `${ctx.endpoint.httpMethod}_${ctx.endpoint.route.replace(/[^\w]+/g, "_")}.md`;
-      a.click();
-    };
-  }
+  // Atalhos da aba Completo (sem href: o hash da URL guarda o endpoint selecionado).
+  document.querySelectorAll("[data-jump]").forEach(b => b.addEventListener("click", () =>
+    $(b.dataset.jump)?.scrollIntoView({ behavior: "smooth", block: "start" })));
+  wireReportActions(ctx, markdown);
+}
+
+/** Botões do card do endpoint: copiar / baixar o relatório em Markdown. */
+function wireReportActions(ctx, markdown) {
+  if (!$("reportActions")) return;
+  $("reportActions").hidden = false;
+  copyButton("copyMd", markdown);
+  $("downloadMd").onclick = () => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([markdown], { type: "text/markdown" }));
+    a.download = `${ctx.endpoint.httpMethod}_${ctx.endpoint.route.replace(/[^\w]+/g, "_")}.md`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
 }
 
 function renderRules(rules, list) {
@@ -834,13 +890,6 @@ function statsHtml(ctx) {
     · regras: ${s.businessConditions} de ${s.technicalConditions}</p>`;
 }
 
-function registryHtml(ctx) {
-  const entries = Object.entries(ctx.conditionRegistry ?? {});
-  if (!entries.length) return "";
-  return `<h3>Condições</h3><div class="table-wrap"><table><tr><th>Id</th><th>Condição</th></tr>
-    ${entries.map(([id, text]) => `<tr ${pickAttrs(`cond:${id}`)}><td><code>${esc(id)}</code></td><td><code>${esc(text)}</code></td></tr>`).join("")}</table></div>`;
-}
-
 function effectsHtml(ctx, registry) {
   const effects = (ctx.effects ?? []).filter(e => e.kind !== "THROW" && e.kind !== "RETURN");
   if (!effects.length) return "";
@@ -849,14 +898,6 @@ function effectsHtml(ctx, registry) {
       <td>${conditionsOf(e.conditionIds, registry)}</td><td class="muted">${esc(e.source?.file ?? "")}:${e.source?.line ?? ""}</td></tr>`).join("")}</table></div>`;
 }
 
-function rulesHtml(ctx) {
-  return `<h3>Regras (${ctx.conditions.length})</h3>
-    <div class="table-wrap"><table><tr><th>Tipo</th><th>Expressão</th><th>Ação</th><th>Origem</th></tr>
-    ${ctx.conditions.map((c, i) => `<tr ${pickAttrs(`rule:${i}`)}><td>${esc(c.kind)}</td><td><code>${esc(c.expression)}</code></td>
-      <td>${esc(c.action)}${c.message ? `<div class="muted">"${esc(c.message)}"</div>` : ""}</td>
-      <td class="muted">${esc(c.sourceFile)}:${c.sourceLine}</td></tr>`).join("")}
-    </table></div>`;
-}
 
 function changesHtml(ctx, registry) {
   return `<h3>Alterações de entidades</h3>
@@ -879,24 +920,17 @@ function renderSummary(ctx) {
     ${changesHtml(ctx, registry)}`;
 }
 
-function renderBusiness(ctx) {
-  const registry = ctx.conditionRegistry ?? {};
-  return `${statsHtml(ctx)}
-    <h3>Grafo de negócio</h3>
-    ${flowHtml("Copiar o grafo de negócio completo como texto")}
-    ${registryHtml(ctx)}
-    ${rulesHtml(ctx)}
-    ${effectsHtml(ctx, registry)}
-    ${changesHtml(ctx, registry)}`;
+function renderBusiness() {
+  return flowHtml("Copiar o grafo de negócio completo como texto");
 }
 
 const copyIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`;
+const eyeIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>`;
 const downloadIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>`;
 
 // ---- Matriz de cenários (payload + pré-condições + resultado esperado) ----
 
 const scenarioKinds = { sucesso: "Sucesso", validacao: "Validação", regra: "Regra", limite: "Limite" };
-const techniqueLabels = { "decision-table": "tabela de decisão", "equivalence-partitioning": "partição de equivalência", "boundary-value": "valor-limite" };
 const statusSources = { "código": "do código", middleware: "tratamento global", validacao: "validação automática", inferido: "inferido", runtime: "observado em runtime" };
 const preKinds = { estado: "estado", contexto: "contexto", suposicao: "suposição" };
 let scenarioFilter = "all";
@@ -921,41 +955,147 @@ function curlOf(s) {
 
 function statusClass(status) { return !status ? "s0" : status < 300 ? "s2" : status < 500 ? "s4" : "s5"; }
 
-function expectedHtml(e) {
+// ---- Grid da matriz: o mesmo na análise estática e na validada em runtime (campos de runtime sem dado = —) ----
+
+const dash = `<span class="muted">—</span>`;
+let gridRows = new Map();   // id → linha exibida (o detalhe abre o payload, a resposta e a evidência)
+
+const labelsOf = (ai) => new Map((ai?.scenarios ?? []).map(l => [l.id, l]));
+
+/** Linha do grid. s = cenário estático (falta nos descobertos em runtime); v = cenário validado (só com runtime). */
+function gridRow(s, v, label) {
+  const base = v ?? s;
+  return {
+    id: base.id, kind: base.kind,
+    title: label?.title ?? (s ? scenarioTitle(s, null) : v.title),
+    desc: label?.description || (!v && s.focus?.detail && s.focus.detail !== s.title ? s.focus.detail : ""),
+    notes: s?.notes ?? [],
+    request: base.request ?? null,
+    pre: [
+      ...(v?.bindings ?? []).map(b => ({ kind: "real", label: b.origin === "fato" ? "fato" : "dado real", text: `${b.variable} = ${b.value}`, code: true, tip: b.source ?? "" })),
+      ...base.preconditions.map(p => ({ kind: p.kind, label: preKinds[p.kind] ?? p.kind, text: p.description, tip: p.expression ?? "" })),
+    ],
+    expected: base.expected,
+    runtime: !!v, observed: v?.observed ?? null, status: v?.status ?? null,
+    evidence: v?.evidence ?? [], reasons: v?.reasons ?? [],
+    pick: s ? `scen:${s.id}` : null,
+  };
+}
+
+function staticGridRows(list, ai) {
+  const labels = labelsOf(ai);
+  return list.map(s => gridRow(s, null, labels.get(s.id)));
+}
+
+function validatedGridRows(list, ai) {
+  const labels = labelsOf(ai), statics = lastResponse.report.context.scenarios?.scenarios ?? [];
+  return list.map(v => gridRow(statics.find(x => x.id === v.id) ?? null, v, labels.get(v.id)));
+}
+
+const requestLine = (req) => `<div class="req"><span class="method ${esc(req.method)}">${esc(req.method)}</span> <span class="url">${esc(req.url)}</span></div>`;
+
+function requestCell(r) {
+  if (!r.request) return dash;
+  return `${requestLine(r.request)}
+    <button class="secondary cell-btn" type="button" data-detail="${esc(r.id)}" title="Body, headers e cópia como JSON ou cURL">${eyeIcon}<span>Ver payload</span></button>`;
+}
+
+/** Até 2 itens aparecem direto; acima disso, resumo clicável ("5 condições"). */
+function preCell(items) {
+  if (!items.length) return dash;
+  const list = `<ul class="pre-list">${items.map(p => `<li title="${esc(p.tip)}"><span class="pk ${esc(p.kind)}">${esc(p.label)}</span>${p.code ? `<code>${esc(p.text)}</code>` : esc(p.text)}</li>`).join("")}</ul>`;
+  return items.length <= 2 ? list : `<details class="pre-more"><summary>${items.length} condições</summary>${list}</details>`;
+}
+
+function expectedCell(e) {
+  const effects = e.effects.map(f => `${f.description}${f.properties?.length ? `: ${f.properties.join(", ")}` : ""}${f.uncertain ? " (?)" : ""}`);
   // Descoberto em runtime: só o que foi observado (não há previsão de persistência).
   const persisted = e.statusSource === "runtime" ? "" : e.outcome === "erro"
-    ? (e.persisted ? `<div class="persist partial">alterações já persistidas antes do erro</div>` : `<div class="persist no">nada é gravado</div>`)
+    ? (e.persisted ? `<div class="persist partial">já persistiu antes do erro</div>` : `<div class="persist no">nada é gravado</div>`)
     : (e.persisted && !e.effects.some(f => f.kind === "SAVE_CHANGES") ? `<div class="persist">persiste no banco (SaveChanges)</div>` : "");
   return `<div class="expected">
-    <span class="status ${statusClass(e.httpStatus)}">${esc(e.httpStatus ?? "?")}</span>
-    <span class="status-src" title="origem do status">${esc(statusSources[e.statusSource] ?? e.statusSource)}</span>
-    ${e.messages.map(m => `<div class="msg">"${esc(m)}"</div>`).join("")}
-    ${e.exception ? `<div class="muted">${esc(e.exception)}</div>` : ""}
-    ${e.effects.length ? `<ul class="effects">${e.effects.map(f => `<li title="${esc(f.kind)}">${esc(f.description)}${f.properties?.length ? `: <code>${esc(f.properties.join(", "))}</code>` : ""}${f.uncertain ? " (?)" : ""}</li>`).join("")}</ul>` : ""}
+    <span class="status ${statusClass(e.httpStatus)}" title="origem do status: ${esc(statusSources[e.statusSource] ?? e.statusSource)}">${esc(e.httpStatus ?? "?")}</span>
+    ${e.messages.length ? `<div class="msg clamp" title="${esc(e.messages.join("\n"))}">"${esc(e.messages[0])}"${e.messages.length > 1 ? ` <span class="muted">+${e.messages.length - 1}</span>` : ""}</div>`
+      : e.exception ? `<div class="muted clamp" title="${esc(e.exception)}">${esc(e.exception)}</div>` : ""}
+    ${effects.length ? `<div class="effects clamp" title="${esc(effects.join("\n"))}">${esc(effects.join(" · "))}</div>` : ""}
     ${persisted}
   </div>`;
 }
 
-function preconditionsHtml(s) {
-  if (!s.preconditions.length) return `<span class="muted">—</span>`;
-  return `<ul class="pre-list">${s.preconditions.map(p =>
-    `<li title="${esc(p.expression ?? "")}"><span class="pk ${esc(p.kind)}">${esc(preKinds[p.kind] ?? p.kind)}</span>${esc(p.description)}</li>`).join("")}</ul>`;
+function observedCell(r) {
+  if (!r.runtime) return dash;
+  const o = r.observed;
+  if (!o) return `<span class="muted">não executado</span>`;
+  return `<span class="status ${statusClass(o.httpStatus)}">${esc(o.httpStatus ?? "—")}</span> <span class="status-src">${o.elapsedMs} ms</span>
+    ${o.exception ? `<div class="warn clamp" title="${esc(o.exception)}">${esc(o.exception)}</div>` : ""}
+    ${o.body || o.exception ? `<button class="secondary cell-btn" type="button" data-detail="${esc(r.id)}" title="Resposta completa e evidência">${eyeIcon}<span>Ver resposta</span></button>` : ""}`;
 }
 
-function payloadHtml(s) {
-  const body = bodyText(s);
-  return `<div class="payload">
-    <div class="url"><span class="method ${esc(s.request.method)}">${esc(s.request.method)}</span> ${esc(s.request.url)}</div>
-    ${Object.keys(s.request.headers ?? {}).length ? `<div class="muted">headers: ${esc(Object.entries(s.request.headers).map(([k, v]) => `${k}: ${v}`).join("; "))}</div>` : ""}
-    ${body ? `<pre><code>${esc(body)}</code></pre>` : `<div class="muted">sem body</div>`}
-    <div class="payload-actions">
-      ${body ? `<button class="secondary" type="button" data-copy="json" data-scen="${esc(s.id)}" title="Copiar o body JSON">${copyIcon}<span>JSON</span></button>` : ""}
-      <button class="secondary" type="button" data-copy="curl" data-scen="${esc(s.id)}" title="Copiar como cURL ({{baseUrl}} = endereço da API)">${copyIcon}<span>cURL</span></button>
-    </div>
-  </div>`;
+function statusCell(r) {
+  if (!r.runtime) return dash;
+  const tip = [validationHelp[r.status], ...r.evidence.map(e => `✓ ${e}`), ...r.reasons.map(x => `⚠ ${x}`)].filter(Boolean).join("\n");
+  return `<span class="vstatus ${esc(r.status)}" title="${esc(tip)}">${esc(validationKinds[r.status] ?? r.status)}</span>
+    ${r.reasons.length ? `<div class="warn clamp" title="${esc(r.reasons.join("\n"))}">${esc(r.reasons[0])}</div>` : ""}`;
+}
+
+function scenarioGridHtml(rows) {
+  rows.forEach(r => gridRows.set(r.id, r));
+  return `<div class="scenario-grid-container"><table class="scenario-grid">
+    <colgroup><col style="width:110px"><col style="width:280px"><col style="width:240px"><col style="width:240px"><col style="width:240px"><col style="width:150px"><col style="width:140px"></colgroup>
+    <thead><tr><th>ID</th><th>Cenário</th><th>Request</th><th>Pré-condições / Contexto</th><th>Resultado esperado</th><th>Resultado observado</th><th>Status runtime</th></tr></thead>
+    <tbody>${rows.map(r => `<tr ${r.pick ? pickAttrs(r.pick) : ""}>
+      <td><code>${esc(r.id)}</code><div><span class="kind ${esc(r.kind)}">${esc(scenarioKinds[r.kind] ?? r.kind)}</span></div></td>
+      <td><div class="title">${esc(r.title)}</div>${r.desc ? `<div class="desc clamp" title="${esc(r.desc)}">${esc(r.desc)}</div>` : ""}
+        ${r.notes.length ? `<div class="scen-notes clamp" title="${esc(r.notes.join("\n"))}">⚠ ${esc(r.notes[0])}${r.notes.length > 1 ? ` (+${r.notes.length - 1})` : ""}</div>` : ""}</td>
+      <td>${requestCell(r)}</td>
+      <td>${preCell(r.pre)}</td>
+      <td>${expectedCell(r.expected)}</td>
+      <td>${observedCell(r)}</td>
+      <td>${statusCell(r)}</td>
+    </tr>`).join("")}</tbody></table></div>`;
+}
+
+/** Detalhe do cenário (fora do grid): payload completo, resposta observada e evidência. */
+function openScenarioDetail(id) {
+  const r = gridRows.get(id);
+  if (!r) return;
+  const body = r.request ? bodyText(r) : "", o = r.observed;
+  const headers = Object.entries(r.request?.headers ?? {});
+  const response = prettyBody(o?.body);
+  $("scenDetail").innerHTML = `<div class="scen-dialog-head"><h2 id="scenDialogTitle"><code>${esc(r.id)}</code> ${esc(r.title)}</h2>
+      <button class="secondary scen-dialog-close" type="button" data-close aria-label="Fechar">×</button></div>
+    ${r.request ? `<h4>Request</h4>${requestLine(r.request)}
+      ${headers.length ? `<div class="muted">headers: ${esc(headers.map(([k, v]) => `${k}: ${v}`).join("; "))}</div>` : ""}
+      ${body ? `<pre><code>${esc(body)}</code></pre>` : `<p class="muted">sem body</p>`}
+      <div class="payload-actions">
+        ${body ? `<button class="secondary" type="button" data-copy="json" data-scen="${esc(r.id)}" title="Copiar o body JSON">${copyIcon}<span>JSON</span></button>` : ""}
+        <button class="secondary" type="button" data-copy="curl" data-scen="${esc(r.id)}" title="Copiar como cURL ({{baseUrl}} = endereço da API)">${copyIcon}<span>cURL</span></button>
+      </div>` : ""}
+    ${r.runtime ? `<h4>Resposta observada</h4>
+      ${o ? `<span class="status ${statusClass(o.httpStatus)}">${esc(o.httpStatus ?? "—")}</span> <span class="status-src">${o.elapsedMs} ms</span>
+        ${o.exception ? `<div class="warn">${esc(o.exception)}</div>` : ""}
+        ${response ? `<pre><code>${esc(response)}</code></pre>` : ""}` : `<p class="muted">não executado</p>`}
+      ${r.evidence.length || r.reasons.length ? `<h4>Evidência</h4>${evidenceHtml(r)}` : ""}` : ""}`;
+  if (!$("scenDialog").open) $("scenDialog").showModal();
+}
+
+function gridMarkdown(rows) {
+  const cell = (s) => String(s ?? "").replace(/\|/g, "\\|").replace(/\n/g, "<br>");
+  const lines = ["| ID | Cenário | Request | Pré-condições / Contexto | Resultado esperado | Resultado observado | Status runtime |", "|---|---|---|---|---|---|---|"];
+  for (const r of rows) {
+    const e = r.expected;
+    const request = r.request ? `\`${r.request.method} ${r.request.url}\`${r.request.body === undefined ? "" : `\n\`${JSON.stringify(r.request.body)}\``}` : "—";
+    const expected = [`**${e.httpStatus ?? "?"}** ${e.outcome}`, ...e.messages.map(x => `"${x}"`), ...e.effects.map(f => f.description),
+      e.outcome === "erro" && !e.persisted && e.statusSource !== "runtime" ? "nada é gravado" : ""].filter(Boolean).join("\n");
+    const observed = !r.runtime ? "—" : r.observed ? [`**${r.observed.httpStatus ?? "—"}**`, r.observed.exception].filter(Boolean).join("\n") : "não executado";
+    const status = !r.runtime ? "—" : [validationKinds[r.status] ?? r.status, ...r.reasons.map(x => `⚠ ${x}`)].join("\n");
+    lines.push(`| ${r.id} | ${cell(r.title)} | ${cell(request)} | ${cell(r.pre.map(p => p.text).join("\n") || "—")} | ${cell(expected)} | ${cell(observed)} | ${cell(status)} |`);
+  }
+  return lines.join("\n");
 }
 
 function renderScenarios(ctx, ai, runtime) {
+  gridRows = new Map();
   if (runtime?.matrix && scenarioView === "validated") return renderValidated(ctx, ai, runtime);
   const m = ctx.scenarios;
   if (!m) return `<p class="muted">Matriz de cenários indisponível: analise o endpoint novamente.</p>`;
@@ -963,40 +1103,22 @@ function renderScenarios(ctx, ai, runtime) {
 }
 
 function renderStaticScenarios(m, ai, runtime) {
-  const labels = new Map((ai?.scenarios ?? []).map(l => [l.id, l]));
   const counts = Object.fromEntries(Object.keys(scenarioKinds).map(k => [k, m.scenarios.filter(s => s.kind === k).length]));
   const visible = m.scenarios.filter(s => scenarioFilter === "all" || s.kind === scenarioFilter);
-  const z3 = m.scenarios.filter(s => s.solver === "z3").length;
 
   const chips = [["all", "Todos", m.scenarios.length], ...Object.entries(scenarioKinds).map(([k, l]) => [k, l, counts[k]])]
     .filter(([k, , n]) => k === "all" || n > 0)
     .map(([k, l, n]) => `<button type="button" class="chip ${scenarioFilter === k ? "on" : ""}" data-scen-filter="${k}">${l}<span class="n">${n}</span></button>`).join("");
 
-  const rows = visible.map(s => {
-    const label = labels.get(s.id);
-    return `<tr ${pickAttrs(`scen:${s.id}`)}>
-      <td class="id"><code>${esc(s.id)}</code><br><span class="kind ${esc(s.kind)}">${esc(scenarioKinds[s.kind] ?? s.kind)}</span>
-        <span class="tech">${esc(techniqueLabels[s.technique] ?? s.technique)}${s.solver === "z3" ? " · Z3" : ""}</span></td>
-      <td><div class="title">${esc(scenarioTitle(s, label))}</div>
-        ${label?.description ? `<div class="desc">${esc(label.description)}</div>` : s.focus?.detail && s.focus.detail !== s.title ? `<div class="desc">${esc(s.focus.detail)}</div>` : ""}
-        ${s.notes?.length ? `<div class="scen-notes" title="${esc(s.notes.join("\n"))}">⚠ ${esc(s.notes[0])}${s.notes.length > 1 ? ` (+${s.notes.length - 1})` : ""}</div>` : ""}</td>
-      <td>${payloadHtml(s)}</td>
-      <td>${preconditionsHtml(s)}</td>
-      <td>${expectedHtml(s.expected)}</td>
-    </tr>`;
-  }).join("");
-
-  return `<p class="muted" style="margin-top:0">${runtime ? "Matriz estática (candidata): " : ""}${m.scenarios.length} cenário(s) gerados do código: tabela de decisão, partição de equivalência e valores-limite${z3 ? ` · ${z3} resolvido(s) pelo Z3` : ""}${ai?.scenarios?.length ? " · títulos pela IA" : ""}.
-    Clique num cenário para ver o código da regra.</p>
+  return `<p class="muted" style="margin-top:0">${runtime ? "Matriz estática (candidata): " : ""}${m.scenarios.length} cenário(s) gerados do código${ai?.scenarios?.length ? " · títulos pela IA" : ""}.
+    ${runtime ? "" : "Sem validação em runtime: as colunas de resultado observado e status ficam vazias. "}Clique num cenário para ver o código da regra.</p>
     <div class="scen-toolbar">${runtime?.matrix ? viewToggleHtml() : ""}${chips}<span class="spacer"></span>
       <button class="secondary" type="button" id="copyScenarios" title="Copiar a matriz como tabela Markdown">${copyIcon}<span>Copiar matriz</span></button>
       <button class="secondary" type="button" id="downloadScenarios" title="Baixar a matriz em JSON">${downloadIcon}<span>Baixar .json</span></button>
     </div>
     <h3 style="margin-top:0">Matriz de cenários</h3>
-    ${visible.length ? `<div class="table-wrap"><table class="scen"><tr><th>Id</th><th>Cenário</th><th>Payload</th><th>Estado / pré-condições</th><th>Resultado esperado</th></tr>${rows}</table></div>`
-      : `<p class="muted">Nenhum cenário${m.scenarios.length ? " deste tipo" : ""}.</p>`}
+    ${visible.length ? scenarioGridHtml(staticGridRows(visible, ai)) : `<p class="muted">Nenhum cenário${m.scenarios.length ? " deste tipo" : ""}.</p>`}
     ${m.notes.length ? `<h3>Observações</h3><ul>${m.notes.map(n => `<li class="warn">${esc(n)}</li>`).join("")}</ul>` : ""}
-    ${decisionTableHtml(m)}
     ${inputsHtml(m)}`;
 }
 
@@ -1011,8 +1133,7 @@ function decisionTableHtml(m) {
         <span class="cond-code">${esc(c.expression)}</span></td>
       ${m.scenarios.map(s => { const v = s.decisions[c.id]; return v === true ? `<td class="v">V</td>` : v === false ? `<td class="f">F</td>` : `<td class="x" title="não avaliada neste cenário">–</td>`; }).join("")}
     </tr>`).join("");
-  return `<h3>Tabela de decisão</h3>
-    <p class="muted">V = condição verdadeira, F = falsa, – = não avaliada (o fluxo parou antes ou não passa por ela).</p>
+  return `<p class="muted">V = condição verdadeira, F = falsa, – = não avaliada (o fluxo parou antes ou não passa por ela).</p>
     <div class="table-wrap"><table class="dt"><tr><th>Condição</th>${head}</tr>${rows}</table></div>`;
 }
 
@@ -1024,26 +1145,14 @@ function inputsHtml(m) {
     </table></div>`;
 }
 
-function scenariosMarkdown(m, ai) {
-  const labels = new Map((ai?.scenarios ?? []).map(l => [l.id, l]));
-  const cell = (s) => String(s ?? "").replace(/\|/g, "\\|").replace(/\n/g, "<br>");
-  const lines = ["| Id | Cenário | Payload | Pré-condições | Resultado esperado |", "|---|---|---|---|---|"];
-  for (const s of m.scenarios) {
-    const e = s.expected;
-    const payload = `\`${s.request.method} ${s.request.url}\`${s.request.body === undefined ? "" : `<br>\`${JSON.stringify(s.request.body)}\``}`;
-    const result = [`**${e.httpStatus ?? "?"}** ${e.outcome}`, ...e.messages.map(x => `"${x}"`), ...e.effects.map(f => f.description), e.outcome === "erro" && !e.persisted ? "nada é gravado" : ""].filter(Boolean).join("<br>");
-    lines.push(`| ${s.id} | ${cell(scenarioTitle(s, labels.get(s.id)))} | ${cell(payload)} | ${cell(s.preconditions.map(p => p.description).join("\n") || "—")} | ${cell(result)} |`);
-  }
-  return lines.join("\n");
-}
-
 function wireScenarios(ctx, ai, runtime) {
   const validated = runtime?.matrix && scenarioView === "validated";
   const m = ctx.scenarios;
   if (!m || !$("copyScenarios")) return;
   $("copyScenarios").onclick = async () => {
     const label = $("copyScenarios").querySelector("span");
-    try { await navigator.clipboard.writeText(validated ? validatedMarkdown(runtime.matrix, ai) : scenariosMarkdown(m, ai)); label.textContent = "Copiado"; }
+    const rows = validated ? validatedGridRows([...runtime.matrix.scenarios, ...runtime.matrix.removed], ai) : staticGridRows(m.scenarios, ai);
+    try { await navigator.clipboard.writeText(gridMarkdown(rows)); label.textContent = "Copiado"; }
     catch { label.textContent = "Falhou ao copiar"; }
     setTimeout(() => label.textContent = "Copiar matriz", 1500);
   };
@@ -1114,53 +1223,13 @@ function prettyBody(body) {
   try { return JSON.stringify(JSON.parse(body), null, 2); } catch { return body; }
 }
 
-function observedHtml(o) {
-  if (!o) return `<div class="observed"><span class="lbl">observado</span><span class="muted">não executado</span></div>`;
-  const body = prettyBody(o.body);
-  return `<div class="observed"><span class="lbl">observado</span>
-    <span class="status ${statusClass(o.httpStatus)}">${esc(o.httpStatus ?? "—")}</span> <span class="status-src">${o.elapsedMs} ms</span>
-    ${o.exception ? `<div class="warn">${esc(o.exception)}</div>` : ""}
-    ${body ? `<pre><code>${esc(body.length > 1200 ? body.slice(0, 1200) + "…" : body)}</code></pre>` : ""}</div>`;
-}
-
-function realStateHtml(s) {
-  const items = [
-    ...s.bindings.map(b => `<li title="${esc(b.source ?? "")}"><span class="pk real">${b.origin === "fato" ? "fato" : "dado real"}</span><code>${esc(b.variable)} = ${esc(b.value)}</code>${b.source ? ` <span class="muted">(${esc(b.source)})</span>` : ""}</li>`),
-    ...s.preconditions.map(p => `<li title="${esc(p.expression ?? "")}"><span class="pk ${esc(p.kind)}">${esc(preKinds[p.kind] ?? p.kind)}</span>${esc(p.description)}</li>`),
-  ];
-  return items.length ? `<ul class="pre-list">${items.join("")}</ul>` : `<span class="muted">—</span>`;
-}
-
 function evidenceHtml(s) {
   const items = [...s.evidence.map(e => `<li class="ok">${esc(e)}</li>`), ...s.reasons.map(r => `<li class="warn">${esc(r)}</li>`)];
   return items.length ? `<ul class="ev-list">${items.join("")}</ul>` : `<span class="muted">—</span>`;
 }
 
-function validatedRows(list, labels) {
-  const statics = lastResponse.report.context.scenarios?.scenarios ?? [];
-  return list.map(s => {
-    const label = labels.get(s.id);
-    const original = statics.find(x => x.id === s.id);
-    const title = label?.title ?? (original ? scenarioTitle(original, null) : s.title);
-    return `<tr ${original ? pickAttrs(`scen:${s.id}`) : ""}>
-      <td class="id"><code>${esc(s.id)}</code><br><span class="vstatus ${esc(s.status)}" title="${esc(validationHelp[s.status] ?? "")}">${esc(validationKinds[s.status] ?? s.status)}</span>
-        <span class="tech">${esc(scenarioKinds[s.kind] ?? s.kind)}${s.attempts ? ` · ${s.attempts} execução(ões)` : ""}${s.executionId ? ` · ${esc(s.executionId)}` : ""}</span></td>
-      <td><div class="title">${esc(title)}</div>${label?.description ? `<div class="desc">${esc(label.description)}</div>` : ""}</td>
-      <td>${s.request ? payloadHtml(s) : `<span class="muted">—</span>`}</td>
-      <td>${realStateHtml(s)}</td>
-      <td><span class="lbl muted">esperado</span>${expectedHtml(s.expected)}${observedHtml(s.observed)}</td>
-      <td>${evidenceHtml(s)}</td>
-    </tr>`;
-  }).join("");
-}
-
-function validatedTable(list, labels) {
-  return `<div class="table-wrap"><table class="scen"><tr><th>Id</th><th>Cenário</th><th>Payload usado</th><th>Dados reais / pré-condições</th><th>Esperado × observado</th><th>Evidência</th></tr>${validatedRows(list, labels)}</table></div>`;
-}
-
 function renderValidated(ctx, ai, rt) {
   const m = rt.matrix;
-  const labels = new Map((ai?.scenarios ?? []).map(l => [l.id, l]));
   const visible = m.scenarios.filter(s => validatedFilter === "all" || s.status === validatedFilter);
   const chips = [["all", "Todos", m.scenarios.length], ...Object.entries(validationKinds).filter(([k]) => k !== "inalcancavel").map(([k, l]) => [k, l, m.scenarios.filter(s => s.status === k).length])]
     .filter(([k, , n]) => k === "all" || n > 0)
@@ -1174,26 +1243,62 @@ function renderValidated(ctx, ai, rt) {
       <button class="secondary" type="button" id="downloadScenarios" title="Baixar a validação em JSON (matriz, execuções e contexto)">${downloadIcon}<span>Baixar .json</span></button>
     </div>
     <h3 style="margin-top:0">Matriz validada</h3>
-    ${visible.length ? validatedTable(visible, labels) : `<p class="muted">Nenhum cenário${m.scenarios.length ? " com este status" : ""}.</p>`}
+    ${visible.length ? scenarioGridHtml(validatedGridRows(visible, ai)) : `<p class="muted">Nenhum cenário${m.scenarios.length ? " com este status" : ""}.</p>`}
     ${m.removed.length ? `<h3>Retirados da matriz (inalcançáveis)</h3>
       <p class="muted">Código e runtime mostram que estes cenários não podem ocorrer: ficam aqui com a evidência, fora da matriz final.</p>
-      ${validatedTable(m.removed, labels)}` : ""}
+      ${scenarioGridHtml(validatedGridRows(m.removed, ai))}` : ""}
     ${rt.notes.length ? `<h3>Observações</h3><ul>${rt.notes.map(n => `<li class="warn">${esc(n)}</li>`).join("")}</ul>` : ""}
-    ${runtimeDetailsHtml(rt)}`;
+    <p class="muted">Execuções, contexto adquirido e logs da validação estão na aba Completo.</p>`;
 }
 
-function runtimeDetailsHtml(rt) {
-  const requirements = rt.requirements.length ? `<details class="rt"><summary>Requisitos de dados (${rt.requirements.length})</summary>
-    <div class="table-wrap"><table><tr><th>Id</th><th>Requisito</th><th>Cenários</th><th>Status</th></tr>
-    ${rt.requirements.map(r => `<tr><td><code>${esc(r.id)}</code></td><td>${esc(r.description)}${r.constraints.length ? `<div class="muted"><code>${esc(r.constraints.join("; "))}</code></div>` : ""}</td>
-      <td>${esc(r.scenarios.join(", "))}</td><td>${esc(r.status)}${r.reason ? `<div class="muted">${esc(r.reason)}</div>` : ""}</td></tr>`).join("")}</table></div></details>` : "";
+// ---- Aba Completo: tudo o que a análise produziu ----
 
-  const context = rt.context.length ? `<details class="rt"><summary>Contexto: dados reais encontrados (${rt.context.length})</summary>
-    <div class="table-wrap"><table><tr><th>Dado</th><th>Valor</th><th>Fonte</th></tr>
-    ${rt.context.map(c => `<tr><td><code>${esc(c.key)}</code><div class="muted">${esc(c.description)}</div></td><td><code>${esc(c.value.length > 300 ? c.value.slice(0, 300) + "…" : c.value)}</code></td>
-      <td>${esc(c.executionId ?? "—")} ${c.verified ? `<span class="verified" title="os valores aparecem na resposta da execução">verificado</span>` : `<span class="unverified" title="a IA não mostrou de onde veio o dado">não verificado</span>`}</td></tr>`).join("")}</table></div></details>` : "";
+const noRuntime = `<p class="muted">Sem validação em runtime nesta análise (marque "Validar os cenários com a API em execução").</p>`;
 
-  const executions = rt.executions.length ? `<details class="rt"><summary>Execuções (${rt.executions.length})</summary>
+function completeStatsHtml(ctx, rt) {
+  const s = ctx.stats ?? {}, scen = ctx.scenarios?.scenarios ?? [];
+  const items = [
+    ["Nós no grafo de negócio", s.businessNodes], ["Nós no grafo técnico", s.technicalNodes],
+    ["Branches impossíveis removidos", s.prunedBranches], ["Infraestrutura colapsada", s.collapsedInfrastructure],
+    ["Helpers ocultos", s.hiddenHelpers], ["Chamadas ambíguas", s.ambiguousCalls],
+    ["Regras de negócio", `${s.businessConditions} de ${s.technicalConditions}`],
+    ["Condições no registro", Object.keys(ctx.conditionRegistry ?? {}).length],
+    ["Cenários gerados", scen.length], ["Resolvidos pelo Z3", scen.filter(x => x.solver === "z3").length],
+    ...(rt ? [["Validação em runtime", rt.status], ["Requisições", rt.stats.requests], ["Chamadas à IA (runtime)", rt.stats.aiCalls],
+      ["Duração da validação", `${(rt.durationMs / 1000).toFixed(1)}s`]] : []),
+  ];
+  return `<div class="stat-grid">${items.map(([label, value]) => `<div class="stat"><span class="v">${esc(value ?? "—")}</span><span class="l">${esc(label)}</span></div>`).join("")}</div>`;
+}
+
+function registryHtml(ctx) {
+  const entries = Object.entries(ctx.conditionRegistry ?? {});
+  if (!entries.length) return `<p class="muted">Nenhuma condição registrada.</p>`;
+  return `<p class="muted">Ids usados no grafo, nos efeitos e na tabela de decisão. Clique numa condição para ver o código.</p>
+    <div class="table-wrap"><table><tr><th>Id</th><th>Condição</th><th>Texto</th></tr>
+    ${entries.map(([id, text]) => `<tr ${pickAttrs(`cond:${id}`)}><td><code>${esc(id)}</code></td><td><code>${esc(text)}</code></td><td>${esc(capitalize(conditionText(text)))}</td></tr>`).join("")}</table></div>`;
+}
+
+/** Cenários cujas restrições (várias variáveis ou aritmética) foram resolvidas pelo Z3. */
+function z3Html(m) {
+  const list = (m?.scenarios ?? []).filter(s => s.solver === "z3");
+  if (!list.length) return `<p class="muted">Nenhum cenário precisou do Z3: as restrições foram resolvidas direto pelos domínios simples.</p>`;
+  const conds = new Map((m.conditions ?? []).map(c => [c.id, c]));
+  return `<p class="muted">${list.length} cenário(s) com restrições de mais de uma variável ou aritmética, resolvidas pelo Z3.</p>
+    <div class="table-wrap"><table><tr><th>Id</th><th>Restrições</th><th>Valores encontrados</th></tr>
+    ${list.map(s => {
+      const constraints = Object.entries(s.decisions).filter(([, v]) => v !== null && v !== undefined)
+        .map(([id, v]) => `<div><code>${esc(conds.get(id)?.expression ?? id)}</code> <span class="muted">= ${v ? "verdadeira" : "falsa"}</span></div>`).join("");
+      const body = bodyText(s);
+      return `<tr ${pickAttrs(`scen:${s.id}`)}><td class="id"><code>${esc(s.id)}</code><div class="muted">${esc(scenarioTitle(s, null))}</div></td>
+        <td>${constraints || `<span class="muted">—</span>`}</td>
+        <td><div class="url"><span class="method ${esc(s.request.method)}">${esc(s.request.method)}</span> ${esc(s.request.url)}</div>${body ? `<pre><code>${esc(body)}</code></pre>` : ""}</td></tr>`;
+    }).join("")}</table></div>`;
+}
+
+function executionsHtml(rt) {
+  if (!rt) return noRuntime;
+  if (!rt.executions.length) return `${runtimeSummaryHtml(rt)}<p class="muted">Nenhuma requisição executada.</p>`;
+  return `${runtimeSummaryHtml(rt)}
     <div class="table-wrap"><table class="exec"><tr><th>Id</th><th>Fase</th><th>Requisição</th><th>Resultado</th></tr>
     ${rt.executions.map(e => `<tr><td><code>${esc(e.id)}</code>${e.scenarioId ? `<div class="muted">${esc(e.scenarioId)}${e.attempt ? ` #${e.attempt}` : ""}</div>` : ""}</td>
       <td>${esc(phaseLabels[e.phase] ?? e.phase)}</td>
@@ -1202,23 +1307,52 @@ function runtimeDetailsHtml(rt) {
       <td>${e.blocked ? `<span class="warn">bloqueada</span>` : `<span class="status ${statusClass(e.status)}">${esc(e.status ?? "—")}</span> <span class="status-src">${e.elapsedMs} ms</span>`}
         ${e.exception ? `<div class="warn">${esc(e.exception)}</div>` : ""}
         ${e.responseBody ? `<details><summary class="muted">resposta</summary><pre>${esc(prettyBody(e.responseBody))}</pre></details>` : ""}</td></tr>`).join("")}
-    </table></div></details>` : "";
-
-  const log = rt.log.length ? `<details class="rt"><summary>Linha do tempo</summary><pre>${esc(rt.log.join("\n"))}</pre></details>` : "";
-  return `<h3>Detalhes da validação</h3>${requirements}${context}${executions}${log}`;
+    </table></div>`;
 }
 
-function validatedMarkdown(m, ai) {
-  const labels = new Map((ai?.scenarios ?? []).map(l => [l.id, l]));
-  const cell = (s) => String(s ?? "").replace(/\|/g, "\\|").replace(/\n/g, "<br>");
-  const lines = ["| Id | Status | Cenário | Payload usado | Esperado | Observado | Evidência |", "|---|---|---|---|---|---|---|"];
-  for (const s of [...m.scenarios, ...m.removed]) {
-    const payload = s.request ? `\`${s.request.method} ${s.request.url}\`${s.request.body === undefined ? "" : `<br>\`${JSON.stringify(s.request.body)}\``}` : "—";
-    const expected = [`**${s.expected.httpStatus ?? "?"}** ${s.expected.outcome}`, ...s.expected.messages.map(x => `"${x}"`)].join("<br>");
-    const observed = s.observed ? `**${s.observed.httpStatus ?? "—"}** ${(s.observed.body ?? "").slice(0, 200)}` : "—";
-    lines.push(`| ${s.id} | ${validationKinds[s.status] ?? s.status} | ${cell(labels.get(s.id)?.title ?? s.title)} | ${cell(payload)} | ${cell(expected)} | ${cell(observed)} | ${cell([...s.evidence, ...s.reasons.map(r => "⚠ " + r)].join("\n"))} |`);
-  }
-  return lines.join("\n");
+/** Requisitos de dados e o que foi encontrado na API (ScenarioContext). */
+function acquiredContextHtml(rt) {
+  if (!rt) return noRuntime;
+  const requirements = rt.requirements.length ? `<h4>Requisitos de dados (${rt.requirements.length})</h4>
+    <div class="table-wrap"><table><tr><th>Id</th><th>Requisito</th><th>Cenários</th><th>Status</th></tr>
+    ${rt.requirements.map(r => `<tr><td><code>${esc(r.id)}</code></td><td>${esc(r.description)}${r.constraints.length ? `<div class="muted"><code>${esc(r.constraints.join("; "))}</code></div>` : ""}</td>
+      <td>${esc(r.scenarios.join(", "))}</td><td>${esc(r.status)}${r.reason ? `<div class="muted">${esc(r.reason)}</div>` : ""}</td></tr>`).join("")}</table></div>` : "";
+  const context = rt.context.length ? `<h4>Dados reais encontrados (${rt.context.length})</h4>
+    <div class="table-wrap"><table><tr><th>Dado</th><th>Valor</th><th>Origem</th></tr>
+    ${rt.context.map(c => `<tr><td><code>${esc(c.key)}</code><div class="muted">${esc(c.description)}</div></td><td><code>${esc(c.value.length > 300 ? c.value.slice(0, 300) + "…" : c.value)}</code></td>
+      <td>${esc(c.origin)} · ${esc(c.executionId ?? "—")} ${c.verified ? `<span class="verified" title="os valores aparecem na resposta da execução">verificado</span>` : `<span class="unverified" title="a IA não mostrou de onde veio o dado">não verificado</span>`}</td></tr>`).join("")}</table></div>`
+    : `<p class="muted">Nenhum dado real adquirido.</p>`;
+  return requirements + context;
+}
+
+function logsHtml(rt) {
+  if (!rt) return noRuntime;
+  return rt.log.length ? `<pre class="log">${esc(rt.log.join("\n"))}</pre>` : `<p class="muted">Sem registros.</p>`;
+}
+
+/** Abstração → implementação escolhida para cada chamada resolvida (DI, construtor, atribuição, busca...). */
+function diHtml(ctx) {
+  const rows = new Map();
+  const walk = (node) => {
+    if (!node) return;
+    if (node.resolvedFrom || node.ambiguous) {
+      const impl = node.ambiguous ? null : node.typeName;
+      const id = `${node.resolvedFrom}|${impl}|${node.resolution}`;
+      const row = rows.get(id) ?? rows.set(id, { from: node.resolvedFrom, impl, strategy: node.resolution, candidates: node.candidates,
+        receivers: new Set(), methods: new Set(), file: node.sourceFile }).get(id);
+      if (node.receiver) row.receivers.add(node.receiver);
+      row.methods.add(node.methodName);
+    }
+    node.children?.forEach(walk);
+  };
+  walk(ctx.callTree);
+  if (!rows.size) return `<p class="muted">Nenhuma chamada precisou de resolução: todas são diretas ou em tipos concretos.</p>`;
+  return `<div class="table-wrap"><table><tr><th>Abstração</th><th>Implementação</th><th>Como</th><th>Receiver</th><th>Métodos</th></tr>
+    ${[...rows.values()].map(r => `<tr><td><code>${esc(r.from ?? "—")}</code></td>
+      <td>${r.impl ? `<code>${esc(r.impl)}</code>${r.file ? `<div class="muted">${esc(r.file)}</div>` : ""}`
+        : `<span class="warn">ambígua</span>${r.candidates?.length ? `<div class="muted">${esc(r.candidates.join(", "))}</div>` : ""}`}</td>
+      <td>${esc(r.strategy ?? "—")}</td><td>${[...r.receivers].map(x => `<code>${esc(x)}</code>`).join(" ") || `<span class="muted">—</span>`}</td>
+      <td>${[...r.methods].map(x => `<code>${esc(x)}</code>`).join(" ")}</td></tr>`).join("")}</table></div>`;
 }
 
 /** Fluxograma com os botões de cópia; showFlow() desenha depois que a aba entra na página. */
@@ -1230,15 +1364,23 @@ const flowHtml = (graphTitle) => `<div class="flow">
     <div id="flowCanvas" class="flow-canvas"><p class="muted">Gerando fluxograma...</p></div>
   </div>`;
 
-function renderTechnical(ctx, mode) {
-  const graph = mode === "technical"
-    ? flowHtml("Copiar o grafo completo (sem colapsar infraestrutura) como texto")
-    : `<div class="tree">${treeHtml(ctx.callTree, 0, mode, ctx.conditionRegistry ?? {})}</div>`;
-  return `${statsHtml(ctx)}
-    <h3>${mode === "technical" ? "Grafo técnico (infraestrutura colapsada)" : "Call graph bruto"}</h3>
-    ${graph}
-    <h3>Persistência</h3>
-    <ul>${ctx.persistencePoints.map(p => `<li><code>${esc(p.method)}</code> <span class="muted">${esc(p.file)}:${p.line}</span></li>`).join("") || "<li class='muted'>SaveChanges não encontrado</li>"}</ul>`;
+function renderComplete(ctx, rt) {
+  const m = ctx.scenarios;
+  const sections = [
+    ["stats", "Estatísticas", completeStatsHtml(ctx, rt)],
+    ["graph", "Call graph completo", `<div class="tree">${treeHtml(ctx.callTree, 0, "complete", ctx.conditionRegistry ?? {})}</div>
+      <h4>Persistência</h4>
+      <ul>${ctx.persistencePoints.map(p => `<li><code>${esc(p.method)}</code> <span class="muted">${esc(p.file)}:${p.line}</span></li>`).join("") || "<li class='muted'>SaveChanges não encontrado</li>"}</ul>`],
+    ["conds", "Condições (C1, C2, C3...)", registryHtml(ctx)],
+    ["z3", "Z3", z3Html(m)],
+    ["decision", "Tabela de decisão", m ? decisionTableHtml(m) || `<p class="muted">Sem condições ou cenários.</p>` : `<p class="muted">Matriz de cenários indisponível: analise o endpoint novamente.</p>`],
+    ["exec", "Execuções runtime", executionsHtml(rt)],
+    ["context", "Contexto adquirido", acquiredContextHtml(rt)],
+    ["logs", "Logs", logsHtml(rt)],
+    ["di", "Resolução DI", diHtml(ctx)],
+  ];
+  return `<div class="jump-bar">${sections.map(([id, title]) => `<button type="button" class="chip" data-jump="sec-${id}">${esc(title)}</button>`).join("")}</div>
+    ${sections.map(([id, title, html]) => `<div class="complete-sec" id="sec-${id}"><h3>${esc(title)}</h3>${html}</div>`).join("")}`;
 }
 
 // ---- Fluxograma Mermaid do grafo técnico ----
@@ -2158,13 +2300,17 @@ $("search").addEventListener("input", renderGroups);
 $("search").addEventListener("keydown", (e) => { if (e.key === "Escape") { $("search").value = ""; renderGroups(); $("search").blur(); } });
 document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); $("search").focus(); $("search").select(); }
-  if (e.key === "Escape" && picked && document.activeElement !== $("search") && !$("loginDialog").open && !$("codeDialog").open) pick(null);
+  if (e.key === "Escape" && picked && document.activeElement !== $("search") && !$("loginDialog").open && !$("codeDialog").open && !$("scenDialog").open) pick(null);
 });
 // Clique (ou Enter/Espaço) numa regra, validação ou condição mostra o código; clicar de novo fecha.
 $("result").addEventListener("click", (e) => {
   if (e.target.closest(".code-close")) { pick(null); return; }
   const copy = e.target.closest("[data-copy]");
   if (copy) { copyScenario(copy); return; }
+  const detail = e.target.closest("[data-detail]");
+  if (detail) { openScenarioDetail(detail.dataset.detail); return; }
+  // Pré-condições resumidas ("5 condições"): abre/fecha sem trocar o código exibido.
+  if (e.target.closest(".pre-more")) return;
   const filter = e.target.closest("[data-scen-filter]");
   if (filter) { scenarioFilter = filter.dataset.scenFilter; render("scenarios"); return; }
   const vfilter = e.target.closest("[data-vfilter]");
@@ -2179,7 +2325,13 @@ $("result").addEventListener("click", (e) => {
 });
 $("result").addEventListener("keydown", (e) => {
   const item = e.target.closest?.("[data-pick]");
-  if (item && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); pick(item.dataset.pick); }
+  // Só o próprio item: Enter num botão ou no resumo das pré-condições dentro da linha segue o comportamento nativo.
+  if (item && e.target === item && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); pick(item.dataset.pick); }
+});
+$("scenDialog").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget || e.target.closest("[data-close]")) { $("scenDialog").close(); return; }
+  const copy = e.target.closest("[data-copy]");
+  if (copy) copyScenario(copy);
 });
 // Popup de código do fluxograma: fecha no ×, no Esc (nativo do dialog) ou clicando fora.
 $("codeDialog").addEventListener("click", (e) => {
