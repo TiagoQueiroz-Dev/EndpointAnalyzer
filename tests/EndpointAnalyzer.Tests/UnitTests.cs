@@ -201,6 +201,11 @@ public class PromptBuilderTests
         Assert.Equal(["summary", "businessRules", "validations", "entityChanges", "uncertainties", "flowLabels", "scenarios"], required);
         Assert.False(schema["additionalProperties"].GetBoolean());
 
+        // Regras e validações no formato da aba Resumo: título, contexto, condição e mensagem de erro.
+        var rule = schema["properties"].GetProperty("businessRules").GetProperty("items");
+        Assert.Equal(["id", "title", "context", "condition", "errorMessage", "confidence", "evidence"],
+            rule.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList());
+
         // O JSON devolvido pela IA desserializa no modelo da aplicação.
         var json = """{"summary":"s","businessRules":[{"id":"REGRA-001","description":"d","confidence":0.99,"evidence":{"file":"f.cs","method":"m","line":81,"code":"c"}}],"validations":[],"entityChanges":[{"entity":"Programacao","operation":"INSERT","properties":[{"name":"Status","condition":""}]}],"uncertainties":[]}""";
         var result = JsonSerializer.Deserialize<EndpointAnalysisResult>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;

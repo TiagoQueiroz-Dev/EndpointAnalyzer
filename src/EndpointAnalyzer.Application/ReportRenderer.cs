@@ -261,27 +261,19 @@ public static class ReportRenderer
             return;
         }
 
+        // Mesmo formato da aba Resumo: título, contexto, condição e mensagem (sem arquivo, código ou confiança).
         foreach (var rule in rules)
         {
-            sb.AppendLine($"### {rule.Id}");
+            var ruleTitle = string.IsNullOrWhiteSpace(rule.Title) ? rule.Description : rule.Title;
+            sb.AppendLine($"### {rule.Id} — {ruleTitle}");
             sb.AppendLine();
-            sb.AppendLine(rule.Description);
-            sb.AppendLine();
-            sb.AppendLine($"Confiança: {rule.Confidence:0.00}");
-            if (rule.Evidence is { } e)
-            {
-                sb.AppendLine();
-                sb.AppendLine($"Evidência: `{e.File}:{e.Line}` — método `{e.Method}`");
-                if (!string.IsNullOrWhiteSpace(e.Code))
-                {
-                    sb.AppendLine();
-                    sb.AppendLine("```csharp");
-                    sb.AppendLine(e.Code.TrimEnd());
-                    sb.AppendLine("```");
-                }
-            }
+            sb.AppendLine($"- **Contexto:** {Or(rule.Context)}");
+            sb.AppendLine($"- **Condição:** {(string.IsNullOrWhiteSpace(rule.Condition) ? "—" : $"`{rule.Condition}`")}");
+            sb.AppendLine($"- **Mensagem de erro:** {(string.IsNullOrWhiteSpace(rule.ErrorMessage) ? "—" : $"\"{rule.ErrorMessage}\"")}");
             sb.AppendLine();
         }
+
+        static string Or(string text) => string.IsNullOrWhiteSpace(text) ? "—" : text;
     }
 
     private static void AppendTree(StringBuilder sb, CallNode node, int depth, bool collapseInfrastructure = false)

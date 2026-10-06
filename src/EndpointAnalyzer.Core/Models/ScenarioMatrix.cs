@@ -92,6 +92,60 @@ public class DecisionCondition
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public SourceReference? Source { get; set; }
+
+    /// <summary>Validação estruturada (kind = validacao): base do texto em linguagem natural sem IA.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DecisionValidation? Validation { get; set; }
+
+    /// <summary>Como a regra interrompe a operação (kind = regra).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DecisionRule? Rule { get; set; }
+}
+
+public class DecisionValidation
+{
+    /// <summary>Membro no C#: "TempoMedio".</summary>
+    public string Field { get; set; } = "";
+
+    /// <summary>Tipo que declara o campo: "AdicionarUnidadeV1Request" (nulo para parâmetros de rota/query).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Owner { get; set; }
+
+    /// <summary>required, notNull, notEmpty, maxLength, minLength, length, range, gt, gte, lt, lte, email, enum, equal, notEqual, opaque.</summary>
+    public string Kind { get; set; } = "";
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Min { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Max { get; set; }
+
+    /// <summary>Lista (limites em itens, não em caracteres).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Collection { get; set; }
+
+    /// <summary>Só vale quando o campo é informado (o campo não é obrigatório).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Optional { get; set; }
+
+    /// <summary>Condição do .When(...) do FluentValidation, como no código.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? When { get; set; }
+
+    /// <summary>DataAnnotations, FluentValidation ou implícito.</summary>
+    public string Origin { get; set; } = "";
+}
+
+public class DecisionRule
+{
+    /// <summary>throw, return, notify ou guard.</summary>
+    public string Kind { get; set; } = "";
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Exception { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? HttpStatus { get; set; }
 }
 
 public class Scenario

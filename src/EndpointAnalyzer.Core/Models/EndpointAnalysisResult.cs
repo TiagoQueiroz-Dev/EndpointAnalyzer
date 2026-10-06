@@ -44,6 +44,19 @@ public class BusinessRule
 {
     public string Id { get; set; } = "";
 
+    /// <summary>Frase direta do comportamento: "Gerente deve ter no máximo 50 caracteres."</summary>
+    public string Title { get; set; } = "";
+
+    /// <summary>Uma frase sobre onde a regra entra no fluxo: "Valida o gerente informado antes da persistência."</summary>
+    public string Context { get; set; } = "";
+
+    /// <summary>Condição que dispara a regra, limpa/normalizada: "Unidade.Gerente.Length &gt; 50".</summary>
+    public string Condition { get; set; } = "";
+
+    /// <summary>Mensagem de erro definida no código (vazio quando não há).</summary>
+    public string ErrorMessage { get; set; } = "";
+
+    /// <summary>Texto livre dos resultados anteriores ao <see cref="Title"/> (a IA não preenche mais).</summary>
     public string Description { get; set; } = "";
 
     /// <summary>0.00 → 1.00</summary>

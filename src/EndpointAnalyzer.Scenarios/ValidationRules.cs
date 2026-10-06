@@ -91,6 +91,10 @@ public sealed class ValidationRule
 
     private string LengthName => Var.Kind == VarKind.Collection ? "Count" : "Length";
 
+    public string? MinText => Min is null ? null : Show(Min);
+
+    public string? MaxText => Max is null ? null : Show(Max);
+
     private static string Show(Term? t) => t switch
     {
         ConstTerm c => c.Display,

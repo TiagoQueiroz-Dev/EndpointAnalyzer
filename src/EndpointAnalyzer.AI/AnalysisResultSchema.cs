@@ -20,7 +20,10 @@ public static class AnalysisResultSchema
         var rule = Obj(new()
         {
             ["id"] = Str(),
-            ["description"] = Str(),
+            ["title"] = Str(),
+            ["context"] = Str(),
+            ["condition"] = Str(),
+            ["errorMessage"] = Str(),
             ["confidence"] = new { type = "number" },
             ["evidence"] = evidence,
         });

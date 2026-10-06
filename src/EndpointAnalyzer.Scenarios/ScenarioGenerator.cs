@@ -653,20 +653,38 @@ public partial class ScenarioGenerator : IScenarioGenerator
             for (var x = v; x is not null; x = x.Parent) yield return x;
         }
 
+        private static bool IsPresenceRule(string kind) => kind is "required" or "notNull" or "notEmpty";
+
         private List<(DecisionCondition Condition, Func<Assignment, Outcome, bool?> Value)> DecisionConditions(List<Pred> branches)
         {
             var list = new List<(DecisionCondition, Func<Assignment, Outcome, bool?>)>();
             string NextId() => $"D{list.Count + 1}";
 
             foreach (var v in _validations)
-                list.Add((new DecisionCondition { Id = NextId(), Kind = "validacao", Expression = v.ViolationCode, Label = v.MessageOrDefault, Source = v.Source },
-                    (a, _) => Eval(v.Violation, a)));
+                list.Add((new DecisionCondition
+                {
+                    Id = NextId(), Kind = "validacao", Expression = v.ViolationCode, Label = v.MessageOrDefault, Source = v.Source,
+                    Validation = new DecisionValidation
+                    {
+                        Field = v.Field.Member,
+                        Owner = v.Field.Parent?.Type.Name,
+                        Kind = v.Kind,
+                        Min = v.MinText,
+                        Max = v.MaxText,
+                        Collection = v.Var.Kind == VarKind.Collection,
+                        // As demais regras passam com null: só valem quando o campo é informado, se nada o torna obrigatório.
+                        Optional = !IsPresenceRule(v.Kind) && !_validations.Any(o => o.Field == v.Field && IsPresenceRule(o.Kind)),
+                        When = v.When is null ? null : v.WhenCode ?? v.When.Text,
+                        Origin = v.Origin,
+                    },
+                }, (a, _) => Eval(v.Violation, a)));
 
             foreach (var rule in _rules)
                 list.Add((new DecisionCondition
                 {
                     Id = NextId(), Kind = "regra", Expression = rule.TriggerCode, Label = rule.Message,
                     RegistryId = RegistryId(rule.TriggerCode), Source = rule.Site.Source,
+                    Rule = new DecisionRule { Kind = rule.Kind, Exception = rule.Exception, HttpStatus = rule.Status },
                 }, (a, o) => Reached(rule.Site, a, o) ? Eval(rule.Trigger, a) : null));
 
             foreach (var branch in branches)

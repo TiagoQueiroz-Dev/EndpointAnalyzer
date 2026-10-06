@@ -24,8 +24,19 @@ public static partial class PromptBuilder
         - Analise exclusivamente as informações fornecidas. Não invente regras que não estejam sustentadas pelo código.
         - Toda regra, validação e alteração precisa de evidência: arquivo, método, linha e o trecho de código.
           Use os números de linha informados no contexto.
-        - Escreva as descrições em português, em linguagem de negócio (ex.: "Toda nova programação inicia com status Pendente.").
+        - Escreva os textos em português, em linguagem de negócio (ex.: "Toda nova programação inicia com status Pendente.").
         - Separe validações de entrada (formato, obrigatoriedade, DataAnnotations, FluentValidation) das regras de negócio.
+        - Cada regra e validação tem:
+          - title: frase direta do comportamento esperado, sem nomes de classes ou métodos.
+            Ex.: "Gerente deve ter no máximo 50 caracteres."
+          - context: uma única frase explicando onde aquilo entra no fluxo.
+            Ex.: "Valida o tamanho do gerente informado na unidade antes da persistência."
+          - condition: a condição que dispara a regra (a que faz a validação falhar ou a regra bloquear/agir), em versão
+            limpa e normalizada do código: Entidade.Propriedade em vez de variáveis locais e parâmetros, sem await,
+            sem operadores ?. e !, sem casts e sem chamadas de infraestrutura. Ex.: "Unidade.Gerente.Length > 50".
+          - errorMessage: a mensagem de erro exibida quando a condição/validação não é atendida, exatamente como está
+            no código (ErrorMessage, WithMessage, texto da exceção ou da notificação). Sem mensagem no código, use a
+            mensagem padrão do ASP.NET Core/FluentValidation quando for uma validação padrão; senão, string vazia.
         - Para cada propriedade alterada, informe a condição necessária para a alteração; use string vazia quando ela sempre acontece.
         - confidence vai de 0.0 a 1.0: alto quando o código mostra a regra diretamente, baixo quando é inferência.
         - Liste em uncertainties tudo que não pôde ser determinado com certeza (ex.: implementação não encontrada,
@@ -154,8 +165,8 @@ public static partial class PromptBuilder
         sb.AppendLine("""
             Retorne:
             1. Objetivo do endpoint (summary).
-            2. Regras de negócio.
-            3. Validações.
+            2. Regras de negócio (title, context, condition e errorMessage de cada uma).
+            3. Validações (title, context, condition e errorMessage de cada uma).
             4. Entidades criadas, alteradas e removidas, com os campos alterados.
             5. Condições necessárias para cada alteração.
             6. Evidência de código para cada conclusão.

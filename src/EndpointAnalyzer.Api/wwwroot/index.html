@@ -142,6 +142,13 @@
   pre { background: var(--code); padding: 10px 12px; border-radius: 6px; overflow-x: auto; font-size: 12.5px; margin: 6px 0; }
   code { font-family: ui-monospace, Consolas, monospace; }
   .card { border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; margin: 8px 0; }
+  .rule-card { padding: 12px 14px; }
+  .rule-title { display: flex; gap: 8px; align-items: baseline; font-weight: 600; font-size: 14.5px; }
+  .rule-id { flex: none; font: 600 11px ui-monospace, Consolas, monospace; color: var(--muted); }
+  .rule-fields { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 4px 12px; margin: 8px 0 0; font-size: 13.5px; }
+  .rule-fields dt { color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: .03em; padding-top: 2px; }
+  .rule-fields dd { margin: 0; overflow-wrap: anywhere; }
+  @media (max-width: 600px) { .rule-fields { grid-template-columns: 1fr; gap: 0; } .rule-fields dd { margin-bottom: 6px; } }
   .badge { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 10px; background: var(--code); color: var(--muted); margin-left: 6px; }
   table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
@@ -775,7 +782,7 @@ function render(tab) {
       ? `Cenários <span class="badge" title="confirmados em runtime / total">${report.runtime.matrix.counts.confirmado ?? 0}/${report.runtime.matrix.scenarios.length}</span>`
       : `Cenários${ctx.scenarios?.scenarios?.length ? ` <span class="badge">${ctx.scenarios.scenarios.length}</span>` : ""}`]];
   let body = "";
-  if (tab === "summary") body = report.ai ? renderDoc(report.ai) : renderSummary(ctx);
+  if (tab === "summary") body = report.ai ? renderDoc(report.ai, ctx) : renderSummary(ctx);
   if (tab === "business") body = renderBusiness();
   if (tab === "complete") body = renderComplete(ctx, report.runtime);
   if (tab === "scenarios") body = renderScenarios(ctx, report.ai, report.runtime);
@@ -810,22 +817,163 @@ function wireReportActions(ctx, markdown) {
   };
 }
 
-function renderRules(rules, list) {
-  if (!rules.length) return `<p class="muted">Nenhuma encontrada.</p>`;
-  return rules.map((r, i) => `
-    <div ${r.evidence?.file && r.evidence.line ? pickAttrs(`ai:${list}:${i}`, "card") : `class="card"`}>
-      <strong>${esc(r.id)}</strong><span class="badge">confiança ${Number(r.confidence).toFixed(2)}</span>
-      <div>${esc(r.description)}</div>
-      ${r.evidence ? `<div class="muted">${esc(r.evidence.file)}:${r.evidence.line} — ${esc(r.evidence.method)}</div>
-        ${r.evidence.code ? `<pre><code>${esc(r.evidence.code)}</code></pre>` : ""}` : ""}
-    </div>`).join("");
+// ---- Regras e validações (aba Resumo): título, contexto, condição e mensagem de erro, com ou sem IA ----
+
+/** Card no formato único. Sem arquivo, trecho de código ou confiança; clicar abre o código no painel. */
+function ruleCardHtml({ id, title, context, condition, message, pick }) {
+  return `<div ${pick ? pickAttrs(pick, "card rule-card") : `class="card rule-card"`}>
+    <div class="rule-title">${id ? `<span class="rule-id">${esc(id)}</span>` : ""}<span>${esc(title)}</span></div>
+    <dl class="rule-fields">
+      <dt>Contexto</dt><dd>${context ? esc(context) : dash}</dd>
+      <dt>Condição</dt><dd>${condition ? `<code>${esc(condition)}</code>` : dash}</dd>
+      <dt>Mensagem de erro</dt><dd>${message ? `"${esc(message)}"` : dash}</dd>
+    </dl>
+  </div>`;
 }
 
-function renderDoc(ai) {
+const ruleCards = (items) => items.length ? items.map(ruleCardHtml).join("") : `<p class="muted">Nenhuma encontrada.</p>`;
+
+/**
+ * Ordem de execução de um ponto do código (arquivo + linha): a linha de cada chamada no método chamador, do endpoint
+ * até o método que contém o ponto, e por fim a própria linha. Comparar essas chaves segue o fluxo, não o arquivo.
+ * Devolve null para o que está fora do call graph (atributos dos DTOs, validators).
+ */
+function codeOrder(ctx) {
+  const norm = (f) => String(f ?? "").replace(/\\/g, "/").toLowerCase();
+  const methods = [];
+  (function walk(node, key) {
+    if (!node) return;
+    // A primeira ocorrência é a expandida; as seguintes vêm como "já visitado".
+    if (node.sourceFile && !methods.some(m => m.file === norm(node.sourceFile) && m.line === node.sourceLine))
+      methods.push({ file: norm(node.sourceFile), line: node.sourceLine, key });
+    node.children?.forEach((c, i) => walk(c, [...key, c.callLine ?? 0, i]));
+  })(ctx.callTree, []);
+  return (file, line) => {
+    const f = norm(file);
+    if (!f || !line) return null;
+    const sameFile = (m) => m.file === f || m.file.endsWith("/" + f) || f.endsWith("/" + m.file);
+    // Método dono: a declaração mais próxima acima da linha, no mesmo arquivo.
+    const owner = methods.filter(m => sameFile(m) && m.line <= line).reduce((best, m) => !best || m.line > best.line ? m : best, null);
+    // Infinity: numa condição que chama um método na mesma linha, o método chamado executa antes.
+    return owner ? [...owner.key, line, Infinity] : null;
+  };
+}
+
+function compareOrder(a, b) {
+  for (let i = 0; i < Math.min(a.length, b.length); i++) if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
+  return a.length - b.length;
+}
+
+/** Ordena pelo fluxo do código (estável). O que está fora do call graph vai antes (validações de entrada, que rodam
+ *  antes da action) ou depois (regras), na ordem original. Renumera os ids na ordem final. */
+function sortByCode(items, orderOf, prefix, unknownFirst) {
+  const keyed = items.map(item => ({ item, key: item.source ? orderOf(item.source.file, item.source.line) : null }));
+  const known = keyed.filter(x => x.key).sort((a, b) => compareOrder(a.key, b.key)).map(x => x.item);
+  const unknown = keyed.filter(x => !x.key).map(x => x.item);
+  return (unknownFirst ? [...unknown, ...known] : [...known, ...unknown]).map((item, i) => ({ ...item, id: seqId(prefix, i) }));
+}
+
+/** Condição sem ruído de código: await, ?. e ! (null-forgiving), espaços repetidos. */
+const normalizeCondition = (expr) => String(expr ?? "").replace(/\bawait\s+/g, "").replace(/[?!]\./g, ".").replace(/\s+/g, " ").trim();
+
+/** Regras da IA, na ordem do código (pela evidência). Resultados antigos (antes de title/context/condition/errorMessage) caem na descrição. */
+function renderRules(rules, list, ctx) {
+  const items = rules.map((r, i) => ({
+    title: r.title || r.description, context: r.context, condition: normalizeCondition(r.condition), message: r.errorMessage,
+    source: r.evidence, pick: r.evidence?.file && r.evidence.line ? `ai:${list}:${i}` : null,
+  }));
+  return ruleCards(sortByCode(items, codeOrder(ctx), list === "validations" ? "VAL" : "REGRA", list === "validations"));
+}
+
+// Sem IA: o texto sai da validação estruturada (DataAnnotations/FluentValidation) e da regra encontrada no código.
+
+const boundText = (x) => ({ "DateTime.Today": "hoje", "DateTime.Now": "agora" }[x] ?? x);
+/** Primeira letra minúscula, menos em siglas (CPF, CNPJ). */
+const lowerFirst = (s) => /^[A-ZÀ-Ý]{2,}\b/.test(s) ? s : s.charAt(0).toLowerCase() + s.slice(1);
+
+function validationTitle(v) {
+  const name = capitalize(phrase(v.field));
+  const unit = v.collection ? "item(ns)" : "caracteres";
+  if (v.kind === "required" || v.kind === "notNull" || (v.kind === "notEmpty" && !v.collection))
+    return `${v.when ? `Quando ${conditionText(v.when)}, o` : "O"} campo ${lowerFirst(name)} é obrigatório.`;
+  const rule = {
+    notEmpty: "deve ter ao menos um item",
+    maxLength: `deve ter no máximo ${v.max} ${unit}`, minLength: `deve ter no mínimo ${v.min} ${unit}`,
+    length: v.min === v.max ? `deve ter exatamente ${v.min} ${unit}` : `deve ter entre ${v.min} e ${v.max} ${unit}`,
+    range: `deve estar entre ${boundText(v.min)} e ${boundText(v.max)}`,
+    exclusiveRange: `deve ser maior que ${boundText(v.min)} e menor que ${boundText(v.max)}`,
+    gt: `deve ser maior que ${boundText(v.min)}`, gte: `deve ser maior ou igual a ${boundText(v.min)}`,
+    lt: `deve ser menor que ${boundText(v.max)}`, lte: `deve ser menor ou igual a ${boundText(v.max)}`,
+    equal: `deve ser igual a ${boundText(v.min)}`, notEqual: `deve ser diferente de ${boundText(v.min)}`,
+    email: "deve ser um e-mail válido", enum: "deve ser um dos valores permitidos",
+  }[v.kind] ?? "deve atender à validação personalizada";
+  const prefix = v.when ? `Quando ${conditionText(v.when)}, ` : v.optional ? "Se informado, " : "";
+  return `${prefix}${prefix ? lowerFirst(name) : name} ${rule}.`;
+}
+
+function validationContext(v) {
+  const owner = v.owner ? ` em ${v.owner}` : "";
+  if (v.origin === "FluentValidation") return `Validação de entrada (FluentValidation${v.owner ? ` para ${v.owner}` : ""}), aplicada antes das regras de negócio.`;
+  if (v.origin === "implícito") return `Validação implícita do ASP.NET (campo não anulável${owner}), feita antes de executar a action.`;
+  return `Validação de entrada (DataAnnotations${owner}): o ASP.NET valida o modelo antes de executar a action.`;
+}
+
+/** "lança DomainException" / "retorna HTTP 400" a partir da regra estruturada ou da ação do ConditionInfo. */
+function ruleAction(rule, action) {
+  if (rule) {
+    const status = rule.httpStatus ? ` (HTTP ${rule.httpStatus})` : "";
+    return rule.kind === "throw" ? `lança ${rule.exception ?? "uma exceção"}${status}`
+      : rule.kind === "return" ? `retorna ${rule.httpStatus ? `HTTP ${rule.httpStatus}` : "erro"}`
+      : rule.kind === "notify" ? `registra uma notificação de domínio${status}` : `encerra o método${status}`;
+  }
+  const [verb, ...rest] = String(action ?? "").split(" ");
+  return verb === "throw" ? `lança ${rest.join(" ") || "uma exceção"}` : verb === "return" ? `retorna ${rest.join(" ") || "erro"}` : action ?? "";
+}
+
+const ruleContext = (method, action) =>
+  `Verificada em ${method || "um método do fluxo"}${action ? `: quando verdadeira, ${action} e interrompe a operação` : ""}.`;
+
+/** Comparações de campos viram frase ("data menor que hoje"); com chamadas de método o texto montado
+ *  dos nomes fica ruim ("possui placa existente placa"), então vale a mensagem do código, se houver. */
+const ruleTitle = (expression, message) => {
+  const text = conditionText(expression);
+  if (message && (!text || /\w\s*\(/.test(expression))) return message;
+  return text ? `Bloqueia a operação quando ${text}.` : expression;
+};
+
+const seqId = (prefix, i) => `${prefix}-${String(i + 1).padStart(3, "0")}`;
+
+/** Validações e regras sem IA: da matriz de cenários (estruturadas) ou, sem ela, das condições do código. */
+function staticRules(ctx) {
+  const m = ctx.scenarios, orderOf = codeOrder(ctx);
+  if (m) {
+    const validations = m.conditions.filter(c => c.kind === "validacao").map(c => ({
+      pick: `dec:${c.id}`, source: c.source, message: c.label, condition: normalizeCondition(c.expression),
+      title: c.validation ? validationTitle(c.validation) : ruleTitle(c.expression, c.label),
+      context: c.validation ? validationContext(c.validation) : "Validação de entrada, feita antes de executar a action.",
+    }));
+    const rules = m.conditions.filter(c => c.kind === "regra").map(c => ({
+      pick: `dec:${c.id}`, source: c.source, message: c.label, condition: normalizeCondition(c.expression),
+      title: ruleTitle(c.expression, c.label), context: ruleContext(c.source?.method, ruleAction(c.rule)),
+    }));
+    return { validations: sortByCode(validations, orderOf, "VAL", true), rules: sortByCode(rules, orderOf, "REGRA", false) };
+  }
+  const blocking = ctx.conditions.map((c, index) => ({ c, index })).filter(({ c }) => /^(throw|return|notifica)/.test(c.action) || c.kind === "validation");
+  const item = ({ c, index }) => ({
+    pick: `rule:${index}`, source: { file: c.sourceFile, line: c.sourceLine }, message: c.message, condition: normalizeCondition(c.expression),
+    title: ruleTitle(c.expression, c.message), context: ruleContext(c.method, ruleAction(null, c.action)),
+  });
+  return {
+    validations: sortByCode(blocking.filter(({ c }) => c.kind === "validation").map(item), orderOf, "VAL", true),
+    rules: sortByCode(blocking.filter(({ c }) => c.kind !== "validation").map(item), orderOf, "REGRA", false),
+  };
+}
+
+function renderDoc(ai, ctx) {
   return `
     <h3 style="margin-top:0">Objetivo</h3><p>${esc(ai.summary)}</p>
-    <h3>Regras de negócio</h3>${renderRules(ai.businessRules, "businessRules")}
-    <h3>Validações</h3>${renderRules(ai.validations, "validations")}
+    <h3>Regras de negócio</h3>${renderRules(ai.businessRules, "businessRules", ctx)}
+    <h3>Validações</h3>${renderRules(ai.validations, "validations", ctx)}
     <h3>Entidades alteradas</h3>
     ${ai.entityChanges.map(c => `
       <h4>${esc(c.entity)} <span class="badge">${esc(c.operation)}</span></h4>
@@ -909,14 +1057,14 @@ function changesHtml(ctx, registry) {
       </table></div>` : ""}`).join("") || `<p class="muted">Nenhuma entidade alterada.</p>`}`;
 }
 
-/** Resumo sem IA: efeitos, regras que bloqueiam e entidades. */
+/** Resumo sem IA: regras e validações (no mesmo formato da análise com IA), efeitos e entidades. */
 function renderSummary(ctx) {
   const registry = ctx.conditionRegistry ?? {};
-  const blocking = ctx.conditions.filter(c => /^(throw|return|notifica)/.test(c.action) || c.kind === "validation");
+  const { validations, rules } = staticRules(ctx);
   return `${statsHtml(ctx)}
+    <h3>Regras de negócio (${rules.length})</h3>${ruleCards(rules)}
+    <h3>Validações (${validations.length})</h3>${ruleCards(validations)}
     ${effectsHtml(ctx, registry)}
-    <h3>Regras que bloqueiam a operação (${blocking.length})</h3>
-    <ul>${blocking.map(c => `<li ${pickAttrs(`rule:${ctx.conditions.indexOf(c)}`)}>${c.message ? esc(c.message) : `<code>${esc(c.expression)}</code>`} <span class="muted">— ${esc(c.method)}</span></li>`).join("")}</ul>
     ${changesHtml(ctx, registry)}`;
 }
 
