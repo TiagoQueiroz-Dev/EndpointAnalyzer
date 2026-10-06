@@ -147,6 +147,14 @@ public class CallGraphBuilder(AnalyzerOptions options, IMethodResolver methodRes
                 Condition = callCondition,
             };
 
+            // Método de tipo genérico (ServiceBase<TEntity, TKey>, Repository<T>): abstração reaproveitada; a entidade é o argumento resolvido.
+            if (method.ContainingType.OriginalDefinition.TypeParameters.Length > 0)
+            {
+                node.GenericDeclaration = method.ContainingType.OriginalDefinition.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
+                node.GenericEntity = method.ContainingType.TypeArguments.Select(t => context.Resolve(t)).OfType<INamedTypeSymbol>()
+                    .FirstOrDefault(t => t is { TypeKind: TypeKind.Class, SpecialType: SpecialType.None })?.Name;
+            }
+
             if (resolution is { } r)
             {
                 node.ResolvedFrom = r.Target.Via;

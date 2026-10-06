@@ -25,6 +25,15 @@ public record AnalysisRequest
 
     /// <summary>Token da API analisada (header Authorization das requisições da validação em runtime).</summary>
     public string? ApiToken { get; init; }
+
+    /// <summary>Abas a produzir: summary, business, complete, scenarios. Nulo = todas; a análise roda só o que elas usam.</summary>
+    public List<string>? Sections { get; init; }
+
+    /// <summary>
+    /// Abas que usam IA (substitui UseAi/ValidateRuntime): summary (documentação), business (fluxo de negócio polido) e
+    /// scenarios (títulos e validação com a API em execução). Nulo = comportamento de UseAi.
+    /// </summary>
+    public List<string>? Ai { get; init; }
 }
 
 /// <summary>{ "endpoint": { "method": "POST", "route": "/api/x" }, "token": "eyJ..." } (token com ou sem "Bearer ").</summary>
@@ -71,7 +80,9 @@ public class AnalysisController(EndpointAnalysisService service, IConfiguration 
     {
         var solution = SolutionPath.Resolve(request.SolutionPath, configuration, environment);
         var endpoint = await service.FindEndpointAsync(solution, EndpointId(request.EndpointId, request.Endpoint), cancellationToken);
-        return await service.AnalyzeAsync(solution, endpoint, request.UseAi ?? await service.IsAiAvailableAsync(cancellationToken),
-            request.ValidateRuntime, request.ApiToken, cancellationToken);
+        var sections = AnalysisSectionNames.Parse(request.Sections);
+        AnalysisSections? ai = request.Ai is null ? null : AnalysisSectionNames.Parse(request.Ai, allowEmpty: true);
+        var useAi = ai is null ? request.UseAi ?? await service.IsAiAvailableAsync(cancellationToken) : ai != AnalysisSections.None;
+        return await service.AnalyzeAsync(solution, endpoint, useAi, request.ValidateRuntime, request.ApiToken, cancellationToken, sections, ai);
     }
 }

@@ -16,6 +16,16 @@ public interface IAiProvider
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Só as partes das abas pedidas: Resumo (documentação), Negócio (rótulos do fluxograma), Cenários (títulos).
+    /// O padrão ignora o filtro e devolve tudo.
+    /// </summary>
+    Task<EndpointAnalysisResult> AnalyzeAsync(
+        EndpointAnalysisContext context,
+        AnalysisSections sections,
+        CancellationToken cancellationToken = default) =>
+        AnalyzeAsync(context, cancellationToken);
+
+    /// <summary>
     /// Pergunta livre com resposta em JSON validado por <see cref="AiJsonRequest.Schema"/> (structured outputs).
     /// Usado pela validação dos cenários em runtime (planejamento, aquisição de dados, exploração).
     /// </summary>

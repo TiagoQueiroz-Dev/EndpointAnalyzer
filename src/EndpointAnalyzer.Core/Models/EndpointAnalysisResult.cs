@@ -109,6 +109,13 @@ public class EndpointAnalysisReport
 
     /// <summary>Validação dos cenários com a API em execução (só na análise com IA; nulo quando não rodou).</summary>
     public RuntimeValidation? Runtime { get; set; }
+
+    /// <summary>Fluxo de negócio polido pela IA (aba Negócio com IA); nulo quando não foi pedido.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public BusinessFlowAnalysis? BusinessFlow { get; set; }
+
+    /// <summary>Abas produzidas por esta análise (summary, business, complete, scenarios).</summary>
+    public List<string> Sections { get; set; } = AnalysisSectionNames.ToNames(AnalysisSections.All);
 }
 
 public class AnalysisVersion

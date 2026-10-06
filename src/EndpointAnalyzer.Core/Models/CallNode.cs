@@ -116,6 +116,17 @@ public class CallNode
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ResolvedFrom { get; set; }
 
+    /// <summary>
+    /// Tipo genérico que declara o método (ex.: ServiceBase&lt;TEntity, TKey&gt;): abstração reaproveitada por várias
+    /// entidades. Nulo para métodos de tipos não genéricos.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? GenericDeclaration { get; set; }
+
+    /// <summary>Entidade em que a abstração genérica opera neste ponto do fluxo (argumento de tipo resolvido, ex.: Hierarquia).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? GenericEntity { get; set; }
+
     /// <summary>Símbolo usado como receiver da chamada (ex.: _veiculoTipoService).</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Receiver { get; set; }

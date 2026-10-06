@@ -1,4 +1,5 @@
 using System.Text.Json;
+using EndpointAnalyzer.Core.Models;
 
 namespace EndpointAnalyzer.AI;
 
@@ -7,7 +8,8 @@ namespace EndpointAnalyzer.AI;
 /// </summary>
 public static class AnalysisResultSchema
 {
-    public static Dictionary<string, JsonElement> Create()
+    /// <param name="sections">Só os campos das abas pedidas (padrão: todos).</param>
+    public static Dictionary<string, JsonElement> Create(AnalysisSections sections = AnalysisSections.All)
     {
         var evidence = Obj(new()
         {
@@ -60,16 +62,19 @@ public static class AnalysisResultSchema
             ["description"] = Str(),
         });
 
-        var root = Obj(new()
+        var properties = new Dictionary<string, object>();
+        if (sections.HasFlag(AnalysisSections.Summary))
         {
-            ["summary"] = Str(),
-            ["businessRules"] = Arr(rule),
-            ["validations"] = Arr(rule),
-            ["entityChanges"] = Arr(entityChange),
-            ["uncertainties"] = Arr(Str()),
-            ["flowLabels"] = flowLabels,
-            ["scenarios"] = Arr(scenario),
-        });
+            properties["summary"] = Str();
+            properties["businessRules"] = Arr(rule);
+            properties["validations"] = Arr(rule);
+            properties["entityChanges"] = Arr(entityChange);
+            properties["uncertainties"] = Arr(Str());
+        }
+        if (sections.HasFlag(AnalysisSections.Business)) properties["flowLabels"] = flowLabels;
+        if (sections.HasFlag(AnalysisSections.Scenarios)) properties["scenarios"] = Arr(scenario);
+
+        var root = Obj(properties);
 
         return JsonSerializer.SerializeToElement(root)
             .EnumerateObject()

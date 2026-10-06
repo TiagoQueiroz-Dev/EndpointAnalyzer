@@ -74,7 +74,8 @@ public static partial class PromptBuilder
           programação é recusada com a mensagem de data inválida e nada é gravado."
         """;
 
-    private static readonly HashSet<string> FlowOnlyProperties = ["control", "callFile", "callLine", "callEndLine"];
+    // Também as marcas de abstração genérica, usadas só pelo fluxo de negócio (o prompt da documentação e o cache dele não mudam).
+    private static readonly HashSet<string> FlowOnlyProperties = ["control", "callFile", "callLine", "callEndLine", "genericDeclaration", "genericEntity"];
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -97,7 +98,11 @@ public static partial class PromptBuilder
         },
     };
 
-    public static string BuildUserPrompt(EndpointAnalysisContext context)
+    /// <summary>Abas que usam a resposta da IA (Completo só mostra a análise estática e o runtime).</summary>
+    public const AnalysisSections AiSections = AnalysisSections.Summary | AnalysisSections.Business | AnalysisSections.Scenarios;
+
+    /// <param name="sections">Abas pedidas: o prompt só leva os dados e só pede as partes delas (padrão: tudo).</param>
+    public static string BuildUserPrompt(EndpointAnalysisContext context, AnalysisSections sections = AnalysisSections.All)
     {
         var sb = new StringBuilder();
         var endpoint = context.Endpoint;
@@ -141,12 +146,15 @@ public static partial class PromptBuilder
         sb.AppendLine("</persistence_points>");
         sb.AppendLine();
 
-        sb.AppendLine("<flow_items>");
-        sb.AppendLine(Json(FlowItems(context)));
-        sb.AppendLine("</flow_items>");
-        sb.AppendLine();
+        if (sections.HasFlag(AnalysisSections.Business))
+        {
+            sb.AppendLine("<flow_items>");
+            sb.AppendLine(Json(FlowItems(context)));
+            sb.AppendLine("</flow_items>");
+            sb.AppendLine();
+        }
 
-        if (context.Scenarios is { Scenarios.Count: > 0 } matrix)
+        if (sections.HasFlag(AnalysisSections.Scenarios) && context.Scenarios is { Scenarios.Count: > 0 } matrix)
         {
             sb.AppendLine("<scenario_matrix>");
             sb.AppendLine(Json(ScenarioOutline(matrix)));
@@ -162,19 +170,43 @@ public static partial class PromptBuilder
         sb.AppendLine("</code>");
         sb.AppendLine();
 
-        sb.AppendLine("""
-            Retorne:
-            1. Objetivo do endpoint (summary).
-            2. Regras de negócio (title, context, condition e errorMessage de cada uma).
-            3. Validações (title, context, condition e errorMessage de cada uma).
-            4. Entidades criadas, alteradas e removidas, com os campos alterados.
-            5. Condições necessárias para cada alteração.
-            6. Evidência de código para cada conclusão.
-            7. Pontos que não puderam ser determinados com certeza.
-            8. Rótulos do fluxograma para todos os itens de flow_items (flowLabels).
-            9. Título e descrição de cada cenário de scenario_matrix (scenarios).
-            """);
+        if ((sections & AiSections) == AiSections)
+        {
+            sb.AppendLine("""
+                Retorne:
+                1. Objetivo do endpoint (summary).
+                2. Regras de negócio (title, context, condition e errorMessage de cada uma).
+                3. Validações (title, context, condition e errorMessage de cada uma).
+                4. Entidades criadas, alteradas e removidas, com os campos alterados.
+                5. Condições necessárias para cada alteração.
+                6. Evidência de código para cada conclusão.
+                7. Pontos que não puderam ser determinados com certeza.
+                8. Rótulos do fluxograma para todos os itens de flow_items (flowLabels).
+                9. Título e descrição de cada cenário de scenario_matrix (scenarios).
+                """);
+            return sb.ToString();
+        }
 
+        // Só parte das abas: pede apenas o que elas exibem (o schema também só tem esses campos).
+        var items = new List<string>();
+        if (sections.HasFlag(AnalysisSections.Summary))
+            items.AddRange([
+                "Objetivo do endpoint (summary).",
+                "Regras de negócio (title, context, condition e errorMessage de cada uma).",
+                "Validações (title, context, condition e errorMessage de cada uma).",
+                "Entidades criadas, alteradas e removidas, com os campos alterados.",
+                "Condições necessárias para cada alteração.",
+                "Evidência de código para cada conclusão.",
+                "Pontos que não puderam ser determinados com certeza.",
+            ]);
+        if (sections.HasFlag(AnalysisSections.Business))
+            items.Add("Rótulos do fluxograma para todos os itens de flow_items (flowLabels).");
+        if (sections.HasFlag(AnalysisSections.Scenarios))
+            items.Add("Título e descrição de cada cenário de scenario_matrix (scenarios).");
+
+        sb.AppendLine("Retorne somente:");
+        for (var i = 0; i < items.Count; i++)
+            sb.AppendLine($"{i + 1}. {items[i]}");
         return sb.ToString();
     }
 

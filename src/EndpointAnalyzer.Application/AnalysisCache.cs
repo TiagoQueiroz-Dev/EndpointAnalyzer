@@ -22,16 +22,23 @@ public class AnalysisCache(string directory)
         return Convert.ToHexString(bytes)[..32].ToLowerInvariant();
     }
 
-    public async Task<EndpointAnalysisResult?> GetAsync(string key, CancellationToken cancellationToken = default)
+    public Task<EndpointAnalysisResult?> GetAsync(string key, CancellationToken cancellationToken = default) =>
+        GetAsync<EndpointAnalysisResult>(key, cancellationToken);
+
+    public Task SetAsync(string key, EndpointAnalysisResult result, CancellationToken cancellationToken = default) =>
+        SetAsync<EndpointAnalysisResult>(key, result, cancellationToken);
+
+    /// <summary>Qualquer resposta da IA (documentação, fluxo de negócio...): a chave já diz o que foi perguntado.</summary>
+    public async Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken = default) where T : class
     {
         var file = PathOf(key);
         if (!File.Exists(file)) return null;
 
         await using var stream = File.OpenRead(file);
-        return await JsonSerializer.DeserializeAsync<EndpointAnalysisResult>(stream, JsonOptions, cancellationToken);
+        return await JsonSerializer.DeserializeAsync<T>(stream, JsonOptions, cancellationToken);
     }
 
-    public async Task SetAsync(string key, EndpointAnalysisResult result, CancellationToken cancellationToken = default)
+    public async Task SetAsync<T>(string key, T result, CancellationToken cancellationToken = default)
     {
         Directory.CreateDirectory(directory);
         await using var stream = File.Create(PathOf(key));

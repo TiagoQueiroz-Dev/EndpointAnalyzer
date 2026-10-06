@@ -50,6 +50,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IRelevanceAnalyzer, RelevanceAnalyzer>();
         services.AddSingleton<IAnalysisContextBuilder, AnalysisContextBuilder>();
         services.AddSingleton<IScenarioGenerator, ScenarioGenerator>();
+        services.AddSingleton<IBusinessFlowAiAnalyzer, BusinessFlowAiAnalyzer>();
         services.AddSingleton(new AnalysisCache(AnalysisCache.DefaultDirectory));
 
         // Validação dos cenários com a API em execução (só na análise com IA).

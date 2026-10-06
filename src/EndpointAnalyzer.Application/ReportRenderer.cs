@@ -83,13 +83,15 @@ public static class ReportRenderer
         var context = report.Context;
         var ai = report.Ai;
         var sb = new StringBuilder();
+        // Só as abas pedidas na análise: Resumo (documentação), Cenários/Completo (matriz), Negócio/Completo (fluxo).
+        bool Has(string section) => report.Sections.Contains(section);
 
         sb.AppendLine($"# {context.Endpoint.Id}");
         sb.AppendLine();
         sb.AppendLine($"`{context.Endpoint.Controller}.{context.Endpoint.Action}` — `{context.Endpoint.SourceFile}:{context.Endpoint.SourceLine}`");
         sb.AppendLine();
 
-        if (ai is not null)
+        if (Has("summary") && ai is not null)
         {
             sb.AppendLine("## Objetivo");
             sb.AppendLine();
@@ -121,35 +123,67 @@ public static class ReportRenderer
                 sb.AppendLine();
             }
         }
-        else
+        else if (Has("summary") || Has("complete"))
         {
-            sb.AppendLine("> Análise estática apenas (sem IA).");
+            sb.AppendLine(ai is null ? "> Análise estática apenas (sem IA)." : "> Análise estática.");
             sb.AppendLine();
             sb.AppendLine("```text");
-            sb.Append(StaticSummary(context));
+            sb.Append(StaticSummary(context, Has("summary") ? "negocio" : "completo"));
             sb.AppendLine("```");
             sb.AppendLine();
         }
 
         // Com IA, a matriz exibida é a validada em runtime; sem IA (ou se a validação falhou), a estática.
-        if (report.Runtime is { Matrix: { } validated } runtime)
-            AppendValidatedScenarios(sb, runtime, validated, ai?.Scenarios);
-        else if (context.Scenarios is { } matrix)
+        if (Has("scenarios") || Has("complete"))
         {
-            if (report.Runtime is { } failed)
+            if (report.Runtime is { Matrix: { } validated } runtime)
+                AppendValidatedScenarios(sb, runtime, validated, ai?.Scenarios);
+            else if (context.Scenarios is { } matrix)
             {
-                sb.AppendLine($"> Validação em runtime não executada: {failed.Error ?? failed.Status}. Abaixo, a matriz estática (candidata).");
-                sb.AppendLine();
+                if (report.Runtime is { } failed)
+                {
+                    sb.AppendLine($"> Validação em runtime não executada: {failed.Error ?? failed.Status}. Abaixo, a matriz estática (candidata).");
+                    sb.AppendLine();
+                }
+                AppendScenarios(sb, matrix, ai?.Scenarios);
             }
-            AppendScenarios(sb, matrix, ai?.Scenarios);
         }
 
-        sb.AppendLine("## Fluxo");
-        sb.AppendLine();
-        sb.AppendLine("```text");
-        sb.AppendLine(string.Join("\n→ ", context.CallGraph));
-        sb.AppendLine("```");
-        sb.AppendLine();
+        if (Has("business") && report.BusinessFlow is { } flow)
+        {
+            sb.AppendLine("## Fluxo de negócio (IA)");
+            sb.AppendLine();
+            if (flow.Diagrams.FirstOrDefault(d => !d.ShowTechnicalDetails && !d.ShowCollapsedNodes) is { } diagram)
+            {
+                sb.AppendLine("```mermaid");
+                sb.Append(diagram.Mermaid);
+                sb.AppendLine("```");
+                sb.AppendLine();
+            }
+            else
+            {
+                sb.AppendLine($"> Fluxo de negócio não gerado: {flow.Error ?? "sem resposta da IA"}.");
+                sb.AppendLine();
+            }
+            if (flow.Issues.Count > 0)
+            {
+                sb.AppendLine("Validação contra as evidências:");
+                sb.AppendLine();
+                foreach (var issue in flow.Issues)
+                    sb.AppendLine($"- {issue}");
+                sb.AppendLine();
+            }
+        }
+
+        if (Has("business") || Has("complete"))
+        {
+            sb.AppendLine("## Fluxo");
+            sb.AppendLine();
+            sb.AppendLine("```text");
+            sb.AppendLine(string.Join("\n→ ", context.CallGraph));
+            sb.AppendLine("```");
+            sb.AppendLine();
+        }
 
         var v = report.Version;
         sb.AppendLine("---");

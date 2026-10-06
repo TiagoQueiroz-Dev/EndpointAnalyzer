@@ -135,6 +135,13 @@
   .endpoint-route .method { font-size: 12px; }
   .route { font-family: ui-monospace, Consolas, monospace; font-size: 13.5px; overflow-wrap: anywhere; }
   .check { display: flex; gap: 6px; align-items: center; margin: 0; color: var(--text); font-size: 14px; }
+  /* Abas no resultado: cada aba com o uso da IA logo abaixo. */
+  .tab-options { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px 22px; margin-top: 10px; }
+  .tab-options-title { padding-top: 1px; font-size: 14px; }
+  .tab-option { display: flex; flex-direction: column; gap: 5px; }
+  .check.sub { padding-left: 20px; font-size: 13px; color: var(--muted); }
+  .check.sub.off { opacity: .55; }
+  .ai-source { flex-direction: row; align-items: center; gap: 10px; font-size: 13px; }
   .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 12px; flex-wrap: wrap; }
   .tabs button { background: none; color: var(--muted); border-radius: 0; border-bottom: 2px solid transparent; }
   .tabs button.active { color: var(--text); border-bottom-color: var(--accent); }
@@ -268,7 +275,20 @@
   .flow-canvas:not(.dragging) .flow-stage g.node { cursor: pointer; }
   .flow-stage g.node:hover { filter: brightness(.94); }
   .code-dialog { padding: 0; width: min(1000px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow: hidden; outline: none; }
-  .code-dialog .code-panel { position: static; max-height: calc(100vh - 48px); border: 0; border-radius: 0; box-shadow: none; }
+  .code-dialog[open] { display: flex; flex-direction: column; }
+  .code-dialog .code-panel { position: static; flex: 1; min-height: 0; max-height: none; margin: 0; border: 0; border-radius: 0; box-shadow: none; }
+  /* Rastreabilidade do passo do fluxo de negócio (IA): por que a IA incluiu aquele nó. */
+  .code-trace { flex: none; max-height: 40vh; overflow: auto; padding: 12px 16px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .code-trace[hidden] { display: none; }
+  .trace { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
+  .trace dt { color: var(--muted); }
+  .trace dd { margin: 0; overflow-wrap: anywhere; }
+  .trace code { font-size: 12px; }
+  .flow-views { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  .flow-views .chip { cursor: pointer; }
+  .flow-views .spacer { flex: 1; }
+  .flow-issues { margin-top: 12px; }
+  .flow-issues summary { cursor: pointer; color: var(--muted); }
   .flow-zoom { position: absolute; right: 8px; bottom: 8px; z-index: 1; display: flex; gap: 4px; }
   .flow-zoom button { min-width: 32px; padding: 4px 8px; font-size: 13px; background: var(--panel); }
   .flow-zoom span { align-self: center; min-width: 46px; text-align: center; font-size: 12px; color: #5d6677; }
@@ -382,6 +402,7 @@
 </dialog>
 
 <dialog id="codeDialog" class="code-dialog" aria-label="Código da etapa do fluxograma">
+  <div id="codeTrace" class="code-trace" hidden></div>
   <div id="codePopup" class="code-panel"></div>
 </dialog>
 
@@ -655,13 +676,14 @@ function renderEndpointPanel() {
     <h2 class="endpoint-title">${esc(e.summary || `${e.controller}.${e.action}`)}</h2>
     <div class="endpoint-route"><span class="method ${esc(e.httpMethod)}">${esc(e.httpMethod)}</span><span class="route">${esc(e.route)}</span></div>
     <p class="muted">${esc(e.controller)}.${esc(e.action)} — ${esc(e.sourceFile)}:${e.sourceLine}</p>
-    <div class="row">
-      <label class="check"><input id="useAi" type="checkbox"> <span id="useAiLabel">Usar IA</span></label>
-      <span id="aiModeSlot"></span>
-    </div>
-    <div class="row" id="runtimeRow" ${runtimeAvailable ? "" : "hidden"}>
-      <label class="check" title="Sobe a API analisada, busca dados reais pelos endpoints e executa cada cenário para validar a matriz">
-        <input id="validateRuntime" type="checkbox"> <span>Validar os cenários com a API em execução</span></label>
+    <div class="tab-options" role="group" aria-label="Abas no resultado da análise"
+         title="A análise roda só o que as abas marcadas exibem; a IA, só nas abas em que ela está marcada">
+      <span class="muted tab-options-title">Abas no resultado:</span>
+      ${resultTabs.map(([id, label]) => `<div class="tab-option">
+        <label class="check"><input type="checkbox" data-section="${id}"> ${label}</label>
+        ${aiOptions[id] ? `<label class="check sub" title="${esc(aiOptions[id].title)}"><input type="checkbox" data-ai="${id}"> ${aiOptions[id].label}</label>` : ""}
+      </div>`).join("")}
+      <div class="tab-option ai-source"><span id="aiSource" class="muted"></span><span id="aiModeSlot"></span></div>
     </div>
     <div id="tokenRow" ${runtimeAvailable ? "" : "hidden"}>
       <div class="row">
@@ -684,35 +706,57 @@ function renderEndpointPanel() {
       </span>
     </div>`;
   $("analyze").addEventListener("click", analyze);
-  $("validateRuntime").checked = store.get("ea.validateRuntime", true);
-  $("validateRuntime").addEventListener("change", ev => store.set("ea.validateRuntime", ev.target.checked));
-  $("useAi").addEventListener("change", updateRuntimeControl);
-  $("validateRuntime").addEventListener("change", updateRuntimeControl);
+  const sections = store.get("ea.sections", resultTabs.map(([id]) => id));
+  document.querySelectorAll("[data-section]").forEach(box => {
+    box.checked = sections.includes(box.dataset.section);
+    box.addEventListener("change", () => { store.set("ea.sections", selectedSections()); updateTabOptions(); });
+  });
+  const ai = store.get("ea.ai", Object.keys(aiOptions));
+  document.querySelectorAll("[data-ai]").forEach(box => {
+    box.checked = ai.includes(box.dataset.ai);
+    box.addEventListener("change", () => {
+      store.set("ea.ai", [...document.querySelectorAll("[data-ai]")].filter(b => b.checked).map(b => b.dataset.ai));
+      updateTabOptions();
+    });
+  });
   $("apiToken").addEventListener("change", () => checkToken(false));
   $("apiToken").addEventListener("keydown", ev => { if (ev.key === "Enter") { ev.preventDefault(); checkToken(true); } });
   restoreToken();
   updateAiControls(true);
 }
 
-/** A validação em runtime só existe na análise com IA. */
-function updateRuntimeControl() {
-  if (!$("validateRuntime")) return;
-  $("validateRuntime").disabled = !$("useAi").checked;
-  // O token só é usado na validação em runtime.
-  $("apiToken").disabled = !$("useAi").checked || !$("validateRuntime").checked;
+/** Abas do resultado, na ordem exibida; a análise só roda o que as marcadas usam. */
+const resultTabs = [["summary", "Resumo"], ["business", "Negócio"], ["complete", "Completo"], ["scenarios", "Cenários"]];
+const selectedSections = () => [...document.querySelectorAll("[data-section]")].filter(b => b.checked).map(b => b.dataset.section);
+const sectionsOf = (report) => report.sections ?? resultTabs.map(([id]) => id);
+
+/** Uso da IA em cada aba (Completo só mostra a análise estática e o que o runtime já produziu). */
+const aiOptions = {
+  summary: { label: "Usar IA", title: "A IA escreve o objetivo, as regras, as validações e as entidades alteradas" },
+  business: { label: "Polir fluxo com IA", title: "A IA transforma o call graph técnico num fluxo de negócio, com cada passo ligado às evidências do código" },
+  scenarios: { label: "Usar IA", title: "A IA dá título e descrição a cada cenário e valida a matriz com a API em execução (busca dados reais e executa cada cenário)" },
+};
+/** Abas com a IA marcada e utilizável (aba marcada e IA disponível). */
+const selectedAi = () => [...document.querySelectorAll("[data-ai]")].filter(b => b.checked && !b.disabled).map(b => b.dataset.ai);
+
+/** A IA de cada aba depende da aba marcada e de uma conta do Claude; o token só serve à validação dos cenários. */
+function updateTabOptions() {
+  if (!$("aiSource")) return;
+  const source = authState?.activeSource, sections = selectedSections();
+  document.querySelectorAll("[data-ai]").forEach(box => {
+    box.disabled = !source || !sections.includes(box.dataset.ai);
+    box.closest("label").classList.toggle("off", box.disabled);
+  });
+  $("apiToken").disabled = !runtimeAvailable || !selectedAi().includes("scenarios");
 }
 
-/** Atualiza a caixa "Usar IA" e o seletor de origem conforme a conta. */
+/** Origem da IA (conta do Claude) e o seletor de origem. */
 function updateAiControls(initial) {
-  if (!$("useAi")) return;
+  if (!$("aiSource")) return;
   const s = authState ?? {};
   const source = s.activeSource;
-  const wasDisabled = $("useAi").disabled;
-  $("useAi").disabled = !source;
-  if (!source) $("useAi").checked = false;
-  else if (initial || wasDisabled) $("useAi").checked = true;
-  $("useAiLabel").textContent = source === "subscription" ? "Usar IA (Claude · plano mensal)"
-    : source === "api" ? "Usar IA (Claude · API)" : "Usar IA (entre com Claude para habilitar)";
+  $("aiSource").textContent = source === "subscription" ? "IA: Claude · plano mensal"
+    : source === "api" ? "IA: Claude · API" : "IA indisponível: entre com Claude para habilitar";
 
   $("aiModeSlot").innerHTML = s.apiConfigured && s.cliInstalled ? `<select id="aiMode" title="Origem da IA">
       <option value="auto">IA: automática</option>
@@ -724,7 +768,7 @@ function updateAiControls(initial) {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: ev.target.value }),
     })));
   }
-  updateRuntimeControl();
+  updateTabOptions();
 }
 
 // ---- Análise ----
@@ -732,11 +776,19 @@ function updateAiControls(initial) {
 async function analyze() {
   if (!selected) return;
   const endpoint = selected;
+  const sections = selectedSections();
+  if (!sections.length) {
+    $("analyzeStatus").textContent = "Selecione ao menos uma aba para o resultado.";
+    $("analyzeStatus").className = "error";
+    return;
+  }
   $("analyze").disabled = true;
   $("analyzeStatus").className = "muted";
-  const runtime = runtimeAvailable && $("useAi").checked && $("validateRuntime").checked;
+  const ai = selectedAi();
+  // A IA dos cenários inclui a validação com a API em execução (quando o servidor permite).
+  const runtime = runtimeAvailable && ai.includes("scenarios");
   $("analyzeStatus").textContent = runtime ? "Analisando com IA e validando os cenários com a API em execução (pode levar vários minutos)..."
-    : $("useAi").checked ? "Analisando com IA (pode levar alguns minutos)..." : "Analisando...";
+    : ai.length ? "Analisando com IA (pode levar alguns minutos)..." : "Analisando...";
   try {
     const response = await api("/api/analysis", {
       method: "POST",
@@ -744,7 +796,8 @@ async function analyze() {
       body: JSON.stringify({
         solutionPath,
         endpoint: { method: endpoint.httpMethod, route: endpoint.route },
-        useAi: $("useAi").checked,
+        sections,
+        ai,
         validateRuntime: runtime,
         apiToken: runtime && apiToken() ? apiToken() : null,
       }),
@@ -752,13 +805,17 @@ async function analyze() {
     if (selected !== endpoint) return;
     lastResponse = response;
     resetSource();
-    const rt = response.report.runtime;
+    const rt = response.report.runtime, flow = response.report.businessFlow;
     $("analyzeStatus").textContent = (response.report.fromCache ? "Concluído (cache)" : "Concluído")
       + (!rt ? "" : rt.status === "falhou" ? " · a validação em runtime falhou (veja a aba Cenários)"
-        : ` · ${rt.matrix?.counts?.confirmado ?? 0} de ${rt.matrix?.scenarios?.length ?? 0} cenário(s) confirmado(s) em runtime`);
+        : ` · ${rt.matrix?.counts?.confirmado ?? 0} de ${rt.matrix?.scenarios?.length ?? 0} cenário(s) confirmado(s) em runtime`)
+      + (flow?.error ? " · o fluxo de negócio por IA falhou (veja a aba Negócio)" : "");
+    businessView = flow?.result ? "ai" : "technical";
     scenarioView = rt?.matrix ? "validated" : "static";
     scenarioFilter = "all";
-    render(response.report.ai ? "summary" : "business");
+    // Primeira aba pedida (com IA, o Resumo vem primeiro; sem ela, o fluxo de negócio).
+    const order = response.report.ai ? ["summary", "business", "complete", "scenarios"] : ["business", "summary", "complete", "scenarios"];
+    render(order.find(id => sectionsOf(response.report).includes(id)));
   } catch (err) {
     if (selected !== endpoint) return;
     $("analyzeStatus").textContent = err.message;
@@ -774,7 +831,8 @@ function render(tab) {
   const tabs = [["summary", "Resumo"], ["business", "Negócio"], ["complete", "Completo"],
     ["scenarios", report.runtime?.matrix
       ? `Cenários <span class="badge" title="confirmados em runtime / total">${report.runtime.matrix.counts.confirmado ?? 0}/${report.runtime.matrix.scenarios.length}</span>`
-      : `Cenários${ctx.scenarios?.scenarios?.length ? ` <span class="badge">${ctx.scenarios.scenarios.length}</span>` : ""}`]];
+      : `Cenários${ctx.scenarios?.scenarios?.length ? ` <span class="badge">${ctx.scenarios.scenarios.length}</span>` : ""}`]]
+    .filter(([id]) => sectionsOf(report).includes(id));
   let body = "";
   if (tab === "summary") body = report.ai ? renderDoc(report.ai, ctx) : renderSummary(ctx);
   if (tab === "business") body = renderBusiness();
@@ -789,7 +847,7 @@ function render(tab) {
   // Mantém o código aberto ao trocar de aba quando o item selecionado também aparece na nova aba.
   if (picked && ![...document.querySelectorAll("[data-pick]")].some(el => el.dataset.pick === picked)) picked = null;
   showSource();
-  if (tab === "business") showFlow(ctx.businessGraph ?? ctx.callTree, "business");
+  if (tab === "business") showBusiness();
   if (tab === "scenarios") wireScenarios(ctx, report.ai, report.runtime);
   // Atalhos da aba Completo (sem href: o hash da URL guarda o endpoint selecionado).
   document.querySelectorAll("[data-jump]").forEach(b => b.addEventListener("click", () =>
@@ -1072,8 +1130,88 @@ function renderSummary(ctx) {
     ${changesHtml(ctx, registry)}`;
 }
 
+let businessView = "technical";   // "ai": fluxo de negócio polido pela IA; "technical": grafo da análise estática
+const flowOptions = { details: false, collapsed: false };
+
+/** Aba Negócio: com o fluxo da IA, alterna entre ele (interpretação) e o fluxo técnico (evidência original). */
 function renderBusiness() {
-  return flowHtml("Copiar o grafo de negócio completo como texto");
+  const flow = lastResponse.report.businessFlow;
+  const view = flow?.result ? businessView : "technical";
+  const toggles = flow?.result ? `<div class="flow-views">
+      <button type="button" class="chip ${view === "ai" ? "on" : ""}" data-flow-view="ai">Fluxo de negócio (IA)</button>
+      <button type="button" class="chip ${view === "technical" ? "on" : ""}" data-flow-view="technical">Fluxo técnico</button>
+      ${view === "ai" ? `<span class="spacer"></span>
+        <label class="check"><input type="checkbox" data-flow-opt="details" ${flowOptions.details ? "checked" : ""}> Mostrar detalhes técnicos</label>
+        <label class="check"><input type="checkbox" data-flow-opt="collapsed" ${flowOptions.collapsed ? "checked" : ""}> Mostrar nós removidos/colapsados</label>` : ""}
+    </div>` : "";
+  const error = flow?.error ? `<p class="error">O fluxo de negócio por IA falhou: ${esc(flow.error)}. Abaixo, o fluxo técnico.</p>` : "";
+  return toggles + error + flowHtml("Copiar o grafo de negócio completo como texto") + (view === "ai" ? businessFlowNotesHtml(flow) : "");
+}
+
+/** Validação contra as evidências e passos incertos, abaixo do fluxograma da IA. */
+function businessFlowNotesHtml(flow) {
+  const uncertain = flow.result.uncertainSteps ?? [];
+  const steps = new Map(flow.result.steps.map(s => [s.id, s]));
+  return (uncertain.length ? `<h4>Passos incertos</h4><ul>${uncertain.map(u =>
+      `<li><code>${esc(u.stepId)}</code> ${esc(steps.get(u.stepId)?.description ?? "")} — <span class="muted">${esc(u.reason)}</span></li>`).join("")}</ul>` : "")
+    + (flow.issues.length ? `<details class="flow-issues"><summary>Validação contra as evidências (${flow.issues.length})</summary>
+      <ul>${flow.issues.map(i => `<li>${esc(i)}</li>`).join("")}</ul></details>`
+      : `<p class="muted">Todos os passos do fluxo têm evidência na análise estática.</p>`);
+}
+
+function showBusiness() {
+  const { context, businessFlow } = lastResponse.report;
+  document.querySelectorAll("[data-flow-opt]").forEach(box => box.addEventListener("change", () => {
+    flowOptions[box.dataset.flowOpt] = box.checked;
+    showBusinessFlow();
+  }));
+  if (businessFlow?.result && businessView === "ai") showBusinessFlow();
+  else showFlow(context.businessGraph ?? context.callTree, "business");
+}
+
+/** Fluxograma gerado pelo servidor a partir do BusinessFlowResult validado (BusinessFlowMermaidGenerator). */
+function showBusinessFlow() {
+  const { context, businessFlow: flow } = lastResponse.report;
+  const diagram = flow.diagrams.find(d => d.showTechnicalDetails === flowOptions.details && d.showCollapsedNodes === flowOptions.collapsed)
+    ?? flow.diagrams[0];
+  copyButton("copyFlow", diagram.mermaid);
+  copyButton("copyGraph", graphText(context.businessGraph ?? context.callTree));
+  drawFlow(diagram.mermaid, (id) => openStepTrace(flow, id));
+}
+
+/** Clique num passo do fluxo de negócio: descrição, origem, condição, arquivo, linha e evidências, com o código. */
+function openStepTrace(flow, id) {
+  const nodes = new Map(flow.callGraph.nodes.map(n => [n.id, n]));
+  const evidence = new Map([...flow.evidence.conditions, ...flow.evidence.exceptions, ...flow.evidence.persistence,
+    ...flow.evidence.queries, ...flow.evidence.externalCalls, ...flow.callGraph.nodes].map(e => [e.id, e]));
+  const groups = flow.result.collapsedNodes;
+  // K1, K2...: grupo de nós técnicos (na ordem de collapsedNodes).
+  const group = /^K\d+$/.test(id) ? groups[Number(id.slice(1)) - 1] : null;
+  const step = flow.result.steps.find(s => s.id === (group ? group.stepId : id));
+  const grouped = group ? [group] : groups.filter(g => g.stepId === id);
+  const firstNode = grouped.flatMap(g => g.nodeIds).map(n => nodes.get(n)).find(n => n?.source);
+
+  const evidenceText = (e) => [e.kind ?? e.type, e.caller ?? e.method, e.expression, e.message && `"${e.message}"`, e.httpStatus && `HTTP ${e.httpStatus}`,
+    e.entity, e.service, e.purpose, e.via && `via ${e.via}`, e.usage, e.source].filter(Boolean).join(" · ");
+  const cited = (step?.evidenceIds ?? []).map(e => evidence.get(e)).filter(Boolean);
+  // Abstrações genéricas usadas pelo passo: o que foi chamado, sobre qual entidade, e a instrução que usa.
+  const abstractions = [...new Map(cited.filter(e => e.via).map(e => [e.via + (e.entity ?? ""), e])).values()];
+  const rows = [
+    ["Descrição", step ? esc(step.description) : group ? "Nós técnicos removidos do fluxo de negócio" : ""],
+    ["Origem", esc(step?.trace?.method ?? firstNode?.method ?? "")],
+    ["Condição", step?.trace?.condition ? `<code>${esc(step.trace.condition)}</code>` : ""],
+    ["Arquivo", esc(step?.trace?.file ?? "")],
+    ["Linha", step?.trace?.line ? String(step.trace.line) : ""],
+    ["Evidências", (step?.evidenceIds ?? []).map(e => `<code title="${esc(evidence.get(e) ? evidenceText(evidence.get(e)) : "")}">${esc(e)}</code>`).join(" ")],
+    ["Abstrações", abstractions.map(e => `<code>${esc(e.via)}</code>${e.entity ? ` sobre <b>${esc(e.entity)}</b>` : ""}${e.usage ? `<div class="muted"><code>${esc(e.usage)}</code></div>` : ""}`).join("")],
+    ["Inconsistências", (step?.inconsistencies ?? []).map(esc).join("<br>")],
+    ["Agrupou", grouped.map(g => `${g.nodeIds.map(n => `<code title="${esc(nodes.get(n)?.source ?? "")}">${esc(nodes.get(n)?.via ? `${nodes.get(n).via} (${nodes.get(n).entity ?? "?"})` : nodes.get(n)?.method ?? n)}</code>`).join("<br>")}
+      ${g.reason ? `<div class="muted">${esc(g.reason)}</div>` : ""}`).join("")],
+  ].filter(([, v]) => v);
+  const trace = `<dl class="trace">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>`;
+  const target = step?.trace?.file && step.trace.line ? { file: step.trace.file, line: step.trace.line }
+    : firstNode ? { file: firstNode.file ?? null, line: firstNode.line ?? null } : null;
+  openCodePopup(target?.file && target.line ? target : null, trace);
 }
 
 const copyIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`;
@@ -2104,6 +2242,11 @@ async function showFlow(root, mode) {
   const { code, sources } = flowchartOf(root, mode, makeNaming(context, ai));
   copyButton("copyFlow", code);
   copyButton("copyGraph", graphText(root));
+  drawFlow(code, (id) => openCodePopup(sources.get(id) ?? null), seq);
+}
+
+/** Desenha o código Mermaid na área do fluxograma (com zoom e arrasto); onNodeClick recebe o id do nó. */
+async function drawFlow(code, onNodeClick, seq = ++flowSeq) {
   try {
     const { mermaid, layout } = await loadMermaid();
     mermaid.initialize({
@@ -2111,7 +2254,7 @@ async function showFlow(root, mode) {
       flowchart: { htmlLabels: true },
     });
     const { svg } = await mermaid.render(`flow${seq}`, code);
-    if (seq === flowSeq && $("flowCanvas")) panZoom($("flowCanvas"), svg, (id) => openCodePopup(sources.get(id) ?? null));
+    if (seq === flowSeq && $("flowCanvas")) panZoom($("flowCanvas"), svg, onNodeClick);
   } catch (err) {
     if (seq === flowSeq && $("flowCanvas")) {
       $("flowCanvas").classList.add("flow-error");
@@ -2263,8 +2406,11 @@ window.addEventListener("resize", sizeCodeRow);
 
 /** Clique num nó do fluxograma: o código daquela etapa num popup. */
 let popupSeq = 0;
-function openCodePopup(target) {
+/** traceHtml: rastreabilidade do passo do fluxo de negócio (IA), mostrada acima do código. */
+function openCodePopup(target, traceHtml = "") {
   const dialog = $("codeDialog"), seq = ++popupSeq;
+  $("codeTrace").innerHTML = traceHtml;
+  $("codeTrace").hidden = !traceHtml;
   if (!dialog.open) dialog.showModal();
   renderCode($("codePopup"), target, () => seq === popupSeq && dialog.open);
 }
@@ -2495,6 +2641,8 @@ $("result").addEventListener("click", (e) => {
   if (filter) { scenarioFilter = filter.dataset.scenFilter; render("scenarios"); return; }
   const vfilter = e.target.closest("[data-vfilter]");
   if (vfilter) { validatedFilter = vfilter.dataset.vfilter; render("scenarios"); return; }
+  const flowView = e.target.closest("[data-flow-view]");
+  if (flowView) { businessView = flowView.dataset.flowView; render("business"); return; }
   const view = e.target.closest("[data-scen-view]");
   if (view) { scenarioView = view.dataset.scenView; render("scenarios"); return; }
   const expand = e.target.closest("[data-expand]");

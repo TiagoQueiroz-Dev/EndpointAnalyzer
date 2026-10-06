@@ -85,4 +85,25 @@ public sealed class FakeAiProvider : IAiProvider
             BusinessRules = [new BusinessRule { Id = "REGRA-001", Description = "Regra de teste", Confidence = 0.9 }],
         });
     }
+
+    /// <summary>Só o fluxo de negócio (BusinessFlowAiAnalyzer) tem resposta fixa; as etapas de runtime não são respondidas.</summary>
+    public Task<System.Text.Json.JsonElement> CompleteJsonAsync(AiJsonRequest request, CancellationToken cancellationToken = default)
+    {
+        if (request.Purpose != AI.BusinessFlowAiAnalyzer.Purpose)
+            throw new NotSupportedException("A IA falsa não responde às etapas de runtime.");
+        return Task.FromResult(System.Text.Json.JsonDocument.Parse("""
+            {
+              "steps": [
+                { "id": "B1", "type": "entry", "description": "Receber a programação", "evidenceIds": ["N1"], "next": "B2", "branches": [] },
+                { "id": "B2", "type": "validation", "description": "Data no passado?", "evidenceIds": ["C1"], "next": "",
+                  "branches": [{ "condition": "Sim", "target": "B3" }, { "condition": "Não", "target": "B4" }] },
+                { "id": "B3", "type": "error", "description": "Retornar erro de data inválida", "evidenceIds": ["E1"], "next": "", "branches": [] },
+                { "id": "B4", "type": "persistence", "description": "Gravar a programação", "evidenceIds": ["P1"], "next": "B5", "branches": [] },
+                { "id": "B5", "type": "result", "description": "Retornar o id criado", "evidenceIds": ["N1"], "next": "", "branches": [] }
+              ],
+              "collapsedNodes": [{ "stepId": "B4", "nodeIds": ["N2"], "reason": "chamada técnica" }],
+              "uncertainSteps": []
+            }
+            """).RootElement.Clone());
+    }
 }

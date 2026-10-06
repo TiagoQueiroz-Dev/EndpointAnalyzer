@@ -12,16 +12,18 @@ public class ClaudeCodeProvider(ClaudeCodeOptions options) : IAiProvider
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 
-    private static readonly string SchemaJson = JsonSerializer.Serialize(AnalysisResultSchema.Create());
-
     // Effort faz parte do nome: entra na chave do cache e no versionamento da análise.
     public string Model => string.IsNullOrEmpty(options.Effort)
         ? $"{options.Model} (assinatura)"
         : $"{options.Model} (assinatura, effort {options.Effort})";
 
-    public async Task<EndpointAnalysisResult> AnalyzeAsync(EndpointAnalysisContext context, CancellationToken cancellationToken = default)
+    public Task<EndpointAnalysisResult> AnalyzeAsync(EndpointAnalysisContext context, CancellationToken cancellationToken = default) =>
+        AnalyzeAsync(context, AnalysisSections.All, cancellationToken);
+
+    public async Task<EndpointAnalysisResult> AnalyzeAsync(EndpointAnalysisContext context, AnalysisSections sections, CancellationToken cancellationToken = default)
     {
-        var result = await RunAsync(PromptBuilder.SystemPrompt, SchemaJson, PromptBuilder.BuildUserPrompt(context), cancellationToken);
+        var schemaJson = JsonSerializer.Serialize(AnalysisResultSchema.Create(sections));
+        var result = await RunAsync(PromptBuilder.SystemPrompt, schemaJson, PromptBuilder.BuildUserPrompt(context, sections), cancellationToken);
         return ParseResult(result.Output, result.Error);
     }
 

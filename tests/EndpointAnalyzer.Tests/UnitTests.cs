@@ -212,4 +212,41 @@ public class PromptBuilderTests
         Assert.Equal(81, result.BusinessRules[0].Evidence!.Line);
         Assert.Equal("Status", result.EntityChanges[0].Properties[0].Name);
     }
+
+    [Fact]
+    public void Abas_selecionadas_limitam_prompt_e_schema()
+    {
+        var context = new EndpointAnalysisContext
+        {
+            Endpoint = new EndpointInfo { HttpMethod = "POST", Route = "/x", Controller = "C", Action = "A" },
+            CallTree = new CallNode { TypeName = "C", MethodName = "A" },
+            Scenarios = new ScenarioMatrix { Scenarios = [new Scenario { Id = "CEN-01" }] },
+        };
+
+        // Só Cenários: pede só os títulos, sem os itens do fluxograma nem a documentação.
+        var prompt = PromptBuilder.BuildUserPrompt(context, AnalysisSections.Scenarios);
+        Assert.Contains("<scenario_matrix>", prompt);
+        Assert.DoesNotContain("<flow_items>", prompt);
+        Assert.Contains("Retorne somente:\n1. Título e descrição de cada cenário", prompt.ReplaceLineEndings("\n"));
+        Assert.Equal(["scenarios"], AnalysisResultSchema.Create(AnalysisSections.Scenarios)["required"].EnumerateArray().Select(e => e.GetString()).ToList());
+
+        // Só Negócio: rótulos do fluxograma, sem a matriz.
+        prompt = PromptBuilder.BuildUserPrompt(context, AnalysisSections.Business);
+        Assert.Contains("<flow_items>", prompt);
+        Assert.DoesNotContain("<scenario_matrix>", prompt);
+        Assert.Equal(["flowLabels"], AnalysisResultSchema.Create(AnalysisSections.Business)["required"].EnumerateArray().Select(e => e.GetString()).ToList());
+
+        // Todas as abas da IA: o mesmo prompt de antes (o cache das análises completas continua valendo).
+        Assert.Equal(PromptBuilder.BuildUserPrompt(context), PromptBuilder.BuildUserPrompt(context, PromptBuilder.AiSections));
+    }
+
+    [Fact]
+    public void Nomes_das_abas()
+    {
+        Assert.Equal(AnalysisSections.Summary | AnalysisSections.Scenarios, AnalysisSectionNames.Parse(["summary", "SCENARIOS"]));
+        Assert.Equal(AnalysisSections.All, AnalysisSectionNames.Parse(null));
+        Assert.Throws<ArgumentException>(() => AnalysisSectionNames.Parse([]));
+        Assert.Throws<ArgumentException>(() => AnalysisSectionNames.Parse(["xpto"]));
+        Assert.Equal(["business", "complete"], AnalysisSectionNames.ToNames(AnalysisSections.Business | AnalysisSections.Complete));
+    }
 }

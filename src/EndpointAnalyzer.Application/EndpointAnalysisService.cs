@@ -1,6 +1,7 @@
 using EndpointAnalyzer.AI;
 using EndpointAnalyzer.ChangeDetection;
 using EndpointAnalyzer.Context;
+using EndpointAnalyzer.Context.BusinessFlow;
 using EndpointAnalyzer.Core;
 using EndpointAnalyzer.Core.Interfaces;
 using EndpointAnalyzer.Core.Models;
@@ -14,7 +15,8 @@ namespace EndpointAnalyzer.Application;
 
 /// <summary>
 /// Orquestra todo o processo: call graph → condições → alterações → contexto → IA.
-/// Com IA, a matriz de cenários também é validada com a API em execução (RuntimeValidationService).
+/// Com IA, a matriz de cenários também é validada com a API em execução (RuntimeValidationService) e o fluxo de negócio
+/// é polido a partir do call graph e das evidências (BusinessFlowAiAnalyzer).
 /// </summary>
 public class EndpointAnalysisService(
     SolutionCache solutions,
@@ -28,11 +30,17 @@ public class EndpointAnalysisService(
     IAiProviderSelector? aiSelector = null,
     ILogger<EndpointAnalysisService>? logger = null,
     RuntimeValidationService? runtime = null,
-    ApiTokenChecker? tokens = null)
+    ApiTokenChecker? tokens = null,
+    IBusinessFlowAiAnalyzer? businessFlow = null)
 {
+    /// <summary>Abas cuja IA vai na chamada da documentação (Resumo: regras; Cenários: títulos). Negócio tem chamada própria.</summary>
+    private const AnalysisSections DocumentationSections = AnalysisSections.Summary | AnalysisSections.Scenarios;
+
     private readonly ILogger _logger = logger ?? NullLogger<EndpointAnalysisService>.Instance;
 
-    private sealed record StaticAnalysis(LoadedSolution Solution, EndpointAnalysisContext Context, ScenarioModel Scenarios);
+    private readonly IBusinessFlowAiAnalyzer _businessFlow = businessFlow ?? new BusinessFlowAiAnalyzer();
+
+    private sealed record StaticAnalysis(LoadedSolution Solution, EndpointAnalysisContext Context, ScenarioModel? Scenarios);
 
     public async Task<bool> IsAiAvailableAsync(CancellationToken cancellationToken = default) =>
         aiSelector is not null && await aiSelector.SelectAsync(cancellationToken) is not null;
@@ -59,9 +67,10 @@ public class EndpointAnalysisService(
 
     /// <summary>Somente a análise estática (Roslyn), sem IA.</summary>
     public async Task<EndpointAnalysisContext> BuildContextAsync(string solutionPath, EndpointInfo endpoint, CancellationToken cancellationToken = default) =>
-        (await BuildStaticAsync(solutionPath, endpoint, cancellationToken)).Context;
+        (await BuildStaticAsync(solutionPath, endpoint, true, cancellationToken)).Context;
 
-    private async Task<StaticAnalysis> BuildStaticAsync(string solutionPath, EndpointInfo endpoint, CancellationToken cancellationToken)
+    /// <param name="generateScenarios">Gera a matriz de cenários (Z3); só as abas Cenários e Completo (e o Resumo sem IA) usam.</param>
+    private async Task<StaticAnalysis> BuildStaticAsync(string solutionPath, EndpointInfo endpoint, bool generateScenarios, CancellationToken cancellationToken)
     {
         var loaded = await solutions.GetAsync(solutionPath, cancellationToken: cancellationToken);
 
@@ -70,18 +79,49 @@ public class EndpointAnalysisService(
         var foundChanges = await changes.AnalyzeAsync(graph, cancellationToken);
 
         var analysisContext = context.Build(graph, foundConditions, foundChanges);
+        if (!generateScenarios) return new StaticAnalysis(loaded, analysisContext, null);
+
         // A matriz é a mesma de GenerateAsync; o modelo guarda as restrições para a validação em runtime.
         var model = await scenarios.GenerateModelAsync(graph, analysisContext, cancellationToken);
         analysisContext.Scenarios = model.Matrix;
         return new StaticAnalysis(loaded, analysisContext, model);
     }
 
-    /// <param name="validateRuntime">Com IA: valida a matriz com a API em execução. Nulo = Runtime:Enabled. Sem IA, nunca roda.</param>
+    /// <param name="useAi">Sem <paramref name="aiSections"/>: IA em todas as abas pedidas (como antes, rótulos do fluxograma na documentação).</param>
+    /// <param name="validateRuntime">Valida a matriz com a API em execução quando a IA dos cenários está ligada. Nulo = Runtime:Enabled.</param>
     /// <param name="apiToken">Token da API analisada, enviado no header Authorization das requisições da validação em runtime.</param>
+    /// <param name="sections">
+    /// Abas pedidas: só roda o que elas exibem. Matriz de cenários para Cenários/Completo (e Resumo sem IA) e IA só nas abas pedidas.
+    /// </param>
+    /// <param name="aiSections">
+    /// Abas que usam IA (ignora <paramref name="useAi"/>): Resumo → documentação; Negócio → fluxo de negócio polido
+    /// (BusinessFlowAiAnalyzer); Cenários → títulos dos cenários e validação em runtime. Completo não usa IA.
+    /// </param>
     public async Task<EndpointAnalysisReport> AnalyzeAsync(string solutionPath, EndpointInfo endpoint, bool useAi = true, bool? validateRuntime = null,
-        string? apiToken = null, CancellationToken cancellationToken = default)
+        string? apiToken = null, CancellationToken cancellationToken = default, AnalysisSections sections = AnalysisSections.All,
+        AnalysisSections? aiSections = null)
     {
-        var analysis = await BuildStaticAsync(solutionPath, endpoint, cancellationToken);
+        var scenarioTabs = (sections & (AnalysisSections.Scenarios | AnalysisSections.Complete)) != 0;
+        var runtimeAllowed = runtime is not null && (validateRuntime ?? runtime.Options.Enabled);
+        AnalysisSections documentation;
+        bool runBusinessFlow, runRuntime;
+        if (aiSections is { } chosen)
+        {
+            var withAi = chosen & sections & PromptBuilder.AiSections;
+            documentation = withAi & DocumentationSections;
+            runBusinessFlow = withAi.HasFlag(AnalysisSections.Business);
+            runRuntime = withAi.HasFlag(AnalysisSections.Scenarios) && runtimeAllowed;
+        }
+        else
+        {
+            documentation = useAi ? sections & PromptBuilder.AiSections : AnalysisSections.None;
+            runBusinessFlow = false;
+            runRuntime = useAi && scenarioTabs && runtimeAllowed;
+        }
+
+        // O Resumo sem IA monta as regras e validações a partir da matriz.
+        var generateScenarios = scenarioTabs || (sections.HasFlag(AnalysisSections.Summary) && !documentation.HasFlag(AnalysisSections.Summary));
+        var analysis = await BuildStaticAsync(solutionPath, endpoint, generateScenarios, cancellationToken);
         var analysisContext = analysis.Context;
         var (commit, branch) = GitInfo.Read(Path.GetDirectoryName(Path.GetFullPath(solutionPath))!);
 
@@ -94,23 +134,26 @@ public class EndpointAnalysisService(
                 Branch = branch,
                 AnalyzerVersion = AnalyzerInfo.Version,
             },
+            Sections = AnalysisSectionNames.ToNames(sections),
         };
 
-        if (!useAi) return report;
+        if (documentation == AnalysisSections.None && !runBusinessFlow && !runRuntime) return report;
         var ai = aiSelector is null ? null : await aiSelector.SelectAsync(cancellationToken);
         if (ai is null)
             throw new InvalidOperationException("Nenhuma IA disponível. Entre com sua conta do Claude (plano mensal) ou defina ANTHROPIC_API_KEY.");
 
         report.Version.AiModel = ai.Model;
 
-        // Documentação e validação em runtime são independentes: rodam em paralelo.
-        var runtimeTask = runtime is not null && (validateRuntime ?? runtime.Options.Enabled)
-            ? runtime.ValidateAsync(analysis.Solution, analysisContext, analysis.Scenarios, ai, apiToken, cancellationToken)
+        // Documentação, fluxo de negócio e validação em runtime são independentes: rodam em paralelo.
+        var runtimeTask = runRuntime
+            ? runtime!.ValidateAsync(analysis.Solution, analysisContext, analysis.Scenarios!, ai, apiToken, cancellationToken)
             : null;
 
         try
         {
-            await DocumentAsync(report, endpoint, ai, cancellationToken);
+            await Task.WhenAll(
+                documentation != AnalysisSections.None ? DocumentAsync(report, endpoint, ai, documentation, cancellationToken) : Task.CompletedTask,
+                runBusinessFlow ? BusinessFlowAsync(report, endpoint, ai, cancellationToken) : Task.CompletedTask);
         }
         finally
         {
@@ -138,13 +181,51 @@ public class EndpointAnalysisService(
         }
     }
 
-    private async Task DocumentAsync(EndpointAnalysisReport report, EndpointInfo endpoint, IAiProvider ai, CancellationToken cancellationToken)
+    /// <summary>
+    /// Fluxo de negócio por IA: evidências da análise estática → IA (structured outputs) → validação contra as
+    /// evidências → Mermaid. Uma falha aqui não derruba a análise: fica registrada e a aba mostra o fluxo técnico.
+    /// </summary>
+    private async Task BusinessFlowAsync(EndpointAnalysisReport report, EndpointInfo endpoint, IAiProvider ai, CancellationToken cancellationToken)
+    {
+        var analysisContext = report.Context;
+        var (graph, evidence) = BusinessFlowEvidenceBuilder.Build(analysisContext);
+        var flow = new BusinessFlowAnalysis { CallGraph = graph, Evidence = evidence };
+        report.BusinessFlow = flow;
+        try
+        {
+            var prompt = BusinessFlowAiAnalyzer.BuildUserPrompt(analysisContext, graph, evidence);
+            var key = AnalysisCache.Key($"{BusinessFlowAiAnalyzer.SystemPrompt}\n{prompt}", ai.Model, AnalyzerInfo.Version);
+            var result = await cache.GetAsync<BusinessFlowResult>(key, cancellationToken);
+            flow.FromCache = result is not null;
+            if (result is null)
+            {
+                _logger.LogInformation("Enviando o fluxo de negócio de {Endpoint} para {Model}", endpoint.Id, ai.Model);
+                result = await _businessFlow.AnalyzeAsync(analysisContext, graph, evidence, ai, cancellationToken);
+                // O cache guarda a resposta da IA como veio; a validação roda sempre (e altera o objeto).
+                await cache.SetAsync(key, result, cancellationToken);
+            }
+
+            flow.Issues = BusinessFlowValidator.Validate(result, graph, evidence);
+            flow.Result = result;
+            flow.Diagrams = BusinessFlowMermaidGenerator.All(result, graph);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogWarning(e, "Fluxo de negócio por IA de {Endpoint} falhou", endpoint.Id);
+            flow.Error = e.Message;
+        }
+    }
+
+    private async Task DocumentAsync(EndpointAnalysisReport report, EndpointInfo endpoint, IAiProvider ai, AnalysisSections sections, CancellationToken cancellationToken)
     {
         var analysisContext = report.Context;
 
         // A chave é o que a IA recebe: o payload dos cenários (com datas relativas a hoje) não entra no prompt nem no cache.
-        var key = AnalysisCache.Key(PromptBuilder.BuildUserPrompt(analysisContext), ai.Model, AnalyzerInfo.Version);
+        // Com parte das abas, uma análise completa do mesmo código também serve (tem todas as partes).
+        var key = AnalysisCache.Key(PromptBuilder.BuildUserPrompt(analysisContext, sections), ai.Model, AnalyzerInfo.Version);
         var cached = await cache.GetAsync(key, cancellationToken);
+        if (cached is null && sections != PromptBuilder.AiSections)
+            cached = await cache.GetAsync(AnalysisCache.Key(PromptBuilder.BuildUserPrompt(analysisContext), ai.Model, AnalyzerInfo.Version), cancellationToken);
         if (cached is not null)
         {
             _logger.LogInformation("Análise de {Endpoint} reaproveitada do cache ({Key})", endpoint.Id, key);
@@ -154,7 +235,7 @@ public class EndpointAnalysisService(
         }
 
         _logger.LogInformation("Enviando {Endpoint} para {Model}", endpoint.Id, ai.Model);
-        report.Ai = await ai.AnalyzeAsync(analysisContext, cancellationToken);
+        report.Ai = await ai.AnalyzeAsync(analysisContext, sections, cancellationToken);
         await cache.SetAsync(key, report.Ai, cancellationToken);
     }
 }

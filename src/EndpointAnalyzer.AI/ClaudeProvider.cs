@@ -34,9 +34,12 @@ public class ClaudeProvider(ClaudeOptions options) : IAiProvider
 
     public string Model => options.Model;
 
-    public async Task<EndpointAnalysisResult> AnalyzeAsync(EndpointAnalysisContext context, CancellationToken cancellationToken = default)
+    public Task<EndpointAnalysisResult> AnalyzeAsync(EndpointAnalysisContext context, CancellationToken cancellationToken = default) =>
+        AnalyzeAsync(context, AnalysisSections.All, cancellationToken);
+
+    public async Task<EndpointAnalysisResult> AnalyzeAsync(EndpointAnalysisContext context, AnalysisSections sections, CancellationToken cancellationToken = default)
     {
-        var json = await CompleteAsync(PromptBuilder.SystemPrompt, AnalysisResultSchema.Create(), PromptBuilder.BuildUserPrompt(context), cancellationToken);
+        var json = await CompleteAsync(PromptBuilder.SystemPrompt, AnalysisResultSchema.Create(sections), PromptBuilder.BuildUserPrompt(context, sections), cancellationToken);
         return JsonSerializer.Deserialize<EndpointAnalysisResult>(json, JsonOptions)
             ?? throw new AiProviderException("Resposta vazia da IA.");
     }

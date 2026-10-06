@@ -136,6 +136,27 @@ public class EndpointAnalysisTests(SampleSolutionFixture fixture)
     }
 
     [Fact]
+    public async Task Roda_so_o_que_as_abas_selecionadas_usam()
+    {
+        var endpoint = await fixture.Service.FindEndpointAsync(fixture.SolutionPath, "PATCH /api/programacoes/{id}/finalizar");
+
+        // Só Completo: matriz de cenários sim, IA não (a aba não usa a resposta dela).
+        var before = fixture.Ai.Calls;
+        var complete = await fixture.Service.AnalyzeAsync(fixture.SolutionPath, endpoint, useAi: true, validateRuntime: false, sections: AnalysisSections.Complete);
+        Assert.Equal(before, fixture.Ai.Calls);
+        Assert.Null(complete.Ai);
+        Assert.NotNull(complete.Context.Scenarios);
+        Assert.Equal(["complete"], complete.Sections);
+
+        // Só Negócio: IA (rótulos do fluxograma) sim, matriz de cenários e runtime não.
+        var business = await fixture.Service.AnalyzeAsync(fixture.SolutionPath, endpoint, useAi: true, validateRuntime: true, sections: AnalysisSections.Business);
+        Assert.NotNull(business.Ai);
+        Assert.Null(business.Context.Scenarios);
+        Assert.Null(business.Runtime);
+        Assert.DoesNotContain("## Matriz de cenários", ReportRenderer.Markdown(business));
+    }
+
+    [Fact]
     public async Task Mostra_o_codigo_da_regra_destacando_o_if_inteiro()
     {
         var context = await fixture.ContextAsync("POST /api/programacoes");
