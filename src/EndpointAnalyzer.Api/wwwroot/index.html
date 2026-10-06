@@ -274,19 +274,20 @@
   .flow-zoom span { align-self: center; min-width: 46px; text-align: center; font-size: 12px; color: #5d6677; }
 
   /* ---- Código da regra / validação / condição selecionada ---- */
-  .result-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
-  .result-grid.with-code { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .pick { cursor: pointer; }
-  tr.pick:hover td, li.pick:hover { background: var(--hover); }
-  tr.picked td, li.picked { background: var(--active); }
-  tr.picked td:first-child, li.picked { box-shadow: inset 3px 0 var(--accent); }
-  li.pick { padding: 2px 6px; border-radius: 4px; }
+  tr.pick:hover td, li.pick:hover, h4.pick:hover { background: var(--hover); }
+  tr.picked td, li.picked, h4.picked { background: var(--active); }
+  tr.picked td:first-child, li.picked, h4.picked { box-shadow: inset 3px 0 var(--accent); }
+  li.pick, h4.pick { padding: 2px 6px; border-radius: 4px; }
   .card.pick:hover { border-color: var(--muted); }
   .card.picked { border-color: var(--accent); box-shadow: inset 3px 0 var(--accent); }
   .pick:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-  .code-panel { position: sticky; top: 16px; display: flex; flex-direction: column; max-height: calc(100vh - 32px);
+  /* O código abre logo abaixo do item selecionado: depois do card ou numa linha extra da tabela. */
+  .code-panel { display: flex; flex-direction: column; max-height: 60vh; margin: 0 0 12px;
                 border: 1px solid var(--border); border-radius: 8px; background: var(--panel); overflow: hidden; }
-  .code-panel[hidden] { display: none; }
+  .result-body .code-row > td { position: static; min-width: 0; padding: 0 8px 10px; background: var(--active); }
+  /* Tabela larga (rolagem horizontal): o código fica preso à área visível, com a largura dela (sizeCodeRow). */
+  .code-row .code-panel { position: sticky; left: 8px; margin: 0; }
   .code-head { display: flex; align-items: center; gap: 12px; padding: 8px 8px 8px 12px; border-bottom: 1px solid var(--border); font-size: 12.5px; }
   .code-file { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
   .code-range { flex: none; color: var(--muted); }
@@ -309,13 +310,6 @@
   .code-line.hl, .code-line.hl .n { background: var(--hl); }
   .code-line.hl .n { color: var(--text); font-weight: 600; }
   .code-line.hl .t { box-shadow: inset 3px 0 var(--hl-border); }
-  /* Tela estreita: o código abre por cima, na parte de baixo. */
-  @media (max-width: 1200px) {
-    .result-grid.with-code { grid-template-columns: minmax(0, 1fr); }
-    .result-grid.with-code .result-body { padding-bottom: 52vh; }
-    .code-panel { position: fixed; top: auto; left: 16px; right: 16px; bottom: 16px; max-height: 50vh; z-index: 10;
-                  box-shadow: 0 8px 28px rgba(0, 0, 0, .25); }
-  }
 
   dialog { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); color: var(--text); padding: 20px; width: min(460px, calc(100vw - 32px)); }
   dialog::backdrop { background: rgba(0, 0, 0, .45); }
@@ -790,7 +784,7 @@ function render(tab) {
   $("result").innerHTML = `<section>
     <p class="muted" style="margin-top:0">analisador ${esc(report.version.analyzerVersion)}${report.version.commit ? ` · commit ${esc(report.version.commit)}` : ""}${report.version.aiModel ? ` · ${esc(report.version.aiModel)}` : ""}</p>
     <div class="tabs">${tabs.map(([id, label]) => `<button data-tab="${id}" class="${id === tab ? "active" : ""}">${label}</button>`).join("")}</div>
-    <div class="result-grid"><div class="result-body">${body}</div><div id="codePanel" class="code-panel" hidden></div></div></section>`;
+    <div class="result-body">${body}</div></section>`;
   document.querySelectorAll("[data-tab]").forEach(b => b.addEventListener("click", () => render(b.dataset.tab)));
   // Mantém o código aberto ao trocar de aba quando o item selecionado também aparece na nova aba.
   if (picked && ![...document.querySelectorAll("[data-pick]")].some(el => el.dataset.pick === picked)) picked = null;
@@ -975,11 +969,16 @@ function renderDoc(ai, ctx) {
     <h3>Regras de negócio</h3>${renderRules(ai.businessRules, "businessRules", ctx)}
     <h3>Validações</h3>${renderRules(ai.validations, "validations", ctx)}
     <h3>Entidades alteradas</h3>
-    ${ai.entityChanges.map(c => `
-      <h4>${esc(c.entity)} <span class="badge">${esc(c.operation)}</span></h4>
+    ${ai.entityChanges.map(c => {
+      // Evidência: a alteração equivalente da análise estática (mesma entidade e operação, mesma propriedade).
+      const i = ctx.entityChanges.findIndex(s => s.entity === c.entity && s.operation === c.operation), s = ctx.entityChanges[i];
+      const prop = (name) => s ? s.propertyChanges.findIndex(p => p.property === name) : -1;
+      return `
+      <h4 ${pickIf(changeSource(s), `ent:${i}`)}>${esc(c.entity)} <span class="badge">${esc(c.operation)}</span></h4>
       <div class="table-wrap"><table><tr><th>Campo</th><th>Condição</th></tr>
-      ${c.properties.map(p => `<tr><td><code>${esc(p.name)}</code></td><td>${p.condition ? `<code>${esc(p.condition)}</code>` : "sempre"}</td></tr>`).join("")}
-      </table></div>`).join("")}
+      ${c.properties.map(p => `<tr ${pickIf(s?.propertyChanges[prop(p.name)]?.source, `prop:${i}:${prop(p.name)}`)}><td><code>${esc(p.name)}</code></td><td>${p.condition ? `<code>${esc(p.condition)}</code>` : "sempre"}</td></tr>`).join("")}
+      </table></div>`;
+    }).join("")}
     ${ai.uncertainties.length ? `<h3>Pontos não determinados</h3><ul>${ai.uncertainties.map(u => `<li>${esc(u)}</li>`).join("")}</ul>` : ""}`;
 }
 
@@ -1038,22 +1037,27 @@ function statsHtml(ctx) {
     · regras: ${s.businessConditions} de ${s.technicalConditions}</p>`;
 }
 
+/** Atributos de item clicável (abre o código) só quando há local no código. */
+const pickIf = (source, key, cls = "") => source?.file && source.line ? pickAttrs(key, cls) : cls ? `class="${cls}"` : "";
+
 function effectsHtml(ctx, registry) {
-  const effects = (ctx.effects ?? []).filter(e => e.kind !== "THROW" && e.kind !== "RETURN");
+  const effects = (ctx.effects ?? []).map((e, i) => ({ e, i })).filter(({ e }) => e.kind !== "THROW" && e.kind !== "RETURN");
   if (!effects.length) return "";
   return `<h3>Efeitos</h3><div class="table-wrap"><table><tr><th>Classe</th><th>Efeito</th><th>Condições</th><th>Origem</th></tr>
-    ${effects.map(e => `<tr><td><span class="badge">${esc(e.class)}</span></td><td>${esc(e.description)}</td>
+    ${effects.map(({ e, i }) => `<tr ${pickIf(e.source, `eff:${i}`)}><td><span class="badge">${esc(e.class)}</span></td><td>${esc(e.description)}</td>
       <td>${conditionsOf(e.conditionIds, registry)}</td><td class="muted">${esc(e.source?.file ?? "")}:${e.source?.line ?? ""}</td></tr>`).join("")}</table></div>`;
 }
 
+/** INSERT: o código mostrado é o new da entidade; UPDATE/DELETE: a chamada que grava. */
+const changeSource = (c) => c?.creationSource ?? c?.source;
 
 function changesHtml(ctx, registry) {
   return `<h3>Alterações de entidades</h3>
-    ${ctx.entityChanges.map(c => `
-      <h4>${esc(c.entity)} <span class="badge">${esc(c.operation)}</span>${c.effectClass !== "PRIMARY" ? ` <span class="badge">${esc(c.effectClass)}</span>` : ""}
+    ${ctx.entityChanges.map((c, i) => `
+      <h4 ${pickIf(changeSource(c), `ent:${i}`)}>${esc(c.entity)} <span class="badge">${esc(c.operation)}</span>${c.effectClass !== "PRIMARY" ? ` <span class="badge">${esc(c.effectClass)}</span>` : ""}
         ${conditionsOf(c.conditionIds, registry)}</h4>
       ${c.propertyChanges.length ? `<div class="table-wrap"><table><tr><th>Campo</th><th>Valor</th><th>Condições</th></tr>
-      ${c.propertyChanges.map(p => `<tr><td><code>${esc(p.property)}</code></td><td><code>${esc(p.value)}</code></td><td>${conditionsOf(p.conditionIds, registry) || "sempre"}</td></tr>`).join("")}
+      ${c.propertyChanges.map((p, j) => `<tr ${pickIf(p.source, `prop:${i}:${j}`)}><td><code>${esc(p.property)}</code></td><td><code>${esc(p.value)}</code></td><td>${conditionsOf(p.conditionIds, registry) || "sempre"}</td></tr>`).join("")}
       </table></div>` : ""}`).join("") || `<p class="muted">Nenhuma entidade alterada.</p>`}`;
 }
 
@@ -1437,7 +1441,7 @@ function z3Html(m) {
       const constraints = Object.entries(s.decisions).filter(([, v]) => v !== null && v !== undefined)
         .map(([id, v]) => `<div><code>${esc(conds.get(id)?.expression ?? id)}</code> <span class="muted">= ${v ? "verdadeira" : "falsa"}</span></div>`).join("");
       const body = bodyText(s);
-      return `<tr ${pickAttrs(`scen:${s.id}`)}><td class="id"><code>${esc(s.id)}</code><div class="muted">${esc(scenarioTitle(s, null))}</div></td>
+      return `<tr><td class="id"><code>${esc(s.id)}</code><div class="muted">${esc(scenarioTitle(s, null))}</div></td>
         <td>${constraints || `<span class="muted">—</span>`}</td>
         <td><div class="url"><span class="method ${esc(s.request.method)}">${esc(s.request.method)}</span> ${esc(s.request.url)}</div>${body ? `<pre><code>${esc(body)}</code></pre>` : ""}</td></tr>`;
     }).join("")}</table></div>`;
@@ -2151,7 +2155,11 @@ function pickTarget(key) {
     const evidence = ai?.[a]?.[Number(b)]?.evidence;
     return evidence?.file && evidence.line ? { file: evidence.file, line: evidence.line } : null;
   }
-  return null;
+  // Efeito, entidade alterada (INSERT: o new) e propriedade (a atribuição).
+  const source = kind === "eff" ? ctx.effects?.[Number(a)]?.source
+    : kind === "ent" ? changeSource(ctx.entityChanges?.[Number(a)])
+    : kind === "prop" ? ctx.entityChanges?.[Number(a)]?.propertyChanges[Number(b)]?.source : null;
+  return source?.file && source.line ? { file: source.file, line: source.line } : null;
 }
 
 /** Métodos do grafo (negócio primeiro) onde procurar a origem de uma condição do registro. */
@@ -2220,15 +2228,38 @@ async function renderCode(panel, target, isCurrent) {
   }
 }
 
+/** Abre o código logo abaixo do item selecionado: depois do card ou numa linha extra da tabela. */
 function showSource() {
-  const panel = $("codePanel");
-  if (!panel) return;
-  panel.parentElement.classList.toggle("with-code", !!picked);
-  panel.hidden = !picked;
-  if (!picked) { panel.innerHTML = ""; return; }
+  document.querySelector(".code-row")?.remove();
+  $("codePanel")?.remove();
+  const item = picked && [...document.querySelectorAll("[data-pick]")].find(el => el.dataset.pick === picked);
+  if (!item) return;
+  const panel = document.createElement("div");
+  panel.id = "codePanel";
+  panel.className = "code-panel";
+  if (item.tagName === "TR") {
+    const row = document.createElement("tr"), cell = document.createElement("td");
+    row.className = "code-row";
+    cell.colSpan = [...item.cells].reduce((n, td) => n + td.colSpan, 0);
+    cell.append(panel);
+    row.append(cell);
+    item.after(row);
+    sizeCodeRow();
+  } else {
+    item.after(panel);
+  }
   const key = picked;
-  renderCode(panel, pickTarget(key), () => picked === key);
+  renderCode(panel, pickTarget(key), () => picked === key)
+    .then(() => { if (picked === key) panel.scrollIntoView({ block: "nearest", behavior: "smooth" }); });
 }
+
+/** Painel numa linha de tabela: largura da área visível da tabela, não da tabela inteira (que pode rolar na horizontal). */
+function sizeCodeRow() {
+  const panel = document.querySelector(".code-row .code-panel");
+  const scroller = panel?.closest(".table-wrap, .scenario-grid-container");
+  if (panel) panel.style.width = scroller ? `${scroller.clientWidth - 16}px` : "";
+}
+window.addEventListener("resize", sizeCodeRow);
 
 /** Clique num nó do fluxograma: o código daquela etapa num popup. */
 let popupSeq = 0;
@@ -2238,14 +2269,15 @@ function openCodePopup(target) {
   renderCode($("codePopup"), target, () => seq === popupSeq && dialog.open);
 }
 
-const CONTEXT_LINES = 10;  // linhas mostradas acima/abaixo do trecho e reveladas a cada clique em expandir
+const CONTEXT_LINES = 5;   // linhas mostradas acima/abaixo do trecho ao abrir
+const EXPAND_LINES = 10;   // linhas reveladas a cada clique em expandir
 const codeViews = {};      // id do painel → { view, from, to }: código carregado e intervalo de linhas visível
 
 function codeLinesHtml({ view, from, to }) {
   const expand = (direction, hidden) => {
     const where = direction === "up" ? "acima" : "abaixo";
     const icon = direction === "up" ? "m6 15 6-6 6 6" : "m6 9 6 6 6-6";
-    const title = `Mostrar mais ${Math.min(CONTEXT_LINES, hidden)} linha(s) ${where}`;
+    const title = `Mostrar mais ${Math.min(EXPAND_LINES, hidden)} linha(s) ${where}`;
     return `<div class="code-expand">
       <button type="button" data-expand="${direction}" title="${title}" aria-label="${title}">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="${icon}"/></svg>
@@ -2262,8 +2294,8 @@ function codeLinesHtml({ view, from, to }) {
 function expandCode(direction, panel) {
   const codeView = codeViews[panel?.id];
   if (!codeView) return;
-  if (direction === "up") codeView.from = Math.max(1, codeView.from - CONTEXT_LINES);
-  else codeView.to = Math.min(codeView.view.lines.length, codeView.to + CONTEXT_LINES);
+  if (direction === "up") codeView.from = Math.max(1, codeView.from - EXPAND_LINES);
+  else codeView.to = Math.min(codeView.view.lines.length, codeView.to + EXPAND_LINES);
   const lines = panel.querySelector(".code-lines");
   if (!lines) return;
   lines.innerHTML = codeLinesHtml(codeView);

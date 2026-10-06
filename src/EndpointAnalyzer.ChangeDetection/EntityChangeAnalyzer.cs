@@ -342,6 +342,9 @@ public class EntityChangeAnalyzer : IEntityChangeAnalyzer
                         ? SyntaxConditions.Common(operations.Select(o => o.Condition))
                         : SyntaxConditions.Common(g.Select(r => r.Condition)),
                     Source = main.Source,
+                    CreationSource = g.Key.Operation == EntityOperations.Insert
+                        ? g.FirstOrDefault(r => !r.IsOperation && r.Property is null)?.Source
+                        : null,
                 };
             })
             .ToList();

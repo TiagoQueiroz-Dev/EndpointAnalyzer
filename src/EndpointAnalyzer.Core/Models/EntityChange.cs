@@ -36,6 +36,10 @@ public class EntityChange
     public List<string>? ConditionIds { get; set; }
 
     public SourceReference? Source { get; set; }
+
+    /// <summary>INSERT: onde a entidade é instanciada (new Entidade(...)); Source fica com a chamada que grava (Add/Adicionar).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SourceReference? CreationSource { get; set; }
 }
 
 public class PropertyChange

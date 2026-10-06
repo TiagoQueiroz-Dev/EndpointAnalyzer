@@ -26,7 +26,7 @@ public class AnalysisContextBuilder(AnalyzerOptions options, IRelevanceAnalyzer 
         var result = relevance.Analyze(graph, conditions, changes);
 
         var references = result.Changes.Changes
-            .SelectMany(c => c.PropertyChanges.Select(p => p.Source).Append(c.Source))
+            .SelectMany(c => c.PropertyChanges.Select(p => p.Source).Append(c.Source).Append(c.CreationSource))
             .Concat(result.Changes.PersistencePoints)
             .Concat(result.Effects.Select(e => e.Source));
         foreach (var reference in references)
