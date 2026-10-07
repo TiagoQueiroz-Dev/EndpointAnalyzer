@@ -173,6 +173,41 @@ public class RuntimeMaterializationTests(SampleSolutionFixture fixture)
     }
 
     [Fact]
+    public async Task Isolamento_confirma_quando_so_a_condicao_do_cenario_mudou_em_relacao_ao_baseline()
+    {
+        var (model, _, _) = await ModelAsync("POST /api/programacoes");
+        var happy = Find(model, ScenarioKinds.Success, s => s.Focus is null);
+        var disponivel = model.Variables(happy.Id).First(v => v.Name.EndsWith(".Disponivel"));
+        var baseline = model.Materialize(happy.Id, [new ScenarioBinding("request.VeiculoId", "37"), new ScenarioBinding(disponivel.Name, "true")]);
+        Assert.True(baseline.Success, baseline.Error);
+        var baselineAttempt = new Attempt(1, baseline, new RuntimeExecution { Id = "EX-01", Status = 201 }, new MatchResult(MatchLevel.Confirmed, [], [], false, "HTTP 201"));
+        // 400 sem a mensagem prevista (ex.: tratamento de erros próprio): o status confere, mas não identifica a regra.
+        RuntimeExecution Run() => new() { Id = "EX-02", Status = 400, ResponseBody = "{\"title\":\"Requisição inválida\"}" };
+
+        var maxLength = Find(model, ScenarioKinds.Validation, s => s.Title.Contains("501"));
+        Assert.Equal(["request.Observacao"], model.FocusVariables(maxLength.Id, baseline));
+        var m = model.Materialize(maxLength.Id, baseline: baseline);
+        Assert.True(m.Success, m.Error);
+        var partial = OutcomeMatcher.Match(maxLength, m.Expected!, m, Run(), model.Matrix);
+        Assert.Equal(MatchLevel.Partial, partial.Level);
+
+        // Só a observação (a condição do cenário) mudou e nenhuma outra regra com HTTP 400 depende dela.
+        var isolated = ScenarioExplorer.Isolate(model, maxLength, m, Run(), partial, baselineAttempt, happy.Id);
+        Assert.Equal(MatchLevel.Confirmed, isolated.Level);
+        Assert.Contains(isolated.Evidence, e => e.StartsWith("isolamento:") && e.Contains("request.Observacao"));
+
+        // Mudou também um campo fora da condição: a mudança de resultado não é atribuível à regra do cenário.
+        var mixed = model.Materialize(maxLength.Id, [new ScenarioBinding("request.VeiculoId", "38")], baseline);
+        Assert.True(mixed.Success, mixed.Error);
+        var notIsolated = ScenarioExplorer.Isolate(model, maxLength, mixed, Run(), OutcomeMatcher.Match(maxLength, mixed.Expected!, mixed, Run(), model.Matrix), baselineAttempt, happy.Id);
+        Assert.Equal(MatchLevel.Partial, notIsolated.Level);
+        Assert.Contains(notIsolated.Reasons, r => r.Contains("fora da condição"));
+
+        // Sem baseline confirmado não há com o que comparar.
+        Assert.Equal(MatchLevel.Partial, ScenarioExplorer.Isolate(model, maxLength, m, Run(), partial, null, happy.Id).Level);
+    }
+
+    [Fact]
     public void Matcher_aceita_campo_de_validacao_com_mensagem_padrao()
     {
         var scenario = new Scenario
@@ -203,26 +238,38 @@ public class RuntimeMaterializationTests(SampleSolutionFixture fixture)
         };
         var matrix = new ScenarioMatrix { Scenarios = [target, other] };
 
-        // A IA diz "inalcançável" depois de duas execuções iguais, explicadas por outra regra.
-        Dictionary<string, ScenarioState> States(List<string> unverified)
+        // A IA diz "inalcançável" depois de duas execuções com o mesmo resultado, explicado por outra regra.
+        Dictionary<string, ScenarioState> States(List<string> unverified, bool samePayload = false)
         {
-            var state = new ScenarioState(target) { Verdict = "inalcancavel", Justification = "não há como", Done = true };
+            var state = new ScenarioState(target) { Verdict = "inalcancavel", Justification = "não há como", StopReason = "limite de 6 execuções por cenário" };
             for (var i = 1; i <= 2; i++)
             {
+                var body = JsonNode.Parse($"{{\"veiculoId\":{(samePayload ? 1 : i)}}}");
                 var m = new ScenarioMaterialization { ScenarioId = "CEN-01", Success = true, Request = target.Request, Expected = target.Expected, UnverifiedState = unverified };
-                var e = new RuntimeExecution { Id = $"EX-0{i}", Phase = RuntimePhases.Scenario, ScenarioId = "CEN-01", Method = "POST", Url = "/api/programacoes", Status = 404, ResponseBody = "{\"erro\":\"Veículo não encontrado.\"}" };
+                var e = new RuntimeExecution { Id = $"EX-0{i}", Phase = RuntimePhases.Scenario, ScenarioId = "CEN-01", Method = "POST", Url = "/api/programacoes", RequestBody = body, Status = 404, ResponseBody = "{\"erro\":\"Veículo não encontrado.\"}" };
                 state.Attempts.Add(new Attempt(i, m, e, OutcomeMatcher.Match(target, target.Expected, m, e, matrix)));
             }
             return new() { ["CEN-01"] = state };
         }
 
-        // O veículo usado só "existia" para o solver: o 404 mostra que os dados estavam errados, não que o cenário é impossível.
+        // O veículo usado só "existia" para o solver: o 404 mostra que os dados estavam errados, não que o cenário é
+        // impossível. Sem prova, só fica inconclusivo porque um limite interrompeu a exploração.
         var assumed = MatrixReconciler.Reconcile(matrix, States(["veiculos.ObterPorId(999) = {}"]), [], true, new RuntimeOptions());
-        Assert.Equal(ScenarioValidationStatuses.Inconclusive, assumed.Scenarios.Single(s => s.Id == "CEN-01").Status);
+        var open = assumed.Scenarios.Single(s => s.Id == "CEN-01");
+        Assert.Equal(ScenarioValidationStatuses.Inconclusive, open.Status);
+        Assert.Contains(open.Reasons, r => r.Contains("estado não comprovado"));
+        Assert.Contains(open.Reasons, r => r.Contains("Exploração interrompida") && r.Contains("limite de 6 execuções"));
         Assert.Empty(assumed.Removed);
 
+        // Repetir o mesmo payload não prova nada: é preciso variar os dados.
+        var repeated = MatrixReconciler.Reconcile(matrix, States([], samePayload: true), [], true, new RuntimeOptions());
+        Assert.Contains(repeated.Scenarios.Single(s => s.Id == "CEN-01").Reasons, r => r.Contains("mesmo payload"));
+        Assert.Empty(repeated.Removed);
+
         var proven = MatrixReconciler.Reconcile(matrix, States([]), [], true, new RuntimeOptions());
-        Assert.Equal(ScenarioValidationStatuses.Unreachable, Assert.Single(proven.Removed).Status);
+        var removed = Assert.Single(proven.Removed);
+        Assert.Equal(ScenarioValidationStatuses.Unreachable, removed.Status);
+        Assert.Contains(removed.Evidence, e => e.Contains("2 payloads diferentes"));
     }
 
     [Fact]

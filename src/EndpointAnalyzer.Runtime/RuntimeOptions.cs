@@ -22,7 +22,7 @@ public class RuntimeOptions
     public Dictionary<string, string> Headers { get; set; } = [];
 
     /// <summary>Limite de requisições por análise (aquisição + cenários).</summary>
-    public int MaxRequests { get; set; } = 150;
+    public int MaxRequests { get; set; } = 300;
 
     /// <summary>Rodadas de aquisição de dados com a IA (cada uma pode pedir várias requisições).</summary>
     public int MaxAcquisitionRounds { get; set; } = 3;
@@ -31,10 +31,10 @@ public class RuntimeOptions
     public int MaxRequestsPerRound { get; set; } = 12;
 
     /// <summary>Execuções do endpoint alvo por cenário.</summary>
-    public int MaxAttemptsPerScenario { get; set; } = 3;
+    public int MaxAttemptsPerScenario { get; set; } = 6;
 
     /// <summary>Rodadas de exploração (tentativa e erro guiada pela IA a partir do baseline).</summary>
-    public int MaxExplorationRounds { get; set; } = 2;
+    public int MaxExplorationRounds { get; set; } = 6;
 
     /// <summary>Cenários da matriz candidata validados por análise (os demais ficam inconclusivos).</summary>
     public int MaxScenarios { get; set; } = 40;

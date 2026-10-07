@@ -64,7 +64,8 @@ public class RuntimeAiFlowTests(SampleSolutionFixture fixture)
         Assert.Contains(runtime.Executions, e => e is { Phase: RuntimePhases.Exploration, Method: "POST", Url: "/api/veiculos" });
 
         // FluentValidation sem validação automática: a análise estática previa 400, mas o fluxo segue para o service.
-        // Nunca é confirmado; sai da matriz só com a evidência (2 execuções estáveis + resultado previsto por outra regra).
+        // Nunca é confirmado. A primeira declaração de inalcançável não basta (1 execução): a IA recebe o que falta e
+        // manda uma variação do payload; sai da matriz com 2 payloads diferentes e o mesmo resultado, previsto por outra regra.
         var fluent = statics.Where(s => s.Expected.Messages.Contains("Informe a data da programação.") || s.Expected.Messages.Contains("Veículo inválido.")).ToList();
         Assert.Equal(2, fluent.Count);
         foreach (var scenario in fluent)
@@ -72,10 +73,18 @@ public class RuntimeAiFlowTests(SampleSolutionFixture fixture)
             var removed = Assert.Single(runtime.Matrix.Removed, r => r.Id == scenario.Id);
             Assert.Equal(ScenarioValidationStatuses.Unreachable, removed.Status);
             Assert.Equal(2, removed.Attempts);
+            Assert.Contains(removed.Evidence, e => e.Contains("2 payloads diferentes"));
             Assert.Contains(removed.Evidence, e => e.Contains("resultado previsto para"));
+            var bodies = runtime.Executions.Where(e => e.ScenarioId == scenario.Id && !e.Blocked).Select(e => e.RequestBody!.ToJsonString()).ToList();
+            Assert.Equal(2, bodies.Distinct().Count());
             Assert.DoesNotContain(runtime.Matrix.Scenarios, s => s.Id == scenario.Id);
         }
         Assert.Contains("Retirados da matriz (inalcançáveis)", ReportRenderer.Markdown(report));
+
+        // Nenhum cenário termina inconclusivo: todos confirmados ou inalcançáveis (ou descobertos em runtime).
+        var open = runtime.Matrix.Scenarios.Where(s => s.Status is not (ScenarioValidationStatuses.Confirmed or ScenarioValidationStatuses.Discovered)).ToList();
+        Assert.True(open.Count == 0, string.Join("\n", open.Select(s => $"{s.Id} {s.Status}: {string.Join(" ", s.Reasons)}")) + "\n" + log);
+        Assert.Equal(RuntimeValidationStatuses.Completed, runtime.Status);
 
         // Toda confirmação tem execução real com o status esperado.
         foreach (var confirmed in runtime.Matrix.Scenarios.Where(s => s.Status == ScenarioValidationStatuses.Confirmed))
@@ -204,7 +213,9 @@ internal sealed partial class ScriptedRuntimeAi : IAiProvider
             object[] none = [];
             if (b.Kind == "validacao" && !b.Text.Contains("observado: 400"))
             {
-                scenarios.Add(new { id = b.Id, action = "give_up", bindings = none, classification = "inalcancavel",
+                // Prova: uma variação do payload (só a observação muda, o cenário continua satisfeito) com o mesmo resultado.
+                object[] variation = b.Text.Contains("falta: ") ? [Bind("request.Observacao", $"\"Variação {b.Id}\"", "sintetico")] : none;
+                scenarios.Add(new { id = b.Id, action = "give_up", bindings = variation, unbind = Array.Empty<string>(), classification = "inalcancavel",
                     justification = "O validator do FluentValidation não é executado: falta AddFluentValidationAutoValidation em Program.cs." });
                 continue;
             }
@@ -225,7 +236,7 @@ internal sealed partial class ScriptedRuntimeAi : IAiProvider
                     classification = "", justification = "Veículo novo, disponível." });
                 continue;
             }
-            scenarios.Add(new { id = b.Id, action = "give_up", bindings = none, classification = "inconclusivo", justification = "sem alternativa" });
+            scenarios.Add(new { id = b.Id, action = "give_up", bindings = none, classification = "", justification = "sem alternativa" });
         }
         return new { scenarios, requests, context = contextItems };
     }

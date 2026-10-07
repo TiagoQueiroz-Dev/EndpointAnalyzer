@@ -256,14 +256,21 @@ DESCOBERTO EM RUNTIME
 NÃO MATERIALIZADO
 → cenário parece válido, mas não foi possível obter o estado necessário
 
-INCONCLUSIVO
-→ ainda existem condições não resolvidas
-
 INALCANÇÁVEL
 → código/runtime demonstram que o cenário não pode ocorrer
+
+INCONCLUSIVO
+→ só quando um limite de segurança interrompeu a exploração antes da conclusão
 ```
 
 Somente remover um cenário quando houver evidência suficiente de que ele é realmente inalcançável.
+
+A matriz validada não deve ter cenários inconclusivos: enquanto um cenário executado não for CONFIRMADO nem provado
+INALCANÇÁVEL, o `ScenarioExplorer` testa outro payload, alterando somente as propriedades que o resultado observado
+aponta, até chegar a um dos dois. A prova de inalcançável exige 2+ execuções com payloads diferentes, com o estado lido
+comprovado, terminando sempre no mesmo resultado previsto para outro cenário. Quando o status confere mas a resposta
+não identifica a regra, o cenário é confirmado por isolamento (só os campos da condição mudaram em relação ao baseline
+e nenhuma outra regra com o mesmo status depende deles).
 
 ---
 

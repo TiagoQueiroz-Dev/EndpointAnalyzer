@@ -100,6 +100,12 @@ public class RuntimeValidationService(RuntimeOptions options, IAppRunner runner,
                     report.Status = RuntimeValidationStatuses.Partial;
                     report.Notes.Add($"Limite de {options.MaxRequests} requisições atingido (Runtime:MaxRequests).");
                 }
+                var open = report.Matrix.Scenarios.Where(s => s.Status == ScenarioValidationStatuses.Inconclusive).Select(s => s.Id).ToList();
+                if (open.Count > 0 && report.Status != RuntimeValidationStatuses.Failed)
+                {
+                    report.Status = RuntimeValidationStatuses.Partial;
+                    report.Notes.Add($"Exploração interrompida sem conclusão (confirmado ou inalcançável) para {string.Join(", ", open)}: o motivo (limite atingido ou IA sem proposta nova) está em cada cenário; aumente os limites em Runtime para continuar.");
+                }
                 Log("Matriz reconciliada: " + string.Join(", ", report.Matrix.Counts.Where(c => c.Value > 0).Select(c => $"{c.Value} {c.Key}")));
             }
             report.DurationMs = watch.ElapsedMilliseconds;

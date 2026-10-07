@@ -35,6 +35,17 @@ public sealed class ScenarioModel
     }
 
     /// <summary>
+    /// Variáveis (payload e estado) da condição que dispara o cenário: as restrições que o <paramref name="baseline"/>
+    /// confirmado (ou, sem ele, o caminho feliz da matriz) não satisfaz.
+    /// Vazio para o caminho feliz.
+    /// </summary>
+    public IReadOnlyList<string> FocusVariables(string scenarioId, ScenarioMaterialization? baseline = null)
+    {
+        if (_run is null) return [];
+        lock (_run) return _run.FocusVariables(scenarioId, baseline);
+    }
+
+    /// <summary>
     /// Payload do cenário com os valores informados (<paramref name="bindings"/>), mantendo do <paramref name="baseline"/>
     /// confirmado tudo que o cenário não obriga a mudar e aplicando os <paramref name="facts"/> já observados no estado real.
     /// Os campos que nem os bindings nem o baseline definem vêm do <paramref name="payload"/> base (dados reais adquiridos),
@@ -183,6 +194,33 @@ public partial class ScenarioGenerator
             foreach (var v in constrained.Where(v => v.Origin != VarOrigin.Input).OrderBy(v => v.Key, StringComparer.Ordinal))
                 result.Add(Describe(v, entry.Assignment, true));
             return result;
+        }
+
+        internal IReadOnlyList<string> FocusVariables(string id, ScenarioMaterialization? baseline)
+        {
+            if (!_entries.TryGetValue(id, out var entry)) return [];
+            var happy = _entries.Values.FirstOrDefault(e => e.Scenario.Kind == ScenarioKinds.Success && e.Scenario.Focus is null);
+            if (happy?.Scenario.Id == id) return [];
+            // A condição que dispara o cenário: as restrições que o payload de referência (baseline confirmado ou, sem
+            // ele, o caminho feliz) não satisfaz. Sem referência, as que o caminho feliz não tem.
+            IEnumerable<Pred> triggers = entry.Constraints.Select(Expand);
+            if ((baseline?.Assignment ?? happy?.Assignment) is { } reference)
+            {
+                var a = Clone(reference);
+                triggers = triggers.Where(c => Evaluator.Eval(c, a) != true);
+            }
+            else
+            {
+                var happyKeys = happy?.Constraints.Select(c => Expand(c).Key).ToHashSet() ?? [];
+                triggers = triggers.Where(c => !happyKeys.Contains(c.Key));
+            }
+            // Sem o próprio corpo (request): toda condição sobre um campo passa por ele.
+            var vars = triggers.SelectMany(Evaluator.VarsOf).SelectMany(Lineage)
+                .Where(v => v.Field is not { Parent: null, Location: InputLocations.Body, Kind: VarKind.Object or VarKind.Collection })
+                .Select(v => v.Display);
+            // Tipo inválido no JSON: o campo trocado é a própria condição.
+            if (entry.MismatchField is { } field) vars = vars.Append(_vars.Input(field).Display);
+            return vars.Distinct().ToList();
         }
 
         private HashSet<Var> ConstrainedVars(Entry entry) =>

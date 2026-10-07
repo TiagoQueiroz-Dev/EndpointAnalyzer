@@ -15,7 +15,10 @@ public static class ScenarioValidationStatuses
     /// <summary>O cenário parece válido, mas não foi possível obter o estado (dados) necessário.</summary>
     public const string NotMaterialized = "nao-materializado";
 
-    /// <summary>Executado sem reproduzir o esperado, ou ainda há condições não resolvidas.</summary>
+    /// <summary>
+    /// Só quando um limite de segurança (requisições, rodadas, execuções por cenário) ou a falta de resposta da IA
+    /// interrompeu a exploração: sem limite, todo cenário executado termina confirmado ou inalcançável.
+    /// </summary>
     public const string Inconclusive = "inconclusivo";
 
     /// <summary>Código e runtime demonstram que o cenário não pode ocorrer (sai da matriz, com a evidência).</summary>
