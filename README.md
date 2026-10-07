@@ -28,7 +28,7 @@ tests/EndpointAnalyzer.Tests        testes unitários e de integração
 
 - .NET SDK 10
 - Para usar a IA, uma das opções abaixo. Sem nenhuma delas, a análise estática funciona normalmente.
-  - **Plano mensal do Claude (Pro/Max/Team):** [Claude Code](https://claude.com/claude-code) instalado e logado com a conta do Claude. Faça o login pelo botão **Entrar com Claude** da interface ou com `claude auth login`. A análise roda via `claude -p` e consome o limite do plano, sem cobrança por uso.
+  - **Plano mensal do Claude (Pro/Max/Team):** [Claude Code](https://claude.com/claude-code) instalado na máquina (instalador nativo, npm ou no PATH). Faça o login pelo botão **Entrar com Claude** da interface. O login do projeto é separado do Claude Code do terminal (fica em `%LOCALAPPDATA%\EndpointAnalyzer\claude`, configurável em `ClaudeCode:ConfigDirectory`), então a conta logada no projeto pode ser outra. A análise roda via `claude -p` e consome o limite do plano da conta logada no projeto, sem cobrança por uso.
   - **API:** a variável `ANTHROPIC_API_KEY` (cobrança por uso).
 
 No modo automático (padrão), o plano mensal tem prioridade quando o Claude Code está logado com a conta do Claude.
@@ -89,10 +89,10 @@ A barra lateral segue o Scalar. Os endpoints aparecem agrupados pela tag do Open
 | GET | `/api/auth/status` | conta do Claude Code (e-mail, plano) e origem da IA ativa |
 | POST | `/api/auth/login` | `{ "email": "..." }` → URL de login da conta do Claude |
 | POST | `/api/auth/code` | `{ "code": "..." }` → conclui o login com o código exibido após autorizar |
-| POST | `/api/auth/logout` | desconecta o Claude Code da máquina |
+| POST | `/api/auth/logout` | desconecta a conta do Claude do projeto |
 | POST | `/api/auth/mode` | `{ "mode": "auto" \| "subscription" \| "api" }` |
 
-As rotas `/api/auth/*` só aceitam chamadas da própria máquina. O login vale para o Claude Code dessa máquina: **Sair** também desconecta o Claude Code do terminal.
+As rotas `/api/auth/*` só aceitam chamadas da própria máquina. O login vale só para o projeto: **Sair** não desconecta o Claude Code do terminal, e entrar no terminal não muda a conta do projeto.
 
 Na CLI, use `--ai-mode subscription` ou `--ai-mode api` para escolher a origem da IA.
 

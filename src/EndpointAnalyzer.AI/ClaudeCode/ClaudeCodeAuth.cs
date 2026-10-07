@@ -42,7 +42,7 @@ public partial class ClaudeCodeAuth(ClaudeCodeOptions options)
         try
         {
             var result = await ProcessRunner.RunAsync(
-                ProcessRunner.StartInfo(options.Executable, ["auth", "status", "--json"]),
+                ProcessRunner.StartInfo(options, ["auth", "status", "--json"]),
                 input: null, TimeSpan.FromSeconds(30), cancellationToken);
             status = Parse(result.Output);
         }
@@ -67,7 +67,7 @@ public partial class ClaudeCodeAuth(ClaudeCodeOptions options)
             var arguments = new List<string> { "auth", "login", "--claudeai" };
             if (!string.IsNullOrWhiteSpace(email)) arguments.AddRange(["--email", email.Trim()]);
 
-            var info = ProcessRunner.StartInfo(options.Executable, arguments);
+            var info = ProcessRunner.StartInfo(options, arguments);
             // A própria interface abre a URL; evita o CLI abrir outra aba.
             info.Environment["BROWSER"] = "none";
 
@@ -144,11 +144,11 @@ public partial class ClaudeCodeAuth(ClaudeCodeOptions options)
         finally { _lock.Release(); }
     }
 
-    /// <summary>Desconecta o Claude Code desta máquina (vale para todas as sessões do Claude Code).</summary>
+    /// <summary>Desconecta a conta do projeto; o Claude Code do terminal tem login próprio e continua logado.</summary>
     public async Task<ClaudeAuthStatus> LogoutAsync(CancellationToken cancellationToken = default)
     {
         await ProcessRunner.RunAsync(
-            ProcessRunner.StartInfo(options.Executable, ["auth", "logout"]),
+            ProcessRunner.StartInfo(options, ["auth", "logout"]),
             input: null, TimeSpan.FromSeconds(30), cancellationToken);
         return await GetStatusAsync(refresh: true, cancellationToken);
     }

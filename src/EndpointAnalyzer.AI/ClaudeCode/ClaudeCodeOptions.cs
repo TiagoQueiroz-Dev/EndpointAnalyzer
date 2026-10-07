@@ -10,6 +10,12 @@ public class ClaudeCodeOptions
     /// <summary>Executável do Claude Code (precisa estar no PATH, ou informe o caminho completo).</summary>
     public string Executable { get; set; } = "claude";
 
+    /// <summary>
+    /// Configuração e login próprios do projeto (CLAUDE_CONFIG_DIR): entrar ou sair aqui não afeta o Claude Code do terminal,
+    /// e o consumo é sempre da conta logada no projeto.
+    /// </summary>
+    public string ConfigDirectory { get; set; } = Path.Combine(ClaudeModelCatalog.DataDirectory, "claude");
+
     public string Model { get; set; } = "claude-opus-5-5";
 
     /// <summary>low | medium | high | xhigh | max. Vazio para modelos sem effort (Haiku 4.5).</summary>

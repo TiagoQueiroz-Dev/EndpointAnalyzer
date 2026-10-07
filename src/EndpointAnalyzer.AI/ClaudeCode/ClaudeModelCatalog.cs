@@ -102,7 +102,7 @@ public class ClaudeModelCatalog(ClaudeCodeOptions options)
         try
         {
             var result = await ProcessRunner.RunAsync(
-                ProcessRunner.StartInfo(options.Executable, arguments, workingDirectory),
+                ProcessRunner.StartInfo(options, arguments, workingDirectory),
                 "ok", TimeSpan.FromSeconds(90), CancellationToken.None);
 
             var (available, reason) = ReadProbe(result.Output, result.Error);

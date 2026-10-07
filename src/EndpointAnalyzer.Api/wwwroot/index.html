@@ -2620,7 +2620,7 @@ async function confirmLogin() {
 }
 
 async function logout() {
-  if (!confirm("Sair da conta do Claude?\n\nIsso desconecta o Claude Code desta máquina (vale também para o terminal e outras sessões do Claude Code).")) return;
+  if (!confirm("Sair da conta do Claude?\n\nIsso desconecta só este projeto; o Claude Code do terminal continua logado.")) return;
   try {
     renderAuth(await api("/api/auth/logout", { method: "POST" }));
   } catch (err) {

@@ -70,7 +70,7 @@ try
 {
     if (useAi && !await service.IsAiAvailableAsync())
     {
-        Console.Error.WriteLine("IA não disponível: rode `claude auth login` (plano mensal) ou defina ANTHROPIC_API_KEY.");
+        Console.Error.WriteLine("IA não disponível: entre com a conta do Claude pelo botão 'Entrar com Claude' da interface (plano mensal) ou defina ANTHROPIC_API_KEY.");
         return 2;
     }
 

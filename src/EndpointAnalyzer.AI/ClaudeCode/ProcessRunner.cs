@@ -11,9 +11,18 @@ internal static partial class ProcessRunner
 {
     public static readonly Encoding Utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
 
-    public static ProcessStartInfo StartInfo(string executable, IEnumerable<string> arguments, string? workingDirectory = null)
+    // Credenciais que o Claude Code usaria no lugar do login do projeto, desviando o consumo do plano para a API ou outra conta.
+    private static readonly string[] CredentialOverrides =
+    [
+        "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+    ];
+
+    /// <exception cref="ClaudeCodeNotInstalledException">Executável não encontrado.</exception>
+    public static ProcessStartInfo StartInfo(ClaudeCodeOptions options, IEnumerable<string> arguments, string? workingDirectory = null)
     {
-        var info = new ProcessStartInfo(executable)
+        var command = ClaudeExecutable.Resolve(options.Executable);
+        var info = new ProcessStartInfo(command.FileName)
         {
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
@@ -24,8 +33,13 @@ internal static partial class ProcessRunner
             StandardOutputEncoding = Utf8,
             StandardErrorEncoding = Utf8,
         };
-        foreach (var argument in arguments) info.ArgumentList.Add(argument);
+        foreach (var argument in command.PrefixArguments.Concat(arguments)) info.ArgumentList.Add(argument);
         if (workingDirectory is not null) info.WorkingDirectory = workingDirectory;
+
+        // Login separado do Claude Code do terminal: só a conta logada no projeto é usada.
+        Directory.CreateDirectory(options.ConfigDirectory);
+        info.Environment["CLAUDE_CONFIG_DIR"] = options.ConfigDirectory;
+        foreach (var name in CredentialOverrides) info.Environment.Remove(name);
         return info;
     }
 
@@ -87,5 +101,10 @@ internal static partial class ProcessRunner
     private static partial Regex AnsiRegex();
 }
 
-public class ClaudeCodeNotInstalledException(string executable)
-    : Exception($"Claude Code não encontrado ('{executable}'). Instale em https://claude.com/claude-code e tente novamente.");
+public class ClaudeCodeNotInstalledException(string executable, IEnumerable<string>? searched = null)
+    : Exception($"Claude Code não encontrado ('{executable}'{Searched(searched)}). " +
+                "Instale em https://claude.com/claude-code (ou informe o caminho completo em ClaudeCode:Executable) e tente novamente.")
+{
+    private static string Searched(IEnumerable<string>? searched) =>
+        searched is null ? "" : $"; procurado em: {string.Join(", ", searched)}";
+}

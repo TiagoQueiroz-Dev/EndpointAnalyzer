@@ -52,7 +52,7 @@ public class ClaudeCodeProvider(ClaudeCodeOptions options) : IAiProvider
         };
         if (!string.IsNullOrEmpty(options.Effort)) arguments.AddRange(["--effort", options.Effort]);
 
-        var info = ProcessRunner.StartInfo(options.Executable, arguments, workingDirectory);
+        var info = ProcessRunner.StartInfo(options, arguments, workingDirectory);
 
         return await ProcessRunner.RunAsync(
             info,
