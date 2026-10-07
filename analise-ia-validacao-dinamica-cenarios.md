@@ -307,13 +307,20 @@ Enviar para a IA:
 - código relevante;
 - catálogo de endpoints.
 
-A IA retorna um plano estruturado de dados necessários.
+A IA retorna um plano estruturado de dados necessários, em dois tipos (`DataRequirement.Kind`):
+
+- **Payload requirements** (`P1`, `P2`...): de onde vêm os valores reais de **todos** os campos do payload, não só
+  dos que as condições usam (`gerente`, `email`, `codigo`, `hierarquiaSuperiorId`, `cnpj`, `telefone`...). Evita
+  payloads genéricos como `{"gerente": "texto", "email": "usuario@exemplo.com"}`.
+- **Scenario requirements** (`R1`, `R2`...): o estado específico de que cada cenário depende
+  (ex.: CEN-05 — `hierarquiaSuperiorId` de uma hierarquia ativa).
 
 ---
 
 ## Fase 4 — adquirir contexto
 
-Executar prioritariamente endpoints `GET`.
+Executar prioritariamente endpoints `GET`, para os dois tipos de requisito (para os de payload, registros completos
+da mesma entidade e das entidades referenciadas).
 
 ```text
 DataAcquisitionPlanner
@@ -321,16 +328,25 @@ DataAcquisitionPlanner
 → ScenarioContext
 ```
 
-Os dados encontrados devem ser reutilizados por todos os cenários seguintes.
+O `ScenarioContext` funciona como repertório dos dados reais da execução: os dados encontrados são reutilizados por
+todos os cenários seguintes, sem requisições redundantes.
 
 ---
 
-## Fase 5 — confirmar baseline
+## Fase 5 — montar o payload base e confirmar o baseline
 
-Usar o contexto adquirido para montar o primeiro payload válido.
+Com o contexto adquirido, a IA monta o **payload base** completo (`RuntimeValidation.Payload`), campo a campo, com a
+origem de cada valor, nesta ordem de prioridade:
 
 ```text
-ScenarioContext
+1. real       dado retornado pela API (verificado no item do contexto ou na execução citada)
+2. derivado   derivado de um dado real (ex.: código real com sufixo para não duplicar)
+3. sintetico  valor sintético semanticamente válido (CNPJ com dígito verificador, nome plausível)
+4. gerador    placeholder do gerador estático, só como último recurso
+```
+
+```text
+ScenarioContext (payload base + dados reais)
 +
 PayloadBuilder
 +
@@ -338,6 +354,10 @@ ConstraintSolver
 ↓
 payload válido
 ```
+
+O payload base entra no `ScenarioModel.Materialize` como valores **preferidos**: cada campo é usado quando não
+contradiz as restrições do cenário (o solver confere um a um); quando contradiz, o cenário prevalece. Precedência:
+bindings do cenário › baseline confirmado › payload base › gerador.
 
 Executar o endpoint alvo e confirmar o caminho feliz.
 

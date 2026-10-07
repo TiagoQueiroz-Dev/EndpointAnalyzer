@@ -71,7 +71,11 @@ public class RuntimeValidation
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ValidatedMatrix? Matrix { get; set; }
 
+    /// <summary>Requisitos de payload (P1, P2...) e de cenário (R1, R2...).</summary>
     public List<DataRequirement> Requirements { get; set; } = [];
+
+    /// <summary>Payload base: valor de cada campo do payload, com a origem (dado real, derivado, sintético ou gerador).</summary>
+    public List<PayloadFieldValue> Payload { get; set; } = [];
 
     /// <summary>ScenarioContext: dados reais encontrados e reutilizados entre os cenários.</summary>
     public List<ContextItem> Context { get; set; } = [];
@@ -183,11 +187,26 @@ public class ObservedResult
     public long ElapsedMs { get; set; }
 }
 
-/// <summary>Dado que precisa existir (ou não existir) para materializar um ou mais cenários (ScenarioRequirementPlanner).</summary>
+public static class DataRequirementKinds
+{
+    /// <summary>Dados para preencher o payload completo com valores reais (todos os cenários partem dele).</summary>
+    public const string Payload = "payload";
+
+    /// <summary>Estado específico de que um cenário depende ("hierarquia ativa", "id que não existe").</summary>
+    public const string Scenario = "cenario";
+}
+
+/// <summary>
+/// Dado que precisa existir (ou não existir) para materializar os cenários (ScenarioRequirementPlanner): os campos do
+/// payload completo (<see cref="DataRequirementKinds.Payload"/>) ou o estado de um cenário (<see cref="DataRequirementKinds.Scenario"/>).
+/// </summary>
 public class DataRequirement
 {
-    /// <summary>R1, R2...</summary>
+    /// <summary>P1, P2... (payload) ou R1, R2... (cenário).</summary>
     public string Id { get; set; } = "";
+
+    /// <summary>Um de <see cref="DataRequirementKinds"/>.</summary>
+    public string Kind { get; set; } = DataRequirementKinds.Scenario;
 
     public string Description { get; set; } = "";
 
@@ -203,6 +222,47 @@ public class DataRequirement
 
     /// <summary>pendente, atendido ou insatisfeito.</summary>
     public string Status { get; set; } = "pendente";
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Reason { get; set; }
+}
+
+/// <summary>Origem do valor de um campo do payload base, na ordem de prioridade.</summary>
+public static class PayloadValueOrigins
+{
+    /// <summary>Valor que aparece numa resposta real da API.</summary>
+    public const string Real = "real";
+
+    /// <summary>Derivado de um dado real (ex.: código real com sufixo para não duplicar, maior id + 100000).</summary>
+    public const string Derived = "derivado";
+
+    /// <summary>Sintético, mas semanticamente válido (CNPJ com dígito verificador, nome plausível).</summary>
+    public const string Synthetic = "sintetico";
+
+    /// <summary>Valor genérico do gerador estático (último recurso).</summary>
+    public const string Generator = "gerador";
+
+    public static readonly IReadOnlyList<string> All = [Real, Derived, Synthetic, Generator];
+}
+
+/// <summary>Valor de um campo no payload base, reutilizado por todos os cenários que não precisam mudá-lo.</summary>
+public class PayloadFieldValue
+{
+    /// <summary>Variável do payload: "request.Email".</summary>
+    public string Field { get; set; } = "";
+
+    /// <summary>Valor em JSON.</summary>
+    public string Value { get; set; } = "";
+
+    /// <summary>Um de <see cref="PayloadValueOrigins"/>.</summary>
+    public string Origin { get; set; } = "";
+
+    /// <summary>Item do contexto ou execução (EX-..) de onde veio o valor.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Source { get; set; }
+
+    /// <summary>Valor real comprovado no item do contexto ou na execução citada.</summary>
+    public bool Verified { get; set; }
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Reason { get; set; }

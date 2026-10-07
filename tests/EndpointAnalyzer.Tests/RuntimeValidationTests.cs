@@ -99,6 +99,34 @@ public class RuntimeMaterializationTests(SampleSolutionFixture fixture)
     }
 
     [Fact]
+    public async Task Payload_base_preenche_os_campos_e_cede_ao_que_o_cenario_exige()
+    {
+        var (model, _, _) = await ModelAsync("POST /api/programacoes");
+        var happy = Find(model, ScenarioKinds.Success, s => s.Focus is null);
+        var disponivel = model.Variables(happy.Id).First(v => v.Name.EndsWith(".Disponivel"));
+        IReadOnlyList<ScenarioBinding> payload =
+        [
+            new("request.VeiculoId", "37", "veiculoModelo"),
+            new("observacao", "\"Entrega agendada com o cliente\"", "sintetico"),
+        ];
+
+        // Caminho feliz: os campos que o cenário não liga vêm do payload base (e não do gerador).
+        var baseline = model.Materialize(happy.Id, [new ScenarioBinding(disponivel.Name, "true")], payload: payload);
+        Assert.True(baseline.Success, baseline.Error);
+        Assert.Equal(37, baseline.Request!.Body!["veiculoId"]!.GetValue<long>());
+        Assert.Equal("Entrega agendada com o cliente", baseline.Request.Body["observacao"]!.GetValue<string>());
+        // Valor preferido não é dado do cenário: não aparece como binding.
+        Assert.DoesNotContain(baseline.Bindings, b => b.Variable == "request.Observacao");
+
+        // Validação de tamanho: a observação do payload base contradiz o cenário e cede; o resto fica.
+        var maxLength = Find(model, ScenarioKinds.Validation, s => s.Title.Contains("501"));
+        var m = model.Materialize(maxLength.Id, payload: payload);
+        Assert.True(m.Success, m.Error);
+        Assert.Equal(37, m.Request!.Body!["veiculoId"]!.GetValue<long>());
+        Assert.Equal(501, m.Request.Body["observacao"]!.GetValue<string>().Length);
+    }
+
+    [Fact]
     public async Task Fato_do_estado_real_impede_reutilizar_registro_incompativel()
     {
         var (model, _, _) = await ModelAsync("POST /api/programacoes");

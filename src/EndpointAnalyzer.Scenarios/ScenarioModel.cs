@@ -37,12 +37,23 @@ public sealed class ScenarioModel
     /// <summary>
     /// Payload do cenário com os valores informados (<paramref name="bindings"/>), mantendo do <paramref name="baseline"/>
     /// confirmado tudo que o cenário não obriga a mudar e aplicando os <paramref name="facts"/> já observados no estado real.
+    /// Os campos que nem os bindings nem o baseline definem vêm do <paramref name="payload"/> base (dados reais adquiridos),
+    /// quando não contradizem o cenário; o restante fica com os valores do gerador.
     /// </summary>
     public ScenarioMaterialization Materialize(string scenarioId, IReadOnlyList<ScenarioBinding>? bindings = null,
-        ScenarioMaterialization? baseline = null, IReadOnlyCollection<StateFact>? facts = null)
+        ScenarioMaterialization? baseline = null, IReadOnlyCollection<StateFact>? facts = null, IReadOnlyList<ScenarioBinding>? payload = null)
     {
         if (_run is null) return ScenarioMaterialization.Fail(scenarioId, "A matriz não tem o modelo de restrições (a geração falhou).");
-        lock (_run) return _run.Materialize(scenarioId, bindings ?? [], baseline, facts ?? []);
+        lock (_run)
+        {
+            var result = _run.Materialize(scenarioId, bindings ?? [], baseline, facts ?? [], payload ?? []);
+            if (result.Success || payload is not { Count: > 0 }) return result;
+            // O payload base é só preferência: se ele (e não o cenário) impede a materialização, segue sem ele.
+            var without = _run.Materialize(scenarioId, bindings ?? [], baseline, facts ?? [], []);
+            if (!without.Success) return result;
+            without.Warnings.Add($"Payload base ignorado neste cenário: {result.Error}");
+            return without;
+        }
     }
 
     /// <summary>
@@ -196,7 +207,8 @@ public partial class ScenarioGenerator
             EnumValues = v.EnumMembers?.Select(m => $"{m.Name} = {m.Value}").ToList(),
         };
 
-        internal ScenarioMaterialization Materialize(string id, IReadOnlyList<ScenarioBinding> bindings, ScenarioMaterialization? baseline, IReadOnlyCollection<StateFact> facts)
+        internal ScenarioMaterialization Materialize(string id, IReadOnlyList<ScenarioBinding> bindings, ScenarioMaterialization? baseline,
+            IReadOnlyCollection<StateFact> facts, IReadOnlyList<ScenarioBinding> payload)
         {
             if (!_entries.TryGetValue(id, out var entry)) return ScenarioMaterialization.Fail(id, $"O cenário {id} não existe na matriz.");
 
@@ -235,27 +247,26 @@ public partial class ScenarioGenerator
 
             // Mudança mínima: do payload confirmado fica tudo que o cenário não obriga a mudar.
             if (baseline?.Assignment is { } reference)
-            {
-                var keep = reference.Values
+                Prefer(reference.Values
                     .Where(kv => kv.Key.Origin == VarOrigin.Input && kv.Key.Field is not null && pins.All(p => p.Var != kv.Key))
                     .Select(kv => new Pin(kv.Key, kv.Value, PinPred(kv.Key, kv.Value), "baseline", baseline.ScenarioId))
                     .OrderBy(p => p.Var.Key, StringComparer.Ordinal)
-                    .ToList();
-                if (Solve([.. required, .. Preds(keep)]) is not null)
+                    .ToList(), required, pins);
+
+            // Payload base (dados reais adquiridos) nos campos que ainda não têm valor escolhido.
+            var preferred = new List<Pin>();
+            foreach (var binding in payload)
+            {
+                if (FindVar(binding.Variable) is not { Origin: VarOrigin.Input, Field: not null } v) continue;
+                if (pins.Any(p => p.Var == v) || preferred.Any(p => p.Var == v)) continue;
+                if (!TryValue(v, binding.Value, out var value, out var error))
                 {
-                    required.AddRange(Preds(keep));
-                    pins.AddRange(keep);
+                    warnings.Add($"Payload base: valor inválido para {v.Display} ({error}).");
+                    continue;
                 }
-                else
-                {
-                    foreach (var pin in keep)
-                    {
-                        if (pin.Pred is not null && Solve([.. required, pin.Pred]) is null) continue;
-                        if (pin.Pred is not null) required.Add(pin.Pred);
-                        pins.Add(pin);
-                    }
-                }
+                preferred.Add(new Pin(v, value, PinPred(v, value), "payload", binding.Source));
             }
+            Prefer(preferred, required, pins);
 
             var assignment = Solve(required)!;
 
@@ -389,6 +400,24 @@ public partial class ScenarioGenerator
                 Warnings = warnings,
                 Assignment = baseline.Assignment,
             };
+        }
+
+        /// <summary>Valores preferidos (não obrigatórios): todos juntos se possível, senão um a um, sem contradizer o cenário.</summary>
+        private void Prefer(List<Pin> candidates, List<Pred> required, List<Pin> pins)
+        {
+            if (candidates.Count == 0) return;
+            if (Solve([.. required, .. Preds(candidates)]) is not null)
+            {
+                required.AddRange(Preds(candidates));
+                pins.AddRange(candidates);
+                return;
+            }
+            foreach (var pin in candidates)
+            {
+                if (pin.Pred is not null && Solve([.. required, pin.Pred]) is null) continue;
+                if (pin.Pred is not null) required.Add(pin.Pred);
+                pins.Add(pin);
+            }
         }
 
         internal static IReadOnlyList<StateFact> InferFacts(ScenarioMaterialization m, string source) => m.PathState

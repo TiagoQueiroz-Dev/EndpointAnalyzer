@@ -1487,6 +1487,7 @@ const validationHelp = {
   inalcancavel: "código e runtime demonstram que o cenário não pode ocorrer (retirado da matriz)",
 };
 const phaseLabels = { aquisicao: "aquisição", baseline: "baseline", cenario: "cenário", exploracao: "exploração" };
+const payloadOrigins = [["real", "dado real"], ["derivado", "derivado de dado real"], ["sintetico", "sintético"], ["gerador", "gerador"]];
 let scenarioView = "validated";   // validated | static
 let validatedFilter = "all";
 
@@ -1604,15 +1605,25 @@ function executionsHtml(rt) {
 function acquiredContextHtml(rt) {
   if (!rt) return noRuntime;
   const requirements = rt.requirements.length ? `<h4>Requisitos de dados (${rt.requirements.length})</h4>
-    <div class="table-wrap"><table><tr><th>Id</th><th>Requisito</th><th>Cenários</th><th>Status</th></tr>
-    ${rt.requirements.map(r => `<tr><td><code>${esc(r.id)}</code></td><td>${esc(r.description)}${r.constraints.length ? `<div class="muted"><code>${esc(r.constraints.join("; "))}</code></div>` : ""}</td>
-      <td>${esc(r.scenarios.join(", "))}</td><td>${esc(r.status)}${r.reason ? `<div class="muted">${esc(r.reason)}</div>` : ""}</td></tr>`).join("")}</table></div>` : "";
+    <div class="table-wrap"><table><tr><th>Id</th><th>Tipo</th><th>Requisito</th><th>Campos / cenários</th><th>Status</th></tr>
+    ${rt.requirements.map(r => `<tr><td><code>${esc(r.id)}</code></td><td>${r.kind === "payload" ? "payload" : "cenário"}</td>
+      <td>${esc(r.description)}${r.constraints.length ? `<div class="muted"><code>${esc(r.constraints.join("; "))}</code></div>` : ""}</td>
+      <td>${r.fields.length ? `<code>${esc(r.fields.join(", "))}</code>` : ""}${r.scenarios.length ? `<div class="muted">${esc(r.scenarios.join(", "))}</div>` : ""}</td>
+      <td>${esc(r.status)}${r.reason ? `<div class="muted">${esc(r.reason)}</div>` : ""}</td></tr>`).join("")}</table></div>` : "";
+  const payload = (rt.payload ?? []).length ? `<h4>Payload base (${rt.payload.length} campo(s))</h4>
+    <p class="muted">${payloadOrigins.map(([k, label]) => [label, rt.payload.filter(f => f.origin === k).length]).filter(([, n]) => n).map(([label, n]) => `${n} ${label}`).join(" · ")}</p>
+    <div class="table-wrap"><table><tr><th>Campo</th><th>Valor</th><th>Origem</th></tr>
+    ${rt.payload.map(f => `<tr><td><code>${esc(f.field)}</code></td><td><code>${esc(f.value.length > 200 ? f.value.slice(0, 200) + "…" : f.value)}</code></td>
+      <td>${esc(Object.fromEntries(payloadOrigins)[f.origin] ?? f.origin)}${f.source ? ` · ${esc(f.source)}` : ""}
+        ${f.origin === "real" ? (f.verified ? ` <span class="verified" title="o valor aparece no dado citado">verificado</span>` : ` <span class="unverified">não verificado</span>`) : ""}
+        ${f.origin === "gerador" ? ` <span class="unverified" title="sem dado real nem valor sintético da IA">placeholder</span>` : ""}
+        ${f.reason ? `<div class="muted">${esc(f.reason)}</div>` : ""}</td></tr>`).join("")}</table></div>` : "";
   const context = rt.context.length ? `<h4>Dados reais encontrados (${rt.context.length})</h4>
     <div class="table-wrap"><table><tr><th>Dado</th><th>Valor</th><th>Origem</th></tr>
     ${rt.context.map(c => `<tr><td><code>${esc(c.key)}</code><div class="muted">${esc(c.description)}</div></td><td><code>${esc(c.value.length > 300 ? c.value.slice(0, 300) + "…" : c.value)}</code></td>
       <td>${esc(c.origin)} · ${esc(c.executionId ?? "—")} ${c.verified ? `<span class="verified" title="os valores aparecem na resposta da execução">verificado</span>` : `<span class="unverified" title="a IA não mostrou de onde veio o dado">não verificado</span>`}</td></tr>`).join("")}</table></div>`
     : `<p class="muted">Nenhum dado real adquirido.</p>`;
-  return requirements + context;
+  return requirements + payload + context;
 }
 
 function logsHtml(rt) {

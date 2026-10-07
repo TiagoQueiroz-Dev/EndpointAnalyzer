@@ -225,6 +225,7 @@ internal sealed class ScenarioExplorer(
         prompt.AppendLine();
         prompt.Append(RuntimeAi.Section("catalog", catalog.Describe()));
         prompt.Append(RuntimeAi.Section("context", context.Describe()));
+        prompt.Append(RuntimeAi.Section("payload_base", context.DescribePayload()));
         prompt.Append(RuntimeAi.Section("acquisition_executions", DataAcquisitionPlanner.Executions(report, RuntimePhases.Acquisition, RuntimePhases.Exploration)));
         prompt.Append(RuntimeAi.Section("code", RuntimeAi.Code(analysis, 16000)));
         prompt.Append(RuntimeAi.Section("pending", Pending(states)));
@@ -232,7 +233,9 @@ internal sealed class ScenarioExplorer(
             Tarefa: os cenários em pending não reproduziram o resultado esperado (ou não foram materializados).
             Para cada um, analise o resultado observado, o código e os dados, e escolha:
             - "retry": novos bindings (mesmo formato: variable, valueJson, source) com dados reais que levem ao esperado.
-              Os bindings substituem os anteriores do cenário; o resto do payload vem do baseline confirmado.
+              Os bindings substituem os anteriores do cenário; o resto do payload vem do baseline confirmado (ou, sem
+              ele, do payload_base). Se a resposta recusar um campo do payload base (ex.: código ou e-mail já
+              cadastrado), ligue esse campo a outro valor real ou derivado de um dado real.
             - "acquire": faltam dados; peça em requests (prefira GET; só rotas do catálogo). O cenário volta na próxima rodada.
             - "give_up": não há como reproduzir. classification: "nao_materializado" (não há como obter o estado
               necessário), "inconclusivo" (não dá para concluir) ou "inalcancavel" (o código e as execuções mostram que o

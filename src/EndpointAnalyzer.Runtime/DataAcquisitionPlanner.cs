@@ -6,8 +6,9 @@ using EndpointAnalyzer.Core.Models;
 namespace EndpointAnalyzer.Runtime;
 
 /// <summary>
-/// DataAcquisitionPlanner (Fase 4): a IA escolhe, no catálogo, os endpoints que trazem os dados de cada requisito
-/// ("UnidadeFabril com RamoAtividade = Planta → GET /unidades"); as requisições são executadas e os dados encontrados
+/// DataAcquisitionPlanner (Fase 4): a IA escolhe, no catálogo, os endpoints que trazem os dados de cada requisito — os
+/// registros completos para o payload base e o estado específico de cada cenário ("UnidadeFabril com RamoAtividade =
+/// Planta → GET /unidades"); as requisições são executadas e os dados encontrados
 /// vão para o ScenarioContext, com a execução de onde vieram. Rodadas curtas: a IA vê as respostas antes de pedir mais.
 /// </summary>
 internal sealed class DataAcquisitionPlanner(RuntimeAi ai, RuntimeOptions options)
@@ -40,7 +41,7 @@ internal sealed class DataAcquisitionPlanner(RuntimeAi ai, RuntimeOptions option
             ? "Autenticação: todas as requisições já levam o token da API informado pelo usuário; não tente obter outro token."
             : "Autenticação: nenhum token informado; se a API responder 401, o cenário depende de autenticação (não tente adivinhar credenciais).");
             prompt.AppendLine();
-            prompt.Append(RuntimeAi.Section("requirements", RuntimeAi.Json(requirements.Select(r => new { r.Id, r.Description, r.Entity, r.Constraints, r.Fields, r.Status, r.Reason }))));
+            prompt.Append(RuntimeAi.Section("requirements", RuntimeAi.Json(requirements.Select(r => new { r.Id, r.Kind, r.Description, r.Entity, r.Constraints, r.Fields, r.Status, r.Reason }))));
             prompt.Append(RuntimeAi.Section("catalog", catalog.Describe()));
             prompt.Append(RuntimeAi.Section("context", context.Describe()));
             prompt.Append(RuntimeAi.Section("executions", Executions(report, RuntimePhases.Acquisition)));
@@ -54,10 +55,16 @@ internal sealed class DataAcquisitionPlanner(RuntimeAi ai, RuntimeOptions option
                   - requests: até {{options.MaxRequestsPerRound}} requisições para buscar dados dos requisitos pendentes. Só rotas do
                     catálogo, com os valores de rota e query preenchidos (url relativa, ex.: /api/veiculos?ativo=true).
                     bodyJson: o body em JSON ou "" quando não houver. Prefira listagens/consultas (GET); escrita só para
-                    criar um dado que não existe e só se permitida.
+                    criar um dado que não existe e só se permitida. Uma mesma consulta pode atender vários requisitos:
+                    não repita requisições já executadas.
+                  - Requisitos kind = "payload": busque registros completos (listagem ou consulta por id da mesma
+                    entidade e das entidades referenciadas) para preencher todos os campos do payload com dados reais,
+                    coerentes entre si (o e-mail, o telefone e o nome do mesmo registro, por exemplo).
+                  - Requisitos kind = "cenario": o estado específico de que os cenários dependem.
                   - context: dados já encontrados nas respostas das execuções acima (executionId = a execução EX-.. cuja
-                    resposta contém o dado, ou "" se derivado). key curta e reutilizável (ex.: "veiculoDisponivel"),
-                    valueJson com o registro ou os campos relevantes (ex.: {"id": 37, "disponivel": true}).
+                    resposta contém o dado, ou "" se derivado). key curta e reutilizável (ex.: "veiculoDisponivel",
+                    "pessoaModelo"), valueJson com o registro (completo para requisitos de payload) ou os campos
+                    relevantes (ex.: {"id": 37, "disponivel": true}).
                   - unsatisfiable: requisitos que não podem ser atendidos pelos endpoints disponíveis, com o motivo.
                   - done: true quando não há mais nada útil para buscar.
                   """);

@@ -266,6 +266,24 @@ public static class ReportRenderer
             sb.AppendLine();
         }
 
+        if (runtime.Payload.Count > 0)
+        {
+            sb.AppendLine("### Payload base");
+            sb.AppendLine();
+            sb.AppendLine("Valores reutilizados por todos os cenários (cada cenário muda só o necessário): dado real › derivado › sintético › gerador.");
+            sb.AppendLine();
+            sb.AppendLine("| Campo | Valor | Origem |");
+            sb.AppendLine("|---|---|---|");
+            foreach (var f in runtime.Payload)
+            {
+                var origin = f.Origin + (f.Source is null ? "" : $": {f.Source}")
+                             + (f.Origin == PayloadValueOrigins.Real && !f.Verified ? " ⚠ não verificado" : "")
+                             + (f.Reason is null ? "" : $"<br>{f.Reason}");
+                sb.AppendLine($"| `{f.Field}` | {Escape($"`{Shorten(f.Value, 120)}`")} | {Escape(OneLine(origin))} |");
+            }
+            sb.AppendLine();
+        }
+
         foreach (var note in runtime.Notes) sb.AppendLine($"> {OneLine(note)}");
         if (runtime.Notes.Count > 0) sb.AppendLine();
     }

@@ -39,10 +39,19 @@ public class RuntimeAiFlowTests(SampleSolutionFixture fixture)
         string Why(Func<Scenario, bool> find) => string.Join(" ", byId[statics.First(find).Id].Reasons) + "\n" + log;
 
         // Requisitos → aquisição (escrita para criar os veículos) → contexto verificado nas respostas.
-        Assert.Equal(3, runtime.Requirements.Count);
+        Assert.Equal(["P1"], runtime.Requirements.Where(r => r.Kind == DataRequirementKinds.Payload).Select(r => r.Id));
+        Assert.Equal(["R1", "R2", "R3"], runtime.Requirements.Where(r => r.Kind == DataRequirementKinds.Scenario).Select(r => r.Id));
         Assert.Contains(runtime.Executions, e => e is { Phase: RuntimePhases.Acquisition, Method: "POST", Url: "/api/veiculos", Status: 200 });
         Assert.Contains(runtime.Context, c => c is { Key: "veiculoDisponivel", Verified: true });
         Assert.Contains(runtime.Context, c => c is { Key: "veiculoInexistente", Verified: false });
+
+        // Payload base: cada campo com a origem do valor (real verificado no contexto, sintético, gerador).
+        Assert.Contains(runtime.Payload, f => f is { Field: "request.VeiculoId", Origin: PayloadValueOrigins.Real, Verified: true, Source: "veiculoDisponivel" });
+        Assert.Contains(runtime.Payload, f => f is { Field: "request.Observacao", Origin: PayloadValueOrigins.Synthetic });
+        Assert.Contains(runtime.Payload, f => f is { Field: "request.Data", Origin: PayloadValueOrigins.Generator });
+        var baseline = runtime.Executions.First(e => e.Phase == RuntimePhases.Baseline);
+        Assert.Equal(ScriptedRuntimeAi.Observacao, baseline.RequestBody!["observacao"]!.GetValue<string>());
+        Assert.Contains("### Payload base", ReportRenderer.Markdown(report));
 
         Assert.True(Status(s => s.Kind == ScenarioKinds.Success && s.Focus is null) == ScenarioValidationStatuses.Confirmed, Why(s => s.Kind == ScenarioKinds.Success && s.Focus is null));
         Assert.True(Status(s => s.Expected.Messages.Contains("Veículo indisponível.")) == ScenarioValidationStatuses.Confirmed, Why(s => s.Expected.Messages.Contains("Veículo indisponível.")));
@@ -91,7 +100,7 @@ internal sealed partial class ScriptedRuntimeAi : IAiProvider
         {
             var p when p.StartsWith("planejar") => Requirements(),
             var p when p.StartsWith("adquirir") => Acquire(request.UserPrompt),
-            var p when p.StartsWith("ligar") => Bind(request.UserPrompt),
+            var p when p.StartsWith("montar") => Bind(request.UserPrompt),
             _ => Explore(request.UserPrompt),
         };
         return Task.FromResult(JsonSerializer.SerializeToElement(response));
@@ -99,6 +108,10 @@ internal sealed partial class ScriptedRuntimeAi : IAiProvider
 
     private static object Requirements() => new
     {
+        payloadRequirements = new[]
+        {
+            new { id = "P1", description = "Veículo existente para o payload base", entity = "Veiculo", constraints = new[] { "Disponivel == true" }, fields = new[] { "request.VeiculoId" } },
+        },
         requirements = new[]
         {
             new { id = "R1", description = "Veículo existente e disponível", entity = "Veiculo", constraints = new[] { "Disponivel == true" }, scenarios = Array.Empty<string>(), fields = new[] { "request.VeiculoId" } },
@@ -168,8 +181,16 @@ internal sealed partial class ScriptedRuntimeAi : IAiProvider
                 : [];
             return new { id = b.Id, materializable = true, reason = "", bindings };
         });
-        return new { scenarios };
+        // Payload base: id real do contexto, observação sintética plausível; a data fica com o gerador.
+        var payload = new object[]
+        {
+            new { variable = "request.VeiculoId", valueJson = context["veiculoDisponivel"], origin = "real", source = "veiculoDisponivel", reason = "" },
+            new { variable = "request.Observacao", valueJson = $"\"{Observacao}\"", origin = "sintetico", source = "", reason = "nenhuma programação real listada" },
+        };
+        return new { payload, scenarios };
     }
+
+    public const string Observacao = "Entrega agendada com o cliente";
 
     private static object Explore(string prompt)
     {

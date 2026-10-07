@@ -8,17 +8,41 @@ using EndpointAnalyzer.Scenarios;
 namespace EndpointAnalyzer.Runtime;
 
 /// <summary>
-/// ScenarioContext: dados reais encontrados na API (cache em memória da análise), reutilizados por todos os cenários,
-/// e os fatos do estado (consulta + valores concretos) usados pelo materializador. Os fatos valem até a próxima
-/// escrita bem-sucedida na API, que pode ter mudado o estado.
+/// ScenarioContext: repertório dos dados reais encontrados na API (cache em memória da análise), reutilizados por todos
+/// os cenários; o payload base montado com eles (cada campo com a origem do valor); e os fatos do estado (consulta +
+/// valores concretos) usados pelo materializador. Os fatos valem até a próxima escrita bem-sucedida na API, que pode
+/// ter mudado o estado.
 /// </summary>
 public sealed class ScenarioContext(RuntimeValidation report)
 {
     private readonly List<StateFact> _facts = [];
+    private List<ScenarioBinding> _payload = [];
 
     public IReadOnlyList<ContextItem> Items => report.Context;
 
     public IReadOnlyCollection<StateFact> Facts => _facts;
+
+    /// <summary>Payload base como valores preferidos do materializador (sem os do gerador, que ele já usa).</summary>
+    public IReadOnlyList<ScenarioBinding> Payload => _payload;
+
+    /// <summary>Define o payload base: real › derivado › sintético › gerador, nessa ordem de prioridade.</summary>
+    public void SetPayload(List<PayloadFieldValue> fields)
+    {
+        report.Payload = fields;
+        _payload = fields.Where(f => f.Origin != PayloadValueOrigins.Generator)
+            .Select(f => new ScenarioBinding(f.Field, f.Value, f.Source ?? f.Origin))
+            .ToList();
+    }
+
+    /// <summary>O valor aparece no item do contexto (verificado) ou na execução citada.</summary>
+    public bool Supports(string? source, string valueJson)
+    {
+        if (source is null) return false;
+        if (report.Context.FirstOrDefault(i => i.Key == source) is { Verified: true } item)
+            return Evidence.Within(item.Value, valueJson)
+                   || (report.Executions.FirstOrDefault(e => e.Id == item.ExecutionId) is { } origin && Evidence.Supports(origin, valueJson));
+        return report.Executions.FirstOrDefault(e => e.Id == source) is { } execution && Evidence.Supports(execution, valueJson);
+    }
 
     /// <summary>
     /// Guarda o dado (substitui a mesma chave). É verificado quando todos os valores aparecem na resposta (ou no body
@@ -61,6 +85,12 @@ public sealed class ScenarioContext(RuntimeValidation report)
         : string.Join("\n", report.Context.Select(i =>
             $"- {i.Key}{(i.Verified ? "" : " [NÃO VERIFICADO]")}: {i.Description} = {Truncate(i.Value, 600)}{(i.ExecutionId is null ? "" : $" (fonte {i.ExecutionId})")}"));
 
+    /// <summary>Payload base para os prompts.</summary>
+    public string DescribePayload() => report.Payload.Count == 0
+        ? "(não montado: valores do gerador)"
+        : string.Join("\n", report.Payload.Select(f =>
+            $"- {f.Field} = {Truncate(f.Value, 120)} ({f.Origin}{(f.Source is null ? "" : ": " + f.Source)}{(f.Origin == PayloadValueOrigins.Real && !f.Verified ? ", NÃO VERIFICADO" : "")})"));
+
     internal static string Truncate(string text, int max) => text.Length <= max ? text : text[..max] + "…";
 }
 
@@ -89,6 +119,19 @@ internal static class Evidence
 
         if (wanted.Count == 0) return execution.Status is >= 200 and < 300;
         return wanted.All(w => available.Contains(w) || available.Any(a => a.Contains(w, StringComparison.OrdinalIgnoreCase) && w.Length >= 4));
+    }
+
+    /// <summary>Todos os valores escalares (exceto bool) de <paramref name="valueJson"/> aparecem no JSON <paramref name="container"/>.</summary>
+    public static bool Within(string container, string valueJson)
+    {
+        var available = new HashSet<string>(Scalars(Parse(container)), StringComparer.OrdinalIgnoreCase);
+        return Scalars(Parse(valueJson)).Where(s => s.Length > 0).All(available.Contains);
+    }
+
+    private static JsonNode? Parse(string json)
+    {
+        try { return JsonNode.Parse(json); }
+        catch (JsonException) { return JsonValue.Create(json); }
     }
 
     /// <summary>Folhas escalares do JSON como texto (números normalizados), sem bool e null.</summary>

@@ -11,9 +11,9 @@ namespace EndpointAnalyzer.Runtime;
 /// <summary>
 /// Validação dinâmica da matriz de cenários (analise-ia-validacao-dinamica-cenarios.md), só na análise com IA:
 /// <code>
-/// matriz candidata → AppRunner → ScenarioRequirementPlanner → DataAcquisitionPlanner → GETs direcionados
-/// → ScenarioContext → RuntimePayloadMaterializer → baseline válido → ScenarioExecutor → ScenarioExplorer
-/// → MatrixReconciler → matriz validada
+/// matriz candidata → AppRunner → ScenarioRequirementPlanner (requisitos de payload + de cenário)
+/// → DataAcquisitionPlanner → GETs direcionados → ScenarioContext → RuntimePayloadMaterializer (payload base completo)
+/// → baseline válido → ScenarioExecutor → ScenarioExplorer → MatrixReconciler → matriz validada
 /// </code>
 /// Falhas (API que não sobe, IA indisponível) não interrompem a análise: o relatório traz o erro e a matriz estática.
 /// </summary>
@@ -60,20 +60,26 @@ public class RuntimeValidationService(RuntimeOptions options, IAppRunner runner,
             if (scenarios.Count < model.Matrix.Scenarios.Count)
                 report.Notes.Add($"Validados {scenarios.Count} de {model.Matrix.Scenarios.Count} cenários (Runtime:MaxScenarios).");
 
-            // Fase 3: requisitos de dados.
+            // Fase 3: requisitos de dados do payload completo e de cada cenário.
             report.Requirements = await new ScenarioRequirementPlanner(runtimeAi).PlanAsync(analysis, model.Matrix, scenarios, catalog, report.Notes, cancellationToken);
-            Log($"{report.Requirements.Count} requisito(s) de dados.");
+            Log($"{report.Requirements.Count} requisito(s) de dados ({report.Requirements.Count(r => r.Kind == DataRequirementKinds.Payload)} de payload, " +
+                $"{report.Requirements.Count(r => r.Kind == DataRequirementKinds.Scenario)} de cenário).");
 
             // Fase 4: contexto com dados reais (prioritariamente GET).
             await new DataAcquisitionPlanner(runtimeAi, options).AcquireAsync(analysis, report.Requirements, catalog, context, executor, report, cancellationToken);
             Log($"Contexto: {report.Context.Count} dado(s); requisitos atendidos: {report.Requirements.Count(r => r.Status == "atendido")}/{report.Requirements.Count}.");
 
-            // Fases 5 e 6: baseline e exploração dos demais cenários.
+            // Fase 5: payload base completo (dados reais › derivados › sintéticos › gerador) e o que cada cenário muda.
             var materializer = new RuntimePayloadMaterializer(model, runtimeAi);
             var baselineId = scenarios.FirstOrDefault(s => s.Kind == ScenarioKinds.Success && s.Focus is null)?.Id;
-            var plans = await materializer.PlanAsync(scenarios, baselineId, report.Requirements, context, cancellationToken);
+            var plan = await materializer.PlanAsync(scenarios, baselineId, report.Requirements, context, cancellationToken);
+            context.SetPayload(plan.Payload);
+            Log("Payload base: " + string.Join(", ", PayloadValueOrigins.All
+                .Select(o => (Origin: o, Count: plan.Payload.Count(f => f.Origin == o))).Where(x => x.Count > 0).Select(x => $"{x.Count} {x.Origin}")));
+
+            // Fases 5 e 6: baseline e exploração dos demais cenários.
             explorer = new ScenarioExplorer(materializer, runtimeAi, options, executor, context, catalog, report, Log);
-            await explorer.RunAsync(analysis, scenarios, plans, report.Requirements, cancellationToken);
+            await explorer.RunAsync(analysis, scenarios, plan.Scenarios, report.Requirements, cancellationToken);
 
             if (app.HasExited) report.Notes.Add($"A API encerrou durante a validação:\n{app.OutputTail}");
         }
