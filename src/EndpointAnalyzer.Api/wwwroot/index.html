@@ -119,6 +119,7 @@
   input[type=text]:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   button { padding: 8px 14px; border: 0; border-radius: 6px; background: var(--accent); color: var(--accent-text); font: inherit; font-weight: 600; cursor: pointer; }
   button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--border); }
+  button.danger { background: #c0392b; color: #ffffff; }
   button:disabled { opacity: .5; cursor: default; }
   label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
   .row { display: flex; gap: 10px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
@@ -663,6 +664,7 @@ function selectEndpoint(endpoint) {
   history.replaceState(null, "", `${location.pathname}${location.search}#${encodeURIComponent(route(endpoint))}`);
   $("result").innerHTML = "";
   renderEndpointPanel();
+  restoreAnalysis(endpoint);
 }
 
 function renderEndpointPanel() {
@@ -698,6 +700,7 @@ function renderEndpointPanel() {
     </div>
     <div class="row">
       <button id="analyze">ANALISAR</button>
+      <button id="cancelAnalysis" class="danger" type="button" disabled title="Interrompe a análise em andamento (IA e validação em runtime)">CANCELAR ANÁLISE</button>
       <span id="analyzeStatus" class="muted"></span>
       <span class="spacer"></span>
       <span id="reportActions" class="report-actions" hidden>
@@ -706,7 +709,9 @@ function renderEndpointPanel() {
       </span>
     </div>`;
   $("analyze").addEventListener("click", analyze);
-  const sections = store.get("ea.sections", resultTabs.map(([id]) => id));
+  $("cancelAnalysis").addEventListener("click", () => running.get(key(e))?.controller.abort());
+  showAnalysisState(e);
+  const sections =store.get("ea.sections", resultTabs.map(([id]) => id));
   document.querySelectorAll("[data-section]").forEach(box => {
     box.checked = sections.includes(box.dataset.section);
     box.addEventListener("change", () => { store.set("ea.sections", selectedSections()); updateTabOptions(); });
@@ -773,28 +778,119 @@ function updateAiControls(initial) {
 
 // ---- Análise ----
 
-async function analyze() {
-  if (!selected) return;
-  const endpoint = selected;
-  const sections = selectedSections();
-  if (!sections.length) {
-    $("analyzeStatus").textContent = "Selecione ao menos uma aba para o resultado.";
-    $("analyzeStatus").className = "error";
+/** Análises em andamento por endpoint: { controller, status }. Trocar de endpoint não interrompe a análise. */
+const running = new Map();
+
+/**
+ * Análises concluídas guardadas no localStorage (uma entrada por solução + endpoint), para reabrir o endpoint sem
+ * refazer a análise. O índice guarda a data de cada uma: sem espaço, as mais antigas saem primeiro.
+ */
+const savedAnalyses = {
+  indexKey: "ea.analyses",
+  id: (endpoint, solution = solutionPath) => `ea.analysis:${solution}|${key(endpoint)}`,
+  get(endpoint) { return store.get(this.id(endpoint), null); },
+  set(endpoint, solution, response) {
+    const id = this.id(endpoint, solution), savedAt = Date.now();
+    const value = JSON.stringify({ savedAt, response });
+    const index = store.get(this.indexKey, {});
+    delete index[id];
+    for (;;) {
+      try {
+        localStorage.setItem(id, value);
+        index[id] = savedAt;
+        store.set(this.indexKey, index);
+        return;
+      } catch {
+        const oldest = Object.keys(index).sort((a, b) => index[a] - index[b])[0];
+        if (!oldest) return;   // Nem sozinha ela cabe: fica só na tela.
+        try { localStorage.removeItem(oldest); } catch { }
+        delete index[oldest];
+      }
+    }
+  },
+};
+
+const analysisStatus = (report) => {
+  const rt = report.runtime, flow = report.businessFlow;
+  return (report.fromCache ? "Concluído (cache)" : "Concluído")
+    + (!rt ? "" : rt.status === "falhou" ? " · a validação em runtime falhou (veja a aba Cenários)"
+      : ` · ${rt.matrix?.counts?.confirmado ?? 0} de ${rt.matrix?.scenarios?.length ?? 0} cenário(s) confirmado(s) em runtime`)
+    + (flow?.error ? " · o fluxo de negócio por IA falhou (veja a aba Negócio)" : "");
+};
+
+const savedAtLabel = (time) => new Date(time).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
+
+/** Botões e status do card conforme o endpoint tenha uma análise em andamento. */
+function showAnalysisState(endpoint) {
+  if (!$("analyze") || selected !== endpoint) return;
+  const current = running.get(key(endpoint));
+  $("analyze").disabled = !!current;
+  $("cancelAnalysis").disabled = !current;
+  if (current) {
+    $("analyzeStatus").textContent = current.status;
+    $("analyzeStatus").className = "muted";
+  }
+}
+
+function setAnalyzeStatus(endpoint, text, className) {
+  if (selected !== endpoint || !$("analyzeStatus")) return;
+  $("analyzeStatus").textContent = text;
+  $("analyzeStatus").className = className;
+}
+
+/** Exibe uma resposta da análise (nova ou salva) no resultado. */
+function showResponse(response) {
+  lastResponse = response;
+  resetSource();
+  businessView = response.report.businessFlow?.result ? "ai" : "technical";
+  scenarioView = response.report.runtime?.matrix ? "validated" : "static";
+  scenarioFilter = "all";
+  // Primeira aba pedida (com IA, o Resumo vem primeiro; sem ela, o fluxo de negócio).
+  const order = response.report.ai ? ["summary", "business", "complete", "scenarios"] : ["business", "summary", "complete", "scenarios"];
+  render(order.find(id => sectionsOf(response.report).includes(id)));
+}
+
+/** Ao abrir um endpoint: a última análise salva dele, se houver (e se não houver outra em andamento). */
+function restoreAnalysis(endpoint) {
+  const saved = running.has(key(endpoint)) ? null : savedAnalyses.get(endpoint);
+  if (!saved?.response?.report) return;
+  try {
+    showResponse(saved.response);
+  } catch {
+    // Salva por uma versão anterior da página e incompatível com a atual: descarta.
+    lastResponse = null;
+    $("result").innerHTML = "";
     return;
   }
-  $("analyze").disabled = true;
-  $("analyzeStatus").className = "muted";
+  setAnalyzeStatus(endpoint, `${analysisStatus(saved.response.report)} · análise salva em ${savedAtLabel(saved.savedAt)}`, "muted");
+}
+
+async function analyze() {
+  if (!selected || running.has(key(selected))) return;
+  const endpoint = selected, solution = solutionPath;
+  const sections = selectedSections();
+  if (!sections.length) {
+    setAnalyzeStatus(endpoint, "Selecione ao menos uma aba para o resultado.", "error");
+    return;
+  }
   const ai = selectedAi();
   // A IA dos cenários inclui a validação com a API em execução (quando o servidor permite).
   const runtime = runtimeAvailable && ai.includes("scenarios");
-  $("analyzeStatus").textContent = runtime ? "Analisando com IA e validando os cenários com a API em execução (pode levar vários minutos)..."
-    : ai.length ? "Analisando com IA (pode levar alguns minutos)..." : "Analisando...";
+  const controller = new AbortController();
+  running.set(key(endpoint), {
+    controller,
+    status: runtime ? "Analisando com IA e validando os cenários com a API em execução (pode levar vários minutos)..."
+      : ai.length ? "Analisando com IA (pode levar alguns minutos)..." : "Analisando...",
+  });
+  showAnalysisState(endpoint);
   try {
+    // Cancelar aborta a requisição; o servidor recebe o cancelamento e encerra a IA e a API iniciada para o runtime.
     const response = await api("/api/analysis", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
       body: JSON.stringify({
-        solutionPath,
+        solutionPath: solution,
         endpoint: { method: endpoint.httpMethod, route: endpoint.route },
         sections,
         ai,
@@ -802,26 +898,17 @@ async function analyze() {
         apiToken: runtime && apiToken() ? apiToken() : null,
       }),
     });
+    // Salva mesmo se o usuário já estiver em outro endpoint: ao voltar, o resultado está lá.
+    savedAnalyses.set(endpoint, solution, response);
     if (selected !== endpoint) return;
-    lastResponse = response;
-    resetSource();
-    const rt = response.report.runtime, flow = response.report.businessFlow;
-    $("analyzeStatus").textContent = (response.report.fromCache ? "Concluído (cache)" : "Concluído")
-      + (!rt ? "" : rt.status === "falhou" ? " · a validação em runtime falhou (veja a aba Cenários)"
-        : ` · ${rt.matrix?.counts?.confirmado ?? 0} de ${rt.matrix?.scenarios?.length ?? 0} cenário(s) confirmado(s) em runtime`)
-      + (flow?.error ? " · o fluxo de negócio por IA falhou (veja a aba Negócio)" : "");
-    businessView = flow?.result ? "ai" : "technical";
-    scenarioView = rt?.matrix ? "validated" : "static";
-    scenarioFilter = "all";
-    // Primeira aba pedida (com IA, o Resumo vem primeiro; sem ela, o fluxo de negócio).
-    const order = response.report.ai ? ["summary", "business", "complete", "scenarios"] : ["business", "summary", "complete", "scenarios"];
-    render(order.find(id => sectionsOf(response.report).includes(id)));
+    showResponse(response);
+    setAnalyzeStatus(endpoint, analysisStatus(response.report), "muted");
   } catch (err) {
-    if (selected !== endpoint) return;
-    $("analyzeStatus").textContent = err.message;
-    $("analyzeStatus").className = "error";
+    if (controller.signal.aborted) setAnalyzeStatus(endpoint, "Análise cancelada.", "muted");
+    else setAnalyzeStatus(endpoint, err.message, "error");
   } finally {
-    if ($("analyze")) $("analyze").disabled = false;
+    running.delete(key(endpoint));
+    showAnalysisState(endpoint);
   }
 }
 
