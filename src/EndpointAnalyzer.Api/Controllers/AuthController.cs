@@ -26,7 +26,7 @@ public class AuthController(ClaudeCodeAuth auth, AiProviderRouter router, Claude
     [HttpGet("models")]
     public async Task<IActionResult> Models([FromQuery] bool refresh, CancellationToken cancellationToken)
     {
-        var status = await auth.GetStatusAsync(cancellationToken: cancellationToken);
+        var status = await auth.GetStatusAsync(refresh, cancellationToken);
         var models = await catalog.GetAsync(status, refresh, cancellationToken);
         return Ok(new { models, model = claudeCode.Model, effort = claudeCode.Effort });
     }
@@ -44,7 +44,7 @@ public class AuthController(ClaudeCodeAuth auth, AiProviderRouter router, Claude
 
         var effort = model.Efforts.Count == 0
             ? ""
-            : request.Effort is { } e && model.Efforts.Contains(e) ? e : model.DefaultEffort ?? model.Efforts[^1];
+            : request.Effort is { } e && model.Efforts.Contains(e) ? e : model.DefaultEffort ?? "";
 
         claudeCode.SaveSelection(model.Id, effort);
         return Ok(new { model = claudeCode.Model, effort = claudeCode.Effort });

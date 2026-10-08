@@ -32,7 +32,7 @@ public class ClaudeCodeOptions
         {
             if (!File.Exists(SelectionFile)) return;
             var saved = JsonSerializer.Deserialize<Selection>(File.ReadAllText(SelectionFile));
-            if (saved is null || !ClaudeModelCatalog.IsKnownModel(saved.Model)) return;
+            if (saved is null || string.IsNullOrWhiteSpace(saved.Model)) return;
             Model = saved.Model;
             Effort = saved.Effort;
         }
