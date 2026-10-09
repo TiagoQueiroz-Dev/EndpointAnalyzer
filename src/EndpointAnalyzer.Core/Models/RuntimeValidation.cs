@@ -40,6 +40,8 @@ public static class RuntimeValidationStatuses
 
 public static class RuntimePhases
 {
+    public const string Manual = "manual";
+
     public const string Acquisition = "aquisicao";
     public const string Baseline = "baseline";
     public const string Scenario = "cenario";
@@ -297,6 +299,22 @@ public class ContextItem
 /// <summary>Requisição feita à API em execução (ScenarioExecutor).</summary>
 public class RuntimeExecution
 {
+    /// <summary>Versão das fontes executadas na reanálise, independente da versão da análise original.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SourceFingerprint { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? TestedCommit { get; set; }
+
+    public DateTimeOffset StartedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>Decisão e justificativas da tentativa, preservadas mesmo após novas tentativas.</summary>
+    public string? MatchLevel { get; set; }
+
+    public List<string> Evidence { get; set; } = [];
+
+    public List<string> Reasons { get; set; } = [];
+
     /// <summary>EX-01, EX-02...</summary>
     public string Id { get; set; } = "";
 

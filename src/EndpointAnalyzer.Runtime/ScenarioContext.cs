@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using EndpointAnalyzer.Core.Models;
 using EndpointAnalyzer.Scenarios;
 
@@ -221,11 +222,10 @@ internal static class Evidence
             if (node is JsonValue v && v.GetValueKind() == JsonValueKind.String) return v.GetValue<string>();
             if (node is JsonObject obj)
             {
-                if (obj["errors"] is JsonObject errors)
-                {
-                    var first = errors.SelectMany(e => Strings(e.Value).Select(s => $"{e.Key}: {s}")).FirstOrDefault();
-                    if (first is not null) return first;
-                }
+                var errors = ValidationErrors(obj["errors"])
+                    .Select(e => string.IsNullOrWhiteSpace(e.Field) ? e.Message : $"{e.Field}: {e.Message}")
+                    .Distinct().ToList();
+                if (errors.Count > 0) return string.Join("; ", errors);
                 foreach (var key in new[] { "erro", "error", "mensagem", "message", "detail", "title", "errorMessage", "msg" })
                 {
                     var property = obj.FirstOrDefault(p => string.Equals(p.Key, key, StringComparison.OrdinalIgnoreCase));
@@ -242,25 +242,56 @@ internal static class Evidence
         }
     }
 
-    /// <summary>ProblemDetails de validação com erro no campo (errors.Placa, errors["$.placa"], errors["request.Placa"]).</summary>
+    /// <summary>Erros de validação em objeto ou array, identificados pela chave do campo ou pelo Path do JSON.</summary>
     public static bool HasFieldError(string? body, string field)
     {
         if (string.IsNullOrWhiteSpace(body) || string.IsNullOrWhiteSpace(field)) return false;
         try
         {
-            if (JsonNode.Parse(body) is not JsonObject { } obj || obj["errors"] is not JsonObject errors) return false;
+            if (JsonNode.Parse(body) is not JsonObject { } obj) return false;
             var wanted = field.Trim().TrimStart('$', '.');
-            return errors.Any(e =>
-            {
-                var key = e.Key.TrimStart('$', '.');
-                return string.Equals(key, wanted, StringComparison.OrdinalIgnoreCase)
-                    || key.EndsWith("." + wanted, StringComparison.OrdinalIgnoreCase)
-                    || wanted.EndsWith("." + key, StringComparison.OrdinalIgnoreCase);
-            });
+            return ValidationErrors(obj["errors"]).Any(e => FieldMatches(e.Field, wanted)
+                || Regex.Matches(e.Message, @"\bPath:\s*(?<path>\$[^\s|]*)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
+                    .Any(m => FieldMatches(m.Groups["path"].Value.TrimEnd('.'), wanted)));
         }
         catch (JsonException)
         {
             return false;
+        }
+    }
+
+    private static bool FieldMatches(string field, string wanted)
+    {
+        var key = field.Trim().TrimStart('$', '.');
+        return key.Length > 0 && wanted.Length > 0
+            && (string.Equals(key, wanted, StringComparison.OrdinalIgnoreCase)
+                || key.EndsWith("." + wanted, StringComparison.OrdinalIgnoreCase)
+                || wanted.EndsWith("." + key, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static IEnumerable<(string Field, string Message)> ValidationErrors(JsonNode? errors)
+    {
+        if (errors is JsonObject fields)
+        {
+            foreach (var (field, value) in fields)
+                foreach (var message in Strings(value).Where(s => !string.IsNullOrWhiteSpace(s)))
+                    yield return (field, message);
+        }
+        else if (errors is JsonArray array)
+        {
+            foreach (var item in array)
+            {
+                if (item is JsonObject error)
+                {
+                    var field = error["key"] is JsonValue key && key.GetValueKind() == JsonValueKind.String
+                        ? key.GetValue<string>() : "";
+                    foreach (var message in Strings(error["value"] ?? error["message"]).Where(s => !string.IsNullOrWhiteSpace(s)))
+                        yield return (field, message);
+                }
+                else if (item is JsonValue value && value.GetValueKind() == JsonValueKind.String
+                    && !string.IsNullOrWhiteSpace(value.GetValue<string>()))
+                    yield return ("", value.GetValue<string>());
+            }
         }
     }
 }

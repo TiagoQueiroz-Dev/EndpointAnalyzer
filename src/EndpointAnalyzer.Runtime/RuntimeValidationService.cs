@@ -17,7 +17,7 @@ namespace EndpointAnalyzer.Runtime;
 /// </code>
 /// Falhas (API que não sobe, IA indisponível) não interrompem a análise: o relatório traz o erro e a matriz estática.
 /// </summary>
-public class RuntimeValidationService(RuntimeOptions options, IAppRunner runner, ILogger<RuntimeValidationService>? logger = null)
+public partial class RuntimeValidationService(RuntimeOptions options, IAppRunner runner, ILogger<RuntimeValidationService>? logger = null)
 {
     private readonly ILogger _logger = logger ?? NullLogger<RuntimeValidationService>.Instance;
 

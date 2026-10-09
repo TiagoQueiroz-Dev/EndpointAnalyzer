@@ -1,6 +1,6 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
-using System.Text.RegularExpressions;
+using EndpointAnalyzer.Scanner;
 using EndpointAnalyzer.Core.Models;
 
 namespace EndpointAnalyzer.Scenarios;
@@ -23,9 +23,8 @@ public sealed class PayloadBuilder(InputModel input, VarTable vars, bool enumsAs
             {
                 case InputLocations.Route:
                 {
-                    var text = Raw(v, a.Get(v)) ?? "";
+                    var text = Raw(v, a.Get(v));
                     (routeValues ??= [])[root.Name] = text;
-                    route = Regex.Replace(route, @"\{\**" + Regex.Escape(root.Name) + @"(:[^}]*)?\??\}", Uri.EscapeDataString(text), RegexOptions.IgnoreCase);
                     break;
                 }
                 case InputLocations.Query or InputLocations.Header:
@@ -43,6 +42,7 @@ public sealed class PayloadBuilder(InputModel input, VarTable vars, bool enumsAs
             }
         }
 
+        route = RouteTemplate.Bind(route, routeValues ?? []);
         request.Route = routeValues;
         request.Query = query;
         request.Headers = headers;

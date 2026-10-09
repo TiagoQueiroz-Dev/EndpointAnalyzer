@@ -2,6 +2,7 @@ using EndpointAnalyzer.Application;
 using EndpointAnalyzer.Core.Models;
 using EndpointAnalyzer.Runtime;
 using Microsoft.AspNetCore.Mvc;
+using System.Text.Json;
 
 namespace EndpointAnalyzer.Api.Controllers;
 
@@ -41,10 +42,35 @@ public record ApiTokenRequest(string? SolutionPath, EndpointSelector? Endpoint, 
 
 public record AnalysisResponse(EndpointAnalysisReport Report, string Markdown);
 
+public record ScenarioRevalidationRequest(string AnalysisId, string ScenarioId, JsonElement Body, string? ApiToken = null);
+public record RestoreAnalysisRequest(string SolutionPath, EndpointAnalysisReport Report, string? ApiToken = null);
+
 [ApiController]
 [Route("api/analysis")]
 public class AnalysisController(EndpointAnalysisService service, IConfiguration configuration, IWebHostEnvironment environment) : ControllerBase
 {
+    [HttpPost("scenarios/revalidate")]
+    [RequestSizeLimit(1_048_576)]
+    public async Task<ActionResult<ScenarioRevalidationResult>> RevalidateScenario(ScenarioRevalidationRequest request, CancellationToken cancellationToken)
+        => Ok(await service.RevalidateScenarioAsync(request.AnalysisId, request.ScenarioId, request.Body, cancellationToken, request.ApiToken));
+
+    [HttpGet("saved")]
+    public ActionResult<AnalysisResponse> Saved(string solutionPath, string method, string route, string project)
+    {
+        var report = service.SavedAnalysis(SolutionPath.Resolve(solutionPath, configuration, environment), method, route, project);
+        return report is null ? NotFound(new { error = "Nenhuma análise salva para este endpoint." })
+            : Ok(new AnalysisResponse(report, ReportRenderer.Markdown(report)));
+    }
+
+    [HttpPost("restore")]
+    [RequestSizeLimit(20_971_520)]
+    public async Task<ActionResult<AnalysisResponse>> Restore(RestoreAnalysisRequest request, CancellationToken cancellationToken)
+    {
+        var report = await service.RestoreAnalysisAsync(SolutionPath.Resolve(request.SolutionPath, configuration, environment),
+            request.Report, request.ApiToken, cancellationToken);
+        return Ok(new AnalysisResponse(report, ReportRenderer.Markdown(report)));
+    }
+
     /// <summary>Analisa um endpoint: análise estática + documentação gerada pela IA.</summary>
     [HttpPost]
     public async Task<ActionResult<AnalysisResponse>> Analyze(AnalysisRequest request, CancellationToken cancellationToken)

@@ -8,6 +8,7 @@ using EndpointAnalyzer.Runtime;
 using EndpointAnalyzer.Scanner;
 using EndpointAnalyzer.Scenarios;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.AspNetCore.DataProtection;
 
 namespace EndpointAnalyzer.Application;
 
@@ -55,6 +56,14 @@ public static class ServiceCollectionExtensions
 
         // Validação dos cenários com a API em execução (só na análise com IA).
         services.AddSingleton(runtimeOptions);
+        var keyDirectory = new DirectoryInfo(Path.Combine(Path.GetDirectoryName(SqliteAnalysisStore.DatabasePath(runtimeOptions))!, "keys"));
+        if (!OperatingSystem.IsWindows()) Directory.CreateDirectory(keyDirectory.FullName,
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        var protection = services.AddDataProtection().SetApplicationName("EndpointAnalyzer")
+            .PersistKeysToFileSystem(keyDirectory);
+        if (OperatingSystem.IsWindows()) protection.ProtectKeysWithDpapi();
+        services.AddSingleton<SqliteAnalysisStore>();
+        services.AddSingleton<AnalysisSessionStore>();
         services.AddSingleton<IAppRunner, AppRunner>();
         services.AddSingleton<RuntimeValidationService>();
         services.AddSingleton<ApiTokenChecker>();

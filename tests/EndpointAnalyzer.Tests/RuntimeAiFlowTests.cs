@@ -20,8 +20,8 @@ public class RuntimeAiFlowTests(SampleSolutionFixture fixture)
     public async Task Ia_busca_dados_reais_e_a_matriz_validada_nao_tem_falso_positivo()
     {
         var ai = new ScriptedRuntimeAi();
-        var provider = new ServiceCollection()
-            .AddEndpointAnalyzer()
+        using var provider = new ServiceCollection()
+            .AddEndpointAnalyzer(configureRuntime: o => o.AnalysisDatabasePath = Path.Combine(fixture.CacheDirectory, "flow", "analyses.db"))
             .AddSingleton(new AnalysisCache(Path.Combine(fixture.CacheDirectory, "flow")))
             .AddSingleton<IAiProviderSelector>(new SingleAiProviderSelector(ai))
             .BuildServiceProvider();

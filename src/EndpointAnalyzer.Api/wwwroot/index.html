@@ -212,6 +212,9 @@
   .scen-dialog h4 { margin: 16px 0 6px; }
   .scen-dialog .req { font: 12.5px ui-monospace, Consolas, monospace; overflow-wrap: anywhere; }
   .scen-dialog pre { max-height: 45vh; overflow: auto; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
+  #revalidateDialog { width: min(760px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow: auto; }
+  #manualBody { width: 100%; min-height: 220px; resize: vertical; padding: 10px; color: var(--text); background: var(--code); border: 1px solid var(--border); border-radius: 6px; font: 13px/1.5 ui-monospace, Consolas, monospace; }
+  #manualPrevious { white-space: pre-wrap; max-height: 160px; overflow: auto; }
   .kind { display: inline-block; font: 600 10.5px system-ui, sans-serif; padding: 1px 7px; border-radius: 8px; border: 1px solid var(--border); color: var(--muted); margin-top: 4px; }
   .kind.sucesso { color: var(--post); border-color: var(--post); } .kind.validacao { color: var(--patch); border-color: var(--patch); }
   .kind.regra { color: var(--delete); border-color: var(--delete); } .kind.limite { color: var(--get); border-color: var(--get); }
@@ -411,6 +414,17 @@
   <div id="scenDetail"></div>
 </dialog>
 
+<dialog id="revalidateDialog" aria-labelledby="manualTitle">
+  <h2 id="manualTitle">Reanalisar cenário</h2>
+  <div id="manualContext"></div>
+  <details><summary>Resposta anterior</summary><pre id="manualPrevious"></pre></details>
+  <label for="manualBody">Payload JSON</label>
+  <textarea id="manualBody" spellcheck="false"></textarea>
+  <p class="muted">Executa apenas este cenário, sem IA. POST, PUT, PATCH e DELETE podem alterar dados da API.</p>
+  <p id="manualMessage" role="status" aria-live="polite"></p>
+  <div class="row"><button id="manualRun" type="button">Executar cenário</button><button id="manualClose" class="secondary" type="button">Fechar</button></div>
+</dialog>
+
 <script>
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -432,7 +446,11 @@ let openProjects = new Set(store.get("ea.openProjects", []));
 async function api(url, options) {
   const response = await fetch(url, options);
   const body = response.headers.get("content-type")?.includes("json") ? await response.json() : await response.text();
-  if (!response.ok) throw new Error(body?.error ?? body ?? response.statusText);
+  if (!response.ok) {
+    const error = new Error(body?.error ?? body?.detail ?? body?.title ?? body ?? response.statusText);
+    error.status = response.status;
+    throw error;
+  }
   return body;
 }
 
@@ -851,18 +869,36 @@ function showResponse(response) {
 }
 
 /** Ao abrir um endpoint: a última análise salva dele, se houver (e se não houver outra em andamento). */
-function restoreAnalysis(endpoint) {
+async function restoreAnalysis(endpoint) {
+  const solution = solutionPath, token = apiToken() || undefined;
   const saved = running.has(key(endpoint)) ? null : savedAnalyses.get(endpoint);
-  if (!saved?.response?.report) return;
-  try {
-    showResponse(saved.response);
-  } catch {
-    // Salva por uma versão anterior da página e incompatível com a atual: descarta.
-    lastResponse = null;
-    $("result").innerHTML = "";
-    return;
+  if (running.has(key(endpoint))) return;
+  if (saved?.response?.report) {
+    try { showResponse(saved.response); }
+    catch { lastResponse = null; $("result").innerHTML = ""; }
+    setAnalyzeStatus(endpoint, `${analysisStatus(saved.response.report)} · análise salva em ${savedAtLabel(saved.savedAt)}`, "muted");
   }
-  setAnalyzeStatus(endpoint, `${analysisStatus(saved.response.report)} · análise salva em ${savedAtLabel(saved.savedAt)}`, "muted");
+  const initial = lastResponse;
+  try {
+    let response;
+    try {
+      response = await api(`/api/analysis/saved?solutionPath=${encodeURIComponent(solution)}&method=${encodeURIComponent(endpoint.httpMethod)}&route=${encodeURIComponent(endpoint.route)}&project=${encodeURIComponent(endpoint.project)}`);
+    } catch (error) {
+      if (error.status !== 404 || !saved?.response?.report?.runtime?.matrix) throw error;
+      response = await api("/api/analysis/restore", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ solutionPath: solution, report: saved.response.report, apiToken: token }),
+      });
+    }
+    if (selected !== endpoint || solutionPath !== solution || lastResponse !== initial || running.has(key(endpoint))
+        || manualPending.has(initial?.report.analysisId)) return;
+    savedAnalyses.set(endpoint, solution, response);
+    showResponse(response);
+    setAnalyzeStatus(endpoint, `${analysisStatus(response.report)} · análise recuperada do banco local`, "muted");
+  } catch (error) {
+    if (error.status !== 404 && selected === endpoint && solutionPath === solution && lastResponse === initial && !running.has(key(endpoint)))
+      setAnalyzeStatus(endpoint, `Não foi possível recuperar a análise salva: ${error.message}`, "error");
+  }
 }
 
 async function analyze() {
@@ -1412,7 +1448,87 @@ function statusCell(r) {
   if (!r.runtime) return dash;
   const tip = [validationHelp[r.status], ...r.evidence.map(e => `✓ ${e}`), ...r.reasons.map(x => `⚠ ${x}`)].filter(Boolean).join("\n");
   return `<span class="vstatus ${esc(r.status)}" title="${esc(tip)}">${esc(validationKinds[r.status] ?? r.status)}</span>
-    ${r.reasons.length ? `<div class="warn clamp" title="${esc(r.reasons.join("\n"))}">${esc(r.reasons[0])}</div>` : ""}`;
+    ${r.reasons.length ? `<div class="warn clamp" title="${esc(r.reasons.join("\n"))}">${esc(r.reasons[0])}</div>` : ""}
+    ${r.status === "inconclusivo" ? `<button class="secondary cell-btn" type="button" data-revalidate="${esc(r.id)}">Reanalisar</button>` : ""}`;
+}
+
+let manualContext = null;
+const manualPending = new Set();
+
+function openRevalidation(id) {
+  const response = lastResponse;
+  const scenario = response.report.runtime?.matrix?.scenarios.find(s => s.id === id);
+  if (!scenario || scenario.status !== "inconclusivo") return;
+  manualContext = { response, scenario, endpoint: selected, solution: solutionPath, analysisId: response.report.analysisId, apiToken: apiToken() || undefined };
+  $("manualTitle").textContent = `Reanalisar ${id}`;
+  $("manualContext").innerHTML = `${scenario.request ? requestLine(scenario.request) : ""}<h4>Resultado esperado</h4>${expectedCell(scenario.expected)}
+    <p class="warn">${esc(scenario.reasons.join("\n"))}</p>`;
+  $("manualPrevious").textContent = scenario.observed?.body ?? scenario.observed?.exception ?? "Não executado";
+  $("manualBody").value = JSON.stringify(scenario.request?.body ?? null, null, 2);
+  $("manualMessage").className = "muted";
+  $("manualMessage").textContent = "";
+  $("manualRun").disabled = manualPending.has(manualContext.analysisId);
+  $("manualClose").disabled = false;
+  $("manualBody").disabled = false;
+  $("revalidateDialog").showModal();
+}
+
+async function revalidateScenario() {
+  const current = manualContext;
+  if (!current || current.busy || manualPending.has(current.analysisId)) return;
+  const body = $("manualBody").value;
+  try { JSON.parse(body); }
+  catch (error) { $("manualMessage").className = "error"; $("manualMessage").textContent = `JSON inválido: ${error.message}`; return; }
+  const pendingId = current.analysisId;
+  current.busy = true;
+  manualPending.add(pendingId);
+  $("manualRun").disabled = $("manualClose").disabled = $("manualBody").disabled = true;
+  $("manualMessage").className = "muted";
+  $("manualMessage").textContent = "Subindo a API e executando o cenário...";
+  try {
+    const execute = () => api("/api/analysis/scenarios/revalidate", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ analysisId: current.analysisId, scenarioId: current.scenario.id, apiToken: current.apiToken }).slice(0, -1) + ',"body":' + body + '}',
+    });
+    let result;
+    try { result = current.analysisId ? await execute() : null; }
+    catch (error) { if (error.status !== 404) throw error; }
+    if (!result) {
+      const restored = await api("/api/analysis/restore", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ solutionPath: current.solution, report: current.response.report, apiToken: current.apiToken }),
+      });
+      current.response.report = restored.report;
+      current.analysisId = restored.report.analysisId;
+      result = await execute();
+    }
+    current.response.report.runtime = result.runtime;
+    current.response.markdown = result.markdown;
+    // Uma resposta atrasada nunca substitui uma análise mais recente do mesmo endpoint.
+    const saved = store.get(savedAnalyses.id(current.endpoint, current.solution), null);
+    if (saved?.response.report.analysisId === current.analysisId || saved?.response.report.analysisId === pendingId)
+      savedAnalyses.set(current.endpoint, current.solution, current.response);
+    if (lastResponse === current.response && selected === current.endpoint && solutionPath === current.solution) {
+      const activeTab = document.querySelector("[data-tab].active")?.dataset.tab ?? "scenarios";
+      render(activeTab);
+      setAnalyzeStatus(current.endpoint, analysisStatus(current.response.report), "muted");
+    }
+    const updated = result.runtime.matrix.scenarios.find(s => s.id === current.scenario.id);
+    current.scenario = updated;
+    $("manualPrevious").textContent = updated.observed?.body ?? updated.observed?.exception ?? "Não executado";
+    $("manualMessage").className = updated.status === "confirmado" ? "muted" : "warn";
+    $("manualMessage").textContent = updated.status === "confirmado" ? "Cenário confirmado. Payload, resposta e evidências foram registrados."
+      : `Cenário continua inconclusivo: ${updated.reasons.join(" ")}`;
+    $("manualRun").disabled = updated.status === "confirmado";
+  } catch (error) {
+    $("manualMessage").className = "error";
+    $("manualMessage").textContent = error.message;
+    $("manualRun").disabled = false;
+  } finally {
+    current.busy = false;
+    manualPending.delete(pendingId);
+    $("manualClose").disabled = $("manualBody").disabled = false;
+  }
 }
 
 function scenarioGridHtml(rows) {
@@ -1453,6 +1569,11 @@ function openScenarioDetail(id) {
         ${o.exception ? `<div class="warn">${esc(o.exception)}</div>` : ""}
         ${response ? `<pre><code>${esc(response)}</code></pre>` : ""}` : `<p class="muted">não executado</p>`}
       ${r.evidence.length || r.reasons.length ? `<h4>Evidência</h4>${evidenceHtml(r)}` : ""}` : ""}`;
+  const attempts = (lastResponse.report.runtime?.executions ?? []).filter(e => e.scenarioId === id);
+  if (r.runtime && attempts.length) $("scenDetail").innerHTML += `<h4>Histórico de tentativas</h4>${attempts.map(e => `<details><summary>${esc(e.id)} · ${esc(e.phase)} · tentativa ${e.attempt ?? "—"} · HTTP ${e.status ?? "—"}${e.matchLevel ? ` · ${esc(e.matchLevel)}` : ""}</summary>
+    <pre><code>${esc(JSON.stringify(e.requestBody ?? null, null, 2))}</code></pre>
+    <pre><code>${esc(prettyBody(e.responseBody) || e.exception || e.reason || "Sem resposta")}</code></pre>
+    <p>${esc([...(e.evidence ?? []), ...(e.reasons ?? [])].join("\n"))}</p></details>`).join("")}`;
   if (!$("scenDialog").open) $("scenDialog").showModal();
 }
 
@@ -1587,7 +1708,7 @@ function viewToggleHtml() {
 function runtimeSummaryHtml(rt) {
   const failed = rt.status === "falhou";
   const title = failed ? "A validação em runtime falhou: a matriz abaixo é a estática (candidata)"
-    : rt.status === "parcial" ? "Matriz validada em runtime (parcial: limite atingido)" : "Matriz validada em runtime";
+    : rt.status === "parcial" ? "Matriz validada em runtime (parcial)" : "Matriz validada em runtime";
   const where = rt.baseUrl ? `serviço em ${esc(rt.baseUrl)} · escrita ${rt.writesAllowed ? "permitida" : "desligada"} · ` : "";
   return `<div class="rt-summary ${failed ? "failed" : rt.status === "parcial" ? "partial" : ""}">
     <b>${title}</b>
@@ -2729,6 +2850,8 @@ document.addEventListener("keydown", (e) => {
 });
 // Clique (ou Enter/Espaço) numa regra, validação ou condição mostra o código; clicar de novo fecha.
 $("result").addEventListener("click", (e) => {
+  const manual = e.target.closest("[data-revalidate]");
+  if (manual) { openRevalidation(manual.dataset.revalidate); return; }
   if (e.target.closest(".code-close")) { pick(null); return; }
   const copy = e.target.closest("[data-copy]");
   if (copy) { copyScenario(copy); return; }
@@ -2759,6 +2882,11 @@ $("scenDialog").addEventListener("click", (e) => {
   if (e.target === e.currentTarget || e.target.closest("[data-close]")) { $("scenDialog").close(); return; }
   const copy = e.target.closest("[data-copy]");
   if (copy) copyScenario(copy);
+});
+$("manualRun").addEventListener("click", revalidateScenario);
+$("manualClose").addEventListener("click", () => $("revalidateDialog").close());
+$("revalidateDialog").addEventListener("cancel", (e) => {
+  if (manualContext && manualPending.has(manualContext.analysisId)) e.preventDefault();
 });
 // Popup de código do fluxograma: fecha no ×, no Esc (nativo do dialog) ou clicando fora.
 $("codeDialog").addEventListener("click", (e) => {

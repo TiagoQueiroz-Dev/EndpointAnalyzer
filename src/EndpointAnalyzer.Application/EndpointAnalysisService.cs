@@ -10,6 +10,8 @@ using EndpointAnalyzer.Scanner;
 using EndpointAnalyzer.Scenarios;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace EndpointAnalyzer.Application;
 
@@ -31,7 +33,8 @@ public class EndpointAnalysisService(
     ILogger<EndpointAnalysisService>? logger = null,
     RuntimeValidationService? runtime = null,
     ApiTokenChecker? tokens = null,
-    IBusinessFlowAiAnalyzer? businessFlow = null)
+    IBusinessFlowAiAnalyzer? businessFlow = null,
+    AnalysisSessionStore? sessions = null)
 {
     /// <summary>Abas cuja IA vai na chamada da documentação (Resumo: regras; Cenários: títulos). Negócio tem chamada própria.</summary>
     private const AnalysisSections DocumentationSections = AnalysisSections.Summary | AnalysisSections.Scenarios;
@@ -40,7 +43,7 @@ public class EndpointAnalysisService(
 
     private readonly IBusinessFlowAiAnalyzer _businessFlow = businessFlow ?? new BusinessFlowAiAnalyzer();
 
-    private sealed record StaticAnalysis(LoadedSolution Solution, EndpointAnalysisContext Context, ScenarioModel? Scenarios);
+    private sealed record StaticAnalysis(LoadedSolution Solution, EndpointAnalysisContext Context, ScenarioModel? Scenarios, string Fingerprint);
 
     public async Task<bool> IsAiAvailableAsync(CancellationToken cancellationToken = default) =>
         aiSelector is not null && await aiSelector.SelectAsync(cancellationToken) is not null;
@@ -72,19 +75,20 @@ public class EndpointAnalysisService(
     /// <param name="generateScenarios">Gera a matriz de cenários (Z3); só as abas Cenários e Completo (e o Resumo sem IA) usam.</param>
     private async Task<StaticAnalysis> BuildStaticAsync(string solutionPath, EndpointInfo endpoint, bool generateScenarios, CancellationToken cancellationToken)
     {
-        var loaded = await solutions.GetAsync(solutionPath, cancellationToken: cancellationToken);
+        var loaded = await solutions.GetCurrentAsync(solutionPath, cancellationToken);
+        var fingerprint = AnalysisSourceVersion.Capture(loaded);
 
         var graph = await callGraph.BuildAsync(loaded, endpoint, cancellationToken);
         var foundConditions = await conditions.AnalyzeAsync(graph, cancellationToken);
         var foundChanges = await changes.AnalyzeAsync(graph, cancellationToken);
 
         var analysisContext = context.Build(graph, foundConditions, foundChanges);
-        if (!generateScenarios) return new StaticAnalysis(loaded, analysisContext, null);
+        if (!generateScenarios) return new StaticAnalysis(loaded, analysisContext, null, fingerprint);
 
         // A matriz é a mesma de GenerateAsync; o modelo guarda as restrições para a validação em runtime.
         var model = await scenarios.GenerateModelAsync(graph, analysisContext, cancellationToken);
         analysisContext.Scenarios = model.Matrix;
-        return new StaticAnalysis(loaded, analysisContext, model);
+        return new StaticAnalysis(loaded, analysisContext, model, fingerprint);
     }
 
     /// <param name="useAi">Sem <paramref name="aiSections"/>: IA em todas as abas pedidas (como antes, rótulos do fluxograma na documentação).</param>
@@ -137,7 +141,11 @@ public class EndpointAnalysisService(
             Sections = AnalysisSectionNames.ToNames(sections),
         };
 
-        if (documentation == AnalysisSections.None && !runBusinessFlow && !runRuntime) return report;
+        if (documentation == AnalysisSections.None && !runBusinessFlow && !runRuntime)
+        {
+            sessions?.Add(analysis.Solution, analysis.Scenarios, report, analysis.Fingerprint, apiToken);
+            return report;
+        }
         var ai = aiSelector is null ? null : await aiSelector.SelectAsync(cancellationToken);
         if (ai is null)
             throw new InvalidOperationException("Nenhuma IA disponível. Entre com sua conta do Claude (plano mensal) ou defina ANTHROPIC_API_KEY.");
@@ -160,7 +168,129 @@ public class EndpointAnalysisService(
             // A API iniciada pela validação é encerrada mesmo se a documentação falhar.
             if (runtimeTask is not null) report.Runtime = await runtimeTask;
         }
+        sessions?.Add(analysis.Solution, analysis.Scenarios, report, analysis.Fingerprint, apiToken);
         return report;
+    }
+
+    public async Task<ScenarioRevalidationResult> RevalidateScenarioAsync(string analysisId, string scenarioId, JsonElement body,
+        CancellationToken cancellationToken = default, string? apiToken = null)
+    {
+        if (sessions is null || runtime is null) throw new AnalysisSessionException(503, "Reanálise manual indisponível.");
+        if (string.IsNullOrWhiteSpace(analysisId) || string.IsNullOrWhiteSpace(scenarioId))
+            throw new ArgumentException("Informe analysisId e scenarioId.");
+        if (body.ValueKind == JsonValueKind.Undefined) throw new ArgumentException("Informe o body JSON (use null para uma requisição sem corpo).");
+        if (body.GetRawText().Length > runtime.Options.MaxManualBodyChars)
+            throw new ScenarioRevalidationException(413, "O payload excede o tamanho máximo permitido.");
+        ValidateJson(body);
+        var session = sessions.Acquire(analysisId);
+        try
+        {
+            if (session.ManualRequests >= runtime.Options.MaxManualRequests)
+                throw new AnalysisSessionException(429, "Limite de requisições manuais desta análise atingido.");
+            var validation = session.Report.Runtime
+                ?? throw new AnalysisSessionException(409, "A análise salva não possui uma matriz validada em runtime.");
+            if (apiToken is not null)
+            {
+                session.Token = string.IsNullOrWhiteSpace(apiToken) ? null : apiToken.Trim();
+                session.TokenUnavailable = false;
+                sessions.Save(session);
+            }
+            if (session.TokenUnavailable)
+                throw new AnalysisSessionException(409, "Não foi possível recuperar o token protegido. Informe o token da API novamente; a análise salva continua disponível.");
+            var solution = await solutions.GetCurrentAsync(session.SolutionPath, cancellationToken);
+            var savedEndpoint = session.Report.Context.Endpoint;
+            var endpoint = (await scanner.ScanAsync(solution, cancellationToken)).FirstOrDefault(e =>
+                e.Id == savedEndpoint.Id && e.Project == savedEndpoint.Project)
+                ?? throw new AnalysisSessionException(404, "O endpoint da análise salva não foi encontrado no projeto atual.");
+            var current = new EndpointAnalysisContext { Endpoint = endpoint };
+            var testedFingerprint = AnalysisSourceVersion.Capture(solution);
+            var testedCommit = GitInfo.Read(solution.RootDirectory).Commit;
+            var count = validation.Executions.Count;
+            RuntimeExecution execution;
+            try
+            {
+                execution = await runtime.RevalidateScenarioAsync(solution, current, session.Model, validation,
+                    scenarioId, JsonNode.Parse(body.GetRawText()), session.Token, cancellationToken,
+                    () => AnalysisSourceVersion.Capture(solution) == testedFingerprint);
+            }
+            finally
+            {
+                // Uma chamada cancelada depois do envio também consome orçamento; não dispara retry automático.
+                var attempts = validation.Executions.Skip(count).ToList();
+                foreach (var attempt in attempts)
+                {
+                    attempt.SourceFingerprint = testedFingerprint;
+                    attempt.TestedCommit = testedCommit;
+                }
+                session.ManualRequests += attempts.Count(e => !e.Blocked);
+                sessions.Save(session);
+            }
+            // A resposta é uma cópia: outra tentativa não a altera durante a serialização HTTP.
+            return new ScenarioRevalidationResult(analysisId,
+                JsonSerializer.Deserialize<RuntimeValidation>(JsonSerializer.Serialize(validation))!,
+                ReportRenderer.Markdown(session.Report),
+                JsonSerializer.Deserialize<RuntimeExecution>(JsonSerializer.Serialize(execution))!);
+        }
+        finally { session.Gate.Release(); }
+    }
+
+    public EndpointAnalysisReport? SavedAnalysis(string solutionPath, string method, string route, string project)
+    {
+        var session = sessions?.Latest(solutionPath, method, route, project);
+        if (session is null) return null;
+        session = sessions!.Acquire(session.Id);
+        try { return JsonSerializer.Deserialize<EndpointAnalysisReport>(JsonSerializer.Serialize(session.Report)); }
+        finally { session.Gate.Release(); }
+    }
+
+    /// <summary>Importa o relatório antigo do navegador sem IA; relatórios já persistidos prevalecem sobre o cache.</summary>
+    public async Task<EndpointAnalysisReport> RestoreAnalysisAsync(string solutionPath, EndpointAnalysisReport report,
+        string? apiToken = null, CancellationToken cancellationToken = default)
+    {
+        if (sessions is null) throw new AnalysisSessionException(503, "Persistência de análises indisponível.");
+        if (report.AnalysisId is { } id)
+        {
+            try
+            {
+                var saved = sessions.Acquire(id);
+                try
+                {
+                    if (!string.Equals(saved.SolutionPath, Path.GetFullPath(solutionPath), StringComparison.OrdinalIgnoreCase))
+                        throw new ArgumentException("O caminho da solução não corresponde à análise salva.");
+                    if (apiToken is not null)
+                    {
+                        saved.Token = string.IsNullOrWhiteSpace(apiToken) ? null : apiToken.Trim();
+                        saved.TokenUnavailable = false;
+                        sessions.Save(saved);
+                    }
+                    return JsonSerializer.Deserialize<EndpointAnalysisReport>(JsonSerializer.Serialize(saved.Report))!;
+                }
+                finally { saved.Gate.Release(); }
+            }
+            catch (AnalysisSessionException e) when (e.StatusCode == 404) { }
+        }
+        if (report.Context.Scenarios is null || report.Runtime?.Matrix is null)
+            throw new ArgumentException("O relatório precisa conter a matriz original e a matriz validada para restaurar a reanálise.");
+        var solution = await solutions.GetCurrentAsync(solutionPath, cancellationToken);
+        if (!(await scanner.ScanAsync(solution, cancellationToken)).Any(e => e.Id == report.Context.Endpoint.Id && e.Project == report.Context.Endpoint.Project))
+            throw new AnalysisSessionException(404, "O endpoint salvo não existe no projeto atual.");
+        sessions.Add(solution, null, report, "importado", apiToken);
+        return report;
+    }
+
+    private static void ValidateJson(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var property in element.EnumerateObject())
+            {
+                if (!names.Add(property.Name)) throw new ArgumentException($"Propriedade JSON duplicada: {property.Name}.");
+                ValidateJson(property.Value);
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+            foreach (var item in element.EnumerateArray()) ValidateJson(item);
     }
 
     /// <summary>

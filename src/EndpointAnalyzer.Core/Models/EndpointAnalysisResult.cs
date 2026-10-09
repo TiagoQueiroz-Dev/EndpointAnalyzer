@@ -98,6 +98,10 @@ public class AiPropertyChange
 /// </summary>
 public class EndpointAnalysisReport
 {
+    public string? AnalysisId { get; set; }
+
+    public DateTimeOffset? SessionExpiresAt { get; set; }
+
     public EndpointAnalysisContext Context { get; set; } = new();
 
     /// <summary>Nulo quando a análise foi feita sem IA.</summary>
