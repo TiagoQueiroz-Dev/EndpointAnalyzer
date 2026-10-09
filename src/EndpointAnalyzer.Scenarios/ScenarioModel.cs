@@ -24,8 +24,18 @@ public sealed class ScenarioModel
 
     public ScenarioMatrix Matrix { get; }
 
+    /// <summary>Reabre a matriz salva para comparar respostas, sem gerar cenários nem executar o solver.</summary>
+    public static ScenarioModel FromSavedMatrix(ScenarioMatrix matrix) => new(matrix, null);
+
     /// <summary>Falso quando a geração falhou (a matriz só tem a observação do erro).</summary>
     public bool CanMaterialize => _run is not null;
+
+    /// <summary>Valida a requisição exata, sem completar campos nem reutilizar estado de uma execução anterior.</summary>
+    public ScenarioMaterialization ValidateRequest(string scenarioId, ScenarioRequest request)
+    {
+        if (_run is null) return ScenarioMaterialization.Fail(scenarioId, "A análise não tem modelo de restrições.");
+        lock (_run) return _run.ValidateRequest(scenarioId, request);
+    }
 
     /// <summary>Variáveis que podem receber valores reais: campos do payload e o estado consultado pelo cenário.</summary>
     public IReadOnlyList<ScenarioVariable> Variables(string scenarioId)

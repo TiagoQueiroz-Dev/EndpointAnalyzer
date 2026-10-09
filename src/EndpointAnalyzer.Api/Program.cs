@@ -5,6 +5,7 @@ using EndpointAnalyzer.AI;
 using EndpointAnalyzer.AI.ClaudeCode;
 using EndpointAnalyzer.Application;
 using Microsoft.AspNetCore.Diagnostics;
+using EndpointAnalyzer.Runtime;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -36,6 +37,8 @@ app.UseExceptionHandler(errors => errors.Run(async context =>
         InvalidOperationException or ArgumentException => StatusCodes.Status400BadRequest,
         AiProviderException or AnthropicApiException or ClaudeCodeNotInstalledException => StatusCodes.Status502BadGateway,
         TimeoutException => StatusCodes.Status504GatewayTimeout,
+        AnalysisSessionException e => e.StatusCode,
+        ScenarioRevalidationException e => e.StatusCode,
         _ => StatusCodes.Status500InternalServerError,
     };
     await context.Response.WriteAsJsonAsync(new { error = exception?.Message }, ErrorJson);

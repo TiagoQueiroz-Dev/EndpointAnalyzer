@@ -33,6 +33,7 @@ public class EndpointScanner(AnalyzerOptions options) : IEndpointScanner
         {
             var compilation = await project.GetCompilationAsync(cancellationToken);
             if (compilation is null) continue;
+            var conventions = await RouteConventions.ReadAsync(project, compilation, cancellationToken);
 
             foreach (var tree in compilation.SyntaxTrees)
             {
@@ -55,7 +56,7 @@ public class EndpointScanner(AnalyzerOptions options) : IEndpointScanner
 
                     foreach (var method in cls.Members.OfType<MethodDeclarationSyntax>())
                     {
-                        foreach (var endpoint in CreateEndpoints(loaded, project, type, method, model, controllerRoutes, area, controllerGroup))
+                        foreach (var endpoint in CreateEndpoints(loaded, project, type, method, model, controllerRoutes, area, controllerGroup, conventions.For(type)))
                         {
                             if (options.HttpMethods.Contains(endpoint.HttpMethod) && seen.Add(endpoint.Id + endpoint.MethodId))
                                 endpoints.Add(endpoint);
@@ -83,7 +84,8 @@ public class EndpointScanner(AnalyzerOptions options) : IEndpointScanner
         SemanticModel model,
         IReadOnlyList<string?> controllerRoutes,
         string? area,
-        string controllerGroup)
+        string controllerGroup,
+        Func<string, string>? transformToken)
     {
         if (!method.Modifiers.Any(SyntaxKind.PublicKeyword) || method.Modifiers.Any(SyntaxKind.StaticKeyword))
             yield break;
@@ -97,7 +99,8 @@ public class EndpointScanner(AnalyzerOptions options) : IEndpointScanner
         var methodRoutes = attributes.Where(a => a.ShortName() == "Route").Select(a => a.StringArgument(model)).ToList();
 
         var controllerName = StripSuffix(controller.Name, "Controller");
-        var actionName = StripSuffix(symbol.Name, "Async");
+        var actionName = attributes.Where(a => a.ShortName() == "ActionName").Select(a => a.StringArgument(model)).FirstOrDefault(n => n is not null)
+            ?? StripSuffix(symbol.Name, "Async");
         var group = EndpointMetadata.Tag(attributes, model) ?? controllerGroup;
         var summary = EndpointMetadata.Summary(method, symbol, attributes, model);
 
@@ -117,7 +120,7 @@ public class EndpointScanner(AnalyzerOptions options) : IEndpointScanner
                     yield return new EndpointInfo
                     {
                         HttpMethod = verb,
-                        Route = RouteTemplate.Combine(controllerRoute, actionTemplate, controllerName, actionName, area),
+                        Route = RouteTemplate.Combine(controllerRoute, actionTemplate, controllerName, actionName, area, transformToken),
                         Controller = controller.Name,
                         Action = symbol.Name,
                         Group = group,
@@ -192,7 +195,7 @@ public static class RouteTemplate
     /// Combina o template do controller com o da action, como o roteamento do ASP.NET Core:
     /// templates iniciados com "/" ou "~/" ignoram o prefixo do controller.
     /// </summary>
-    public static string Combine(string? controllerTemplate, string? actionTemplate, string controllerName, string actionName, string? area = null)
+    public static string Combine(string? controllerTemplate, string? actionTemplate, string controllerName, string actionName, string? area = null, Func<string, string>? transformToken = null)
     {
         string combined;
         if (actionTemplate is not null && (actionTemplate.StartsWith('/') || actionTemplate.StartsWith("~/")))
@@ -204,13 +207,52 @@ public static class RouteTemplate
         else
             combined = controllerTemplate.TrimEnd('/') + "/" + actionTemplate.TrimStart('/');
 
-        combined = ReplaceToken(combined, "controller", controllerName);
-        combined = ReplaceToken(combined, "action", actionName);
-        if (area is not null) combined = ReplaceToken(combined, "area", area);
-
+        var values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["controller"] = controllerName, ["action"] = actionName,
+        };
+        if (area is not null) values["area"] = area;
+        // Usa a substituição do framework, incluindo os escapes [[ e ]] de tokens literais.
+        combined = Microsoft.AspNetCore.Mvc.ApplicationModels.AttributeRouteModel.ReplaceTokens(combined, values,
+            transformToken is null ? null : new TokenTransformer(transformToken));
         return "/" + combined.Trim('/');
     }
 
-    private static string ReplaceToken(string template, string token, string value) =>
-        template.Replace($"[{token}]", value, StringComparison.OrdinalIgnoreCase);
+    /// <summary>Materializa parâmetros conforme o template, incluindo defaults, opcionais e catch-all.</summary>
+    public static string Bind(string template, IReadOnlyDictionary<string, string?> values)
+    {
+        var pattern = Microsoft.AspNetCore.Routing.Patterns.RoutePatternFactory.Parse(template);
+        var segments = new List<string>();
+        foreach (var segment in pattern.PathSegments)
+        {
+            var text = new System.Text.StringBuilder();
+            for (var index = 0; index < segment.Parts.Count; index++)
+            {
+                var part = segment.Parts[index];
+                if (part is Microsoft.AspNetCore.Routing.Patterns.RoutePatternLiteralPart literal) { text.Append(literal.Content); continue; }
+                if (part is Microsoft.AspNetCore.Routing.Patterns.RoutePatternSeparatorPart separator) { text.Append(separator.Content); continue; }
+                if (part is not Microsoft.AspNetCore.Routing.Patterns.RoutePatternParameterPart parameter) continue;
+                var pair = values.FirstOrDefault(v => string.Equals(v.Key, parameter.Name, StringComparison.OrdinalIgnoreCase));
+                var value = pair.Value ?? parameter.Default?.ToString();
+                if (string.IsNullOrEmpty(value) && (parameter.IsOptional || parameter.IsCatchAll))
+                {
+                    if (index > 0 && segment.Parts[index - 1] is Microsoft.AspNetCore.Routing.Patterns.RoutePatternSeparatorPart previous)
+                        text.Length -= previous.Content.Length;
+                    continue;
+                }
+                if (pair.Key is null && value is null)
+                    throw new InvalidOperationException($"Parâmetro de rota '{parameter.Name}' sem valor em '{template}'.");
+                text.Append(parameter.IsCatchAll && !parameter.EncodeSlashes
+                    ? string.Join('/', (value ?? "").Split('/').Select(Uri.EscapeDataString))
+                    : Uri.EscapeDataString(value ?? ""));
+            }
+            if (text.Length > 0) segments.Add(text.ToString());
+        }
+        return "/" + string.Join('/', segments);
+    }
+
+    private sealed class TokenTransformer(Func<string, string> transform) : Microsoft.AspNetCore.Routing.IOutboundParameterTransformer
+    {
+        public string? TransformOutbound(object? value) => value is null ? null : transform(value.ToString()!);
+    }
 }

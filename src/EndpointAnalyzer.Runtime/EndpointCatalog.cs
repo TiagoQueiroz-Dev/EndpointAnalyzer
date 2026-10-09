@@ -133,19 +133,34 @@ public sealed class EndpointCatalog
     internal static Regex RoutePattern(string route)
     {
         var sb = new StringBuilder("^");
-        foreach (var segment in route.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries))
+        var pattern = Microsoft.AspNetCore.Routing.Patterns.RoutePatternFactory.Parse(route);
+        foreach (var segment in pattern.PathSegments)
         {
-            if (Regex.Match(segment, @"^\{\*{1,2}[^}]*\}$").Success) { sb.Append("(?:/.*)?"); continue; }
-            if (Regex.Match(segment, @"^\{[^}]*\?\}$").Success) { sb.Append("(?:/[^/]+)?"); continue; }
-            sb.Append('/');
-            var last = 0;
-            foreach (Match m in Regex.Matches(segment, @"\{[^}]*\}"))
+            if (segment.Parts.Count == 1 && segment.Parts[0] is Microsoft.AspNetCore.Routing.Patterns.RoutePatternParameterPart single
+                && (single.IsOptional || single.Default is not null || single.IsCatchAll))
             {
-                sb.Append(Regex.Escape(segment[last..m.Index]));
-                sb.Append("[^/]+");
-                last = m.Index + m.Length;
+                sb.Append(single.IsCatchAll ? "(?:/.*)?" : "(?:/[^/]+)?");
+                continue;
             }
-            sb.Append(Regex.Escape(segment[last..]));
+            sb.Append('/');
+            for (var index = 0; index < segment.Parts.Count; index++)
+            {
+                var part = segment.Parts[index];
+                if (part is Microsoft.AspNetCore.Routing.Patterns.RoutePatternLiteralPart literal)
+                    sb.Append(Regex.Escape(literal.Content));
+                else if (part is Microsoft.AspNetCore.Routing.Patterns.RoutePatternSeparatorPart separator)
+                {
+                    if (index + 1 < segment.Parts.Count
+                        && segment.Parts[index + 1] is Microsoft.AspNetCore.Routing.Patterns.RoutePatternParameterPart { IsOptional: true })
+                    {
+                        sb.Append("(?:").Append(Regex.Escape(separator.Content)).Append("[^/]+)?");
+                        index++;
+                    }
+                    else sb.Append(Regex.Escape(separator.Content));
+                }
+                else if (part is Microsoft.AspNetCore.Routing.Patterns.RoutePatternParameterPart parameter)
+                    sb.Append(parameter.IsCatchAll ? ".*" : "[^/]+");
+            }
         }
         if (sb.Length == 1) sb.Append('/');
         sb.Append("/?$");

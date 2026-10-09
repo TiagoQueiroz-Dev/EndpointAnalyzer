@@ -22,13 +22,15 @@ public sealed record RuntimeRequest(string Method, string Url, Dictionary<string
 /// </summary>
 /// <param name="authorization">Header Authorization enviado em todas as requisições (token informado pelo usuário).</param>
 public sealed partial class ScenarioExecutor(HttpClient client, RuntimeOptions options, EndpointCatalog catalog, bool writesAllowed, RuntimeValidation report,
-    string? authorization = null)
+    string? authorization = null, int? requestBudget = null)
 {
     private int _sent;
 
     public bool BudgetExhausted { get; private set; }
 
-    public int Remaining => Math.Max(0, options.MaxRequests - _sent);
+    private int RequestBudget => requestBudget ?? options.MaxRequests;
+
+    public int Remaining => Math.Max(0, RequestBudget - _sent);
 
     public bool WritesAllowed => writesAllowed;
 
@@ -47,17 +49,17 @@ public sealed partial class ScenarioExecutor(HttpClient client, RuntimeOptions o
             Attempt = attempt,
             Method = request.Method.ToUpperInvariant(),
             Url = url,
-            Headers = request.Headers is { Count: > 0 } ? request.Headers : null,
+            Headers = request.Headers is { Count: > 0 } ? request.Headers.Where(p => !SensitiveHeader(p.Key)).ToDictionary() : null,
             RequestBody = request.Body?.DeepClone(),
             Reason = reason,
         };
         report.Executions.Add(execution);
 
         string? blocked = null;
-        if (_sent >= options.MaxRequests)
+        if (_sent >= RequestBudget)
         {
             BudgetExhausted = true;
-            blocked = $"limite de {options.MaxRequests} requisições por análise atingido (Runtime:MaxRequests)";
+            blocked = $"limite de {RequestBudget} requisições atingido";
         }
         else if (catalog.Match(execution.Method, url) is null)
             blocked = "rota fora do catálogo de endpoints da API";
@@ -82,6 +84,7 @@ public sealed partial class ScenarioExecutor(HttpClient client, RuntimeOptions o
         }
         foreach (var (name, value) in request.Headers ?? [])
         {
+            if (authorization is not null && name.Equals("Authorization", StringComparison.OrdinalIgnoreCase)) continue;
             message.Headers.Remove(name);
             message.Headers.TryAddWithoutValidation(name, value ?? "");
         }
@@ -94,6 +97,12 @@ public sealed partial class ScenarioExecutor(HttpClient client, RuntimeOptions o
         {
             using var response = await client.SendAsync(message, cancellationToken);
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (authorization is not null)
+            {
+                body = body.Replace(authorization, "***", StringComparison.Ordinal);
+                var credential = authorization.Split(' ', 2).Last();
+                if (credential.Length > 0) body = body.Replace(credential, "***", StringComparison.Ordinal);
+            }
             execution.Status = (int)response.StatusCode;
             execution.ResponseBody = body.Length > options.MaxStoredBodyChars ? body[..options.MaxStoredBodyChars] + "…" : body;
             if (execution.Status >= 500) execution.Exception = ExceptionIn(body);
@@ -104,9 +113,18 @@ public sealed partial class ScenarioExecutor(HttpClient client, RuntimeOptions o
                 ? $"sem resposta em {options.RequestTimeoutSeconds}s"
                 : $"falha de comunicação: {e.Message}";
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            execution.Exception = "Requisição cancelada; a API pode ter recebido o payload.";
+            execution.ElapsedMs = watch.ElapsedMilliseconds;
+            throw;
+        }
         execution.ElapsedMs = watch.ElapsedMilliseconds;
         return execution;
     }
+
+    internal static bool SensitiveHeader(string name) => name.ToLowerInvariant() is
+        "authorization" or "proxy-authorization" or "cookie" or "set-cookie" or "x-api-key" or "api-key";
 
     /// <summary>Nome e mensagem da exceção na página de erro/ProblemDetails ("System.InvalidOperationException: ...").</summary>
     internal static string? ExceptionIn(string body)

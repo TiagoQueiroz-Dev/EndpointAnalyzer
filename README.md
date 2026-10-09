@@ -187,12 +187,37 @@ Configuração (`Runtime` no appsettings): `Enabled`, `Project` (.csproj do serv
 
 **Token da API:** o campo no card do endpoint, abaixo de "Validar os cenários com a API em execução", recebe o token do serviço analisado (com ou sem `Bearer `). Ao informar (Enter ou sair do campo), o analisador sobe o serviço do endpoint, do mesmo jeito que na validação em runtime (mesmo projeto, `dotnet build` e executável), e chama um GET que exige autenticação sem e com o token: ✓ quando o token é aceito, ✗ quando o serviço responde 401/403. Na análise, o token vai no header `Authorization` de todas as requisições da validação em runtime (não aparece no relatório nem nos prompts da IA). Na API, `"apiToken"` no corpo de `/api/analysis`; na CLI, `--token <token>`.
 
+## Reanálise manual de cenários
+
+Cada cenário inconclusivo na matriz validada tem um botão **Reanalisar**. O editor abre o último payload, a expectativa original, a resposta e os motivos da inconclusão. Uma tentativa executa somente o cenário selecionado, sem IA, aquisição de dados ou exploração automática. O resultado atualiza a matriz, contadores, relatório Markdown e análise salva; o histórico de payloads, respostas e evidências aparece nos detalhes do cenário.
+
+O fluxo é: **payload informado → subir API → enviar requisição → comparar resposta**. O servidor envia o body informado sem completar campos, ajustar tipos ou exigir comprovação prévia das condições do cenário. A resposta observada é comparada com a expectativa original; HTTP compatível sem evidência suficiente mantém o cenário inconclusivo. Baselines e fatos antigos não são usados para confirmar por isolamento.
+
+Contrato: `POST /api/analysis/scenarios/revalidate`, com `{ "analysisId": "id retornado em report.analysisId", "scenarioId": "CEN-03", "body": { ... } }`. Método, URL, headers e expectativa vêm da sessão do servidor. A resposta contém `analysisId`, `runtime`, `execution` e `markdown`. Use `body: null` para uma requisição sem corpo.
+
+As análises são persistidas no SQLite, incluindo a matriz original, expectativas, respostas e histórico. Reiniciar o servidor ou expirar o contexto em memória não exige nova análise nem chamadas à IA. A reanálise carrega o projeto atual, executa o cenário salvo contra o código corrigido e registra `sourceFingerprint` e `testedCommit` em cada tentativa; a versão original do relatório permanece intacta. Alterações durante a inicialização da API pedem apenas repetir a tentativa após concluir a edição.
+
+O token da API é armazenado criptografado com ASP.NET Core Data Protection e recuperado após reiniciar o analisador. No Windows, as chaves são protegidas por DPAPI do usuário atual. O token não aparece nos relatórios nem no localStorage das análises. Ele é reutilizado enquanto a API o aceitar; se expirar, informe um novo token no campo existente e a próxima tentativa atualiza a credencial salva. Perder as chaves de proteção exige reinformar o token, mas não refazer a análise. Há um lock por análise e orçamento manual independente da exploração automática. POST/PUT/PATCH/DELETE respeitam `Runtime:AllowWrites`.
+
+O banco padrão é `%LOCALAPPDATA%/EndpointAnalyzer/analyses.db` (personalizável por `Runtime:AnalysisDatabasePath`); as chaves ficam na pasta `keys` ao lado dele. A migração inicial é automática, com `PRAGMA user_version=1`.
+
+| Tabela | Conteúdo |
+|---|---|
+| `analyses` | ID permanente, caminho da solução, método/rota/projeto, versão original, relatório JSON com cenários e datas |
+| `analysis_sessions` | Referência à análise, token protegido, contador de chamadas manuais e último uso |
+| `manual_executions` | Histórico por análise/execução: cenário, data, versão testada e JSON da tentativa |
+
+O relatório completo é mantido como snapshot JSON, e o histórico manual também é indexado em tabela própria. Snapshot, histórico e contador são salvos em uma transação. `GET /api/analysis/saved` recupera a última análise por solução/método/rota/projeto. A interface usa o localStorage como cache e importa automaticamente relatórios antigos através de `POST /api/analysis/restore`, sem IA. O JSON de importação precisa conter o relatório completo (`context.scenarios` e `runtime.matrix`); o download da matriz runtime isolada não contém todo esse contexto.
+
+Configurações em `Runtime`: `AnalysisDatabasePath`, `AnalysisSessionMinutes` (30, retenção apenas em memória), `MaxAnalysisSessions` (20 contextos em memória), `MaxManualRequests` (30 por análise, persistidos), `MaxManualAttemptsPerScenario` (10) e `MaxManualBodyChars` (100000). Erros controlados: JSON inválido (400), análise/cenário/endpoint inexistente (404), alteração durante inicialização ou tentativa concorrente (409), escrita/rota bloqueada (403), limites (413/429) e API indisponível (503).
+
 ## Fica para depois (seção 42 da especificação)
 
-Minimal APIs (`MapPost`), mensageria entre serviços (filas e consumidores em outros processos), `CodexProvider`, persistência em SQLite/PostgreSQL e captura das alterações em runtime (`SaveChangesInterceptor`).
+Minimal APIs (`MapPost`), mensageria entre serviços (filas e consumidores em outros processos), `CodexProvider`, persistência em PostgreSQL e captura das alterações em runtime (`SaveChangesInterceptor`).
 
 ## Testes
 
 ```powershell
 dotnet test
+node --test tests/frontend/manual-revalidation.test.cjs
 ```
