@@ -132,6 +132,26 @@ public class ManualRevalidationTests(SampleSolutionFixture fixture) : IDisposabl
         if (!correctMessage) Assert.NotEmpty(execution.Reasons);
     }
 
+    [Theory]
+    [InlineData(true, "confirmado")]
+    [InlineData(false, "inconclusivo")]
+    public async Task Reanalisa_cenario_nao_materializado(bool correctMessage, string expectedStatus)
+    {
+        var (_, _, model, scenario) = await SetupAsync();
+        var report = Report(model);
+        report.Matrix!.Scenarios.First(s => s.Id == scenario.Id).Status = ScenarioValidationStatuses.NotMaterialized;
+        var handler = new RecordingHandler(400, JsonSerializer.Serialize(new { error = correctMessage ? scenario.Expected.Messages[0] : "Outra regra falhou." }));
+        using var client = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:12345/") };
+        var options = new RuntimeOptions();
+        var catalog = EndpointCatalog.Of([new CatalogEndpoint { Method = scenario.Request.Method, Route = scenario.Request.Url }]);
+        var executor = new ScenarioExecutor(client, options, catalog, true, report, requestBudget: 1);
+        var runtime = new RuntimeValidationService(options, new FailingRunner());
+        await runtime.ExecuteManualAsync(model, report, scenario.Id, Body(scenario), executor);
+        Assert.Equal(1, handler.Calls);
+        Assert.Equal(expectedStatus, report.Matrix.Scenarios.First(s => s.Id == scenario.Id).Status);
+        Assert.Equal(0, report.Matrix.Counts[ScenarioValidationStatuses.NotMaterialized]);
+    }
+
     [Fact]
     public async Task Executa_payload_que_contradiz_o_cenario_e_mantem_historico_das_tentativas()
     {

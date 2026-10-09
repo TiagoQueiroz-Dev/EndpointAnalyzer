@@ -80,7 +80,16 @@ test('resposta atrasada nao sobrescreve uma analise nova', async () => {
   assert.equal(h.run('lastResponse.report.analysisId'), 'new-session');
   assert.equal(h.run('savedAnalyses.get(selected).response.markdown'), 'nova');
   assert.equal(h.run('rendered'), 0);
-  assert.match(h.element('manualMessage').textContent, /continua inconclusivo/);
+  assert.match(h.element('manualMessage').textContent, /Cenário inconclusivo/);
+});
+
+test('cenario nao materializado exibe Reanalisar e abre o editor', () => {
+  const h = harness(async () => { throw Error('unexpected HTTP'); });
+  h.run(`manualContext = null; lastResponse.report.runtime.matrix.scenarios[0].status = 'nao-materializado'; openRevalidation('CEN-01');`);
+  assert.equal(h.run('manualContext.scenario.id'), 'CEN-01');
+  const cell = h.run(`statusCell({ runtime: true, id: 'CEN-02', status: 'nao-materializado', evidence: [], reasons: [] })`);
+  assert.match(cell, /data-revalidate="CEN-02"/);
+  assert.doesNotMatch(h.run(`statusCell({ runtime: true, id: 'CEN-03', status: 'confirmado', evidence: [], reasons: [] })`), /data-revalidate/);
 });
 
 const jsonResponse = (body, status = 200) => ({

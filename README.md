@@ -189,7 +189,7 @@ Configuração (`Runtime` no appsettings): `Enabled`, `Project` (.csproj do serv
 
 ## Reanálise manual de cenários
 
-Cada cenário inconclusivo na matriz validada tem um botão **Reanalisar**. O editor abre o último payload, a expectativa original, a resposta e os motivos da inconclusão. Uma tentativa executa somente o cenário selecionado, sem IA, aquisição de dados ou exploração automática. O resultado atualiza a matriz, contadores, relatório Markdown e análise salva; o histórico de payloads, respostas e evidências aparece nos detalhes do cenário.
+Cada cenário inconclusivo ou não materializado na matriz validada tem um botão **Reanalisar**. O editor abre o último payload, a expectativa original, a resposta e os motivos pelos quais o cenário não foi confirmado. Uma tentativa que não confirma deixa o cenário inconclusivo, pois a requisição já foi executada. Uma tentativa executa somente o cenário selecionado, sem IA, aquisição de dados ou exploração automática. O resultado atualiza a matriz, contadores, relatório Markdown e análise salva; o histórico de payloads, respostas e evidências aparece nos detalhes do cenário.
 
 O fluxo é: **payload informado → subir API → enviar requisição → comparar resposta**. O servidor envia o body informado sem completar campos, ajustar tipos ou exigir comprovação prévia das condições do cenário. A resposta observada é comparada com a expectativa original; HTTP compatível sem evidência suficiente mantém o cenário inconclusivo. Baselines e fatos antigos não são usados para confirmar por isolamento.
 

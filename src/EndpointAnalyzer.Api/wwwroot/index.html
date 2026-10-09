@@ -1449,16 +1449,18 @@ function statusCell(r) {
   const tip = [validationHelp[r.status], ...r.evidence.map(e => `✓ ${e}`), ...r.reasons.map(x => `⚠ ${x}`)].filter(Boolean).join("\n");
   return `<span class="vstatus ${esc(r.status)}" title="${esc(tip)}">${esc(validationKinds[r.status] ?? r.status)}</span>
     ${r.reasons.length ? `<div class="warn clamp" title="${esc(r.reasons.join("\n"))}">${esc(r.reasons[0])}</div>` : ""}
-    ${r.status === "inconclusivo" ? `<button class="secondary cell-btn" type="button" data-revalidate="${esc(r.id)}">Reanalisar</button>` : ""}`;
+    ${revalidatable(r.status) ? `<button class="secondary cell-btn" type="button" data-revalidate="${esc(r.id)}">Reanalisar</button>` : ""}`;
 }
 
 let manualContext = null;
 const manualPending = new Set();
+// Cenários sem prova (inconclusivos ou sem dados materializados) aceitam uma tentativa com payload informado.
+const revalidatable = (status) => status === "inconclusivo" || status === "nao-materializado";
 
 function openRevalidation(id) {
   const response = lastResponse;
   const scenario = response.report.runtime?.matrix?.scenarios.find(s => s.id === id);
-  if (!scenario || scenario.status !== "inconclusivo") return;
+  if (!scenario || !revalidatable(scenario.status)) return;
   manualContext = { response, scenario, endpoint: selected, solution: solutionPath, analysisId: response.report.analysisId, apiToken: apiToken() || undefined };
   $("manualTitle").textContent = `Reanalisar ${id}`;
   $("manualContext").innerHTML = `${scenario.request ? requestLine(scenario.request) : ""}<h4>Resultado esperado</h4>${expectedCell(scenario.expected)}
@@ -1518,7 +1520,7 @@ async function revalidateScenario() {
     $("manualPrevious").textContent = updated.observed?.body ?? updated.observed?.exception ?? "Não executado";
     $("manualMessage").className = updated.status === "confirmado" ? "muted" : "warn";
     $("manualMessage").textContent = updated.status === "confirmado" ? "Cenário confirmado. Payload, resposta e evidências foram registrados."
-      : `Cenário continua inconclusivo: ${updated.reasons.join(" ")}`;
+      : `Cenário inconclusivo: ${updated.reasons.join(" ")}`;
     $("manualRun").disabled = updated.status === "confirmado";
   } catch (error) {
     $("manualMessage").className = "error";

@@ -49,8 +49,8 @@ public partial class RuntimeValidationService
     {
         var target = report.Matrix?.Scenarios.FirstOrDefault(s => s.Id == id)
             ?? throw new ScenarioRevalidationException(404, "Cenário não encontrado na matriz validada.");
-        if (target.Status != ScenarioValidationStatuses.Inconclusive)
-            throw new ScenarioRevalidationException(409, "Somente cenários inconclusivos podem ser reanalisados.");
+        if (target.Status is not (ScenarioValidationStatuses.Inconclusive or ScenarioValidationStatuses.NotMaterialized))
+            throw new ScenarioRevalidationException(409, "Somente cenários inconclusivos ou não materializados podem ser reanalisados.");
         if (report.Executions.Count(e => e.Phase == RuntimePhases.Manual && e.ScenarioId == id) >= options.MaxManualAttemptsPerScenario)
             throw new ScenarioRevalidationException(429, "Limite de tentativas manuais do cenário atingido.");
         if ((body?.ToJsonString().Length ?? 4) > options.MaxManualBodyChars)
