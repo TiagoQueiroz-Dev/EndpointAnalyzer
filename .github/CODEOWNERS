@@ -1,0 +1,4 @@
+# Proprietário obrigatório para revisão de alterações propostas por pull request.
+# A exigência de aprovação depende de ativar "Require review from Code Owners" na proteção da branch main.
+* @TiagoQueiroz-Dev
+/.github/CODEOWNERS @TiagoQueiroz-Dev
