@@ -35,6 +35,9 @@ public record AnalysisRequest
     /// scenarios (títulos e validação com a API em execução). Nulo = comportamento de UseAi.
     /// </summary>
     public List<string>? Ai { get; init; }
+
+    /// <summary>Provedor da IA: "claude" ou "codex". Nulo = automático (Claude e, sem ele, o Codex).</summary>
+    public string? Provider { get; init; }
 }
 
 /// <summary>{ "endpoint": { "method": "POST", "route": "/api/x" }, "token": "eyJ..." } (token com ou sem "Bearer ").</summary>
@@ -61,6 +64,13 @@ public class AnalysisController(EndpointAnalysisService service, IConfiguration 
         return report is null ? NotFound(new { error = "Nenhuma análise salva para este endpoint." })
             : Ok(new AnalysisResponse(report, ReportRenderer.Markdown(report)));
     }
+
+    /// <summary>
+    /// Diff da análise com a versão anterior do mesmo endpoint (ou com baseId, para comparar versões históricas), calculado
+    /// a partir dos relatórios salvos: sem IA e sem executar o endpoint.
+    /// </summary>
+    [HttpGet("diff")]
+    public ActionResult<AnalysisDiffResult> Diff(string analysisId, string? baseId = null) => Ok(service.Diff(analysisId, baseId));
 
     [HttpPost("restore")]
     [RequestSizeLimit(20_971_520)]
@@ -108,7 +118,8 @@ public class AnalysisController(EndpointAnalysisService service, IConfiguration 
         var endpoint = await service.FindEndpointAsync(solution, EndpointId(request.EndpointId, request.Endpoint), cancellationToken);
         var sections = AnalysisSectionNames.Parse(request.Sections);
         AnalysisSections? ai = request.Ai is null ? null : AnalysisSectionNames.Parse(request.Ai, allowEmpty: true);
-        var useAi = ai is null ? request.UseAi ?? await service.IsAiAvailableAsync(cancellationToken) : ai != AnalysisSections.None;
-        return await service.AnalyzeAsync(solution, endpoint, useAi, request.ValidateRuntime, request.ApiToken, cancellationToken, sections, ai);
+        var useAi = ai is null ? request.UseAi ?? await service.IsAiAvailableAsync(request.Provider, cancellationToken) : ai != AnalysisSections.None;
+        return await service.AnalyzeAsync(solution, endpoint, useAi, request.ValidateRuntime, request.ApiToken, cancellationToken, sections, ai,
+            request.Provider);
     }
 }

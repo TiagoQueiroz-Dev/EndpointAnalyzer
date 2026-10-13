@@ -3,7 +3,9 @@ using System.Text.Json.Serialization;
 using Anthropic.Exceptions;
 using EndpointAnalyzer.AI;
 using EndpointAnalyzer.AI.ClaudeCode;
+using EndpointAnalyzer.AI.Codex;
 using EndpointAnalyzer.Application;
+using EndpointAnalyzer.Core.Interfaces;
 using Microsoft.AspNetCore.Diagnostics;
 using EndpointAnalyzer.Runtime;
 
@@ -17,7 +19,9 @@ builder.Services.AddEndpointAnalyzer(
     // Plano mensal: usa o Claude Code da máquina, logado com a conta do Claude.
     claudeCode => builder.Configuration.GetSection("ClaudeCode").Bind(claudeCode),
     // Validação dos cenários com a API analisada em execução (só na análise com IA).
-    runtime => builder.Configuration.GetSection("Runtime").Bind(runtime));
+    runtime => builder.Configuration.GetSection("Runtime").Bind(runtime),
+    // Conta do Codex: usa o Codex CLI da máquina, logado com a conta do ChatGPT.
+    codex => builder.Configuration.GetSection("Codex").Bind(codex));
 
 builder.Services.AddControllers().AddJsonOptions(o =>
 {
@@ -35,13 +39,23 @@ app.UseExceptionHandler(errors => errors.Run(async context =>
     {
         FileNotFoundException or KeyNotFoundException => StatusCodes.Status404NotFound,
         InvalidOperationException or ArgumentException => StatusCodes.Status400BadRequest,
-        AiProviderException or AnthropicApiException or ClaudeCodeNotInstalledException => StatusCodes.Status502BadGateway,
+        AiProviderUnavailableException { Reason: AiUnavailableReason.UsageLimit } => StatusCodes.Status429TooManyRequests,
+        AiProviderUnavailableException or AiProviderException or AnthropicApiException or ClaudeCodeNotInstalledException
+            or CodexNotInstalledException or CodexAppServerException => StatusCodes.Status502BadGateway,
         TimeoutException => StatusCodes.Status504GatewayTimeout,
         AnalysisSessionException e => e.StatusCode,
         ScenarioRevalidationException e => e.StatusCode,
         _ => StatusCodes.Status500InternalServerError,
     };
-    await context.Response.WriteAsJsonAsync(new { error = exception?.Message }, ErrorJson);
+    // Falha de conta da IA: a interface atualiza o estado da conta (provider) e explica o motivo (code).
+    await context.Response.WriteAsJsonAsync(exception is AiProviderUnavailableException unavailable
+        ? new
+        {
+            error = unavailable.Message,
+            code = unavailable.Reason == AiUnavailableReason.UsageLimit ? "usage_limit" : "authentication",
+            provider = unavailable.Provider,
+        }
+        : (object)new { error = exception?.Message }, ErrorJson);
 }));
 
 app.UseDefaultFiles();

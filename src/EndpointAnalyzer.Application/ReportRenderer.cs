@@ -1,4 +1,5 @@
 using System.Text;
+using EndpointAnalyzer.Core.Interfaces;
 using EndpointAnalyzer.Core.Models;
 
 namespace EndpointAnalyzer.Application;
@@ -189,6 +190,7 @@ public static class ReportRenderer
         sb.AppendLine("---");
         sb.AppendLine($"_Analisador {v.AnalyzerVersion} · {v.Date:yyyy-MM-dd HH:mm} UTC" +
                       (v.Commit is null ? "" : $" · commit {v.Commit} ({v.Branch})") +
+                      (v.AiProvider is null ? "" : $" · IA {AiProviders.DisplayName(v.AiProvider)}") +
                       (v.AiModel is null ? "" : $" · modelo {v.AiModel}") +
                       (report.FromCache ? " · cache" : "") + "_");
 

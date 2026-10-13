@@ -1,5 +1,6 @@
 using EndpointAnalyzer.AI;
 using EndpointAnalyzer.AI.ClaudeCode;
+using EndpointAnalyzer.AI.Codex;
 using EndpointAnalyzer.ChangeDetection;
 using EndpointAnalyzer.ChangeDetection.Relevance;
 using EndpointAnalyzer.Context;
@@ -15,8 +16,8 @@ namespace EndpointAnalyzer.Application;
 public static class ServiceCollectionExtensions
 {
     /// <summary>
-    /// Registra o analisador. A IA pode rodar pela assinatura do Claude (Claude Code logado com claude.ai)
-    /// ou pela API; a API só é registrada quando há credencial
+    /// Registra o analisador. A IA pode rodar pela assinatura do Claude (Claude Code logado com claude.ai), pela conta do
+    /// Codex (Codex CLI logado com o ChatGPT) ou pela API do Claude; a API só é registrada quando há credencial
     /// (ClaudeOptions.ApiKey, ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN ou perfil do `ant auth login`).
     /// </summary>
     public static IServiceCollection AddEndpointAnalyzer(
@@ -24,7 +25,8 @@ public static class ServiceCollectionExtensions
         Action<AnalyzerOptions>? configureAnalyzer = null,
         Action<ClaudeOptions>? configureClaude = null,
         Action<ClaudeCodeOptions>? configureClaudeCode = null,
-        Action<RuntimeOptions>? configureRuntime = null)
+        Action<RuntimeOptions>? configureRuntime = null,
+        Action<CodexOptions>? configureCodex = null)
     {
         var analyzerOptions = new AnalyzerOptions();
         configureAnalyzer?.Invoke(analyzerOptions);
@@ -39,6 +41,10 @@ public static class ServiceCollectionExtensions
         configureClaudeCode?.Invoke(claudeCodeOptions);
         // Modelo/effort escolhidos na interface prevalecem sobre o appsettings.
         claudeCodeOptions.LoadSelection();
+
+        var codexOptions = new CodexOptions();
+        configureCodex?.Invoke(codexOptions);
+        codexOptions.LoadSelection();
 
         services.AddSingleton(analyzerOptions);
         services.AddSingleton<ISolutionLoader, SolutionLoader>();
@@ -64,6 +70,7 @@ public static class ServiceCollectionExtensions
         if (OperatingSystem.IsWindows()) protection.ProtectKeysWithDpapi();
         services.AddSingleton<SqliteAnalysisStore>();
         services.AddSingleton<AnalysisSessionStore>();
+        services.AddSingleton<AnalysisDiffService>();
         services.AddSingleton<IAppRunner, AppRunner>();
         services.AddSingleton<RuntimeValidationService>();
         services.AddSingleton<ApiTokenChecker>();
@@ -73,6 +80,13 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ClaudeCodeAuth>();
         services.AddSingleton<ClaudeCodeProvider>();
         services.AddSingleton<ClaudeModelCatalog>();
+        services.AddSingleton<ClaudeCodeUsage>();
+
+        // Conta do Codex (limite do plano do ChatGPT): Codex CLI da máquina, com login próprio do projeto.
+        services.AddSingleton(codexOptions);
+        services.AddSingleton<CodexAuth>();
+        services.AddSingleton<CodexProvider>();
+        services.AddSingleton<CodexModelCatalog>();
 
         // API: cobrança por uso.
         var hasCredential = !string.IsNullOrWhiteSpace(claudeOptions.ApiKey)

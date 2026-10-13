@@ -8,6 +8,9 @@ namespace EndpointAnalyzer.Core.Interfaces;
 /// </summary>
 public interface IAiProvider
 {
+    /// <summary>Provedor (<see cref="AiProviders"/>), registrado no versionamento da análise.</summary>
+    string Provider { get; }
+
     /// <summary>Nome do modelo, registrado no versionamento da análise.</summary>
     string Model { get; }
 

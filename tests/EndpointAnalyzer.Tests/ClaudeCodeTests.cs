@@ -1,6 +1,7 @@
 using EndpointAnalyzer.AI;
 using EndpointAnalyzer.AI.ClaudeCode;
 using EndpointAnalyzer.Application;
+using EndpointAnalyzer.Core.Interfaces;
 
 namespace EndpointAnalyzer.Tests;
 
@@ -25,10 +26,30 @@ public class ClaudeCodeTests
     [Fact]
     public void Erro_do_claude_p_vira_excecao_com_a_mensagem()
     {
-        const string output = """{"type":"result","subtype":"error","is_error":true,"result":"Not logged in · Please run /login"}""";
+        const string output = """{"type":"result","subtype":"error","is_error":true,"result":"Credit balance is too low"}""";
 
         var ex = Assert.Throws<AiProviderException>(() => ClaudeCodeProvider.ParseResult(output, ""));
+        Assert.Contains("Credit balance is too low", ex.Message);
+    }
+
+    [Fact]
+    public void Claude_p_sem_login_vira_falha_de_autenticacao_do_claude()
+    {
+        const string output = """{"type":"result","subtype":"error","is_error":true,"result":"Not logged in · Please run /login"}""";
+
+        var ex = Assert.Throws<AiProviderUnavailableException>(() => ClaudeCodeProvider.ParseResult(output, ""));
+        Assert.Equal(AiProviders.Claude, ex.Provider);
+        Assert.Equal(AiUnavailableReason.Authentication, ex.Reason);
         Assert.Contains("Not logged in", ex.Message);
+    }
+
+    [Fact]
+    public void Claude_p_com_limite_do_plano_vira_falha_de_limite_de_uso()
+    {
+        const string output = """{"type":"result","subtype":"success","is_error":true,"result":"Claude AI usage limit reached|1791901297"}""";
+
+        var ex = Assert.Throws<AiProviderUnavailableException>(() => ClaudeCodeProvider.ParseResult(output, ""));
+        Assert.Equal(AiUnavailableReason.UsageLimit, ex.Reason);
     }
 
     [Fact]

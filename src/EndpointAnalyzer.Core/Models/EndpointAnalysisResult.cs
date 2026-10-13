@@ -130,6 +130,9 @@ public class AnalysisVersion
 
     public DateTimeOffset Date { get; set; } = DateTimeOffset.UtcNow;
 
+    /// <summary>Provedor que executou a IA (<see cref="Interfaces.AiProviders"/>).</summary>
+    public string? AiProvider { get; set; }
+
     public string? AiModel { get; set; }
 
     public string AnalyzerVersion { get; set; } = "";

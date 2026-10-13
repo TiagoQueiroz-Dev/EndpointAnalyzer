@@ -77,6 +77,9 @@ public sealed class AnalysisSessionStore : IDisposable
         return id is null ? null : Get(id);
     }
 
+    /// <summary>Versão salva (relatório e ligação com a anterior) para comparação, sem carregar a sessão nem o token.</summary>
+    public StoredAnalysis? Stored(string id) => _database.LoadStored(id);
+
     private DateTimeOffset MemoryExpiration() => _time.GetUtcNow().AddMinutes(Math.Max(1, options.AnalysisSessionMinutes));
 
     private void Cache(AnalysisSession session)

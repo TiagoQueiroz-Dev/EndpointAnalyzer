@@ -34,7 +34,8 @@ public class EndpointAnalysisService(
     RuntimeValidationService? runtime = null,
     ApiTokenChecker? tokens = null,
     IBusinessFlowAiAnalyzer? businessFlow = null,
-    AnalysisSessionStore? sessions = null)
+    AnalysisSessionStore? sessions = null,
+    AnalysisDiffService? diff = null)
 {
     /// <summary>Abas cuja IA vai na chamada da documentação (Resumo: regras; Cenários: títulos). Negócio tem chamada própria.</summary>
     private const AnalysisSections DocumentationSections = AnalysisSections.Summary | AnalysisSections.Scenarios;
@@ -43,10 +44,17 @@ public class EndpointAnalysisService(
 
     private readonly IBusinessFlowAiAnalyzer _businessFlow = businessFlow ?? new BusinessFlowAiAnalyzer();
 
+    private readonly AnalysisDiffService _diff = diff ?? new AnalysisDiffService();
+
+    private readonly RunningAnalyses _running = new();
+
     private sealed record StaticAnalysis(LoadedSolution Solution, EndpointAnalysisContext Context, ScenarioModel? Scenarios, string Fingerprint);
 
-    public async Task<bool> IsAiAvailableAsync(CancellationToken cancellationToken = default) =>
-        aiSelector is not null && await aiSelector.SelectAsync(cancellationToken) is not null;
+    public Task<bool> IsAiAvailableAsync(CancellationToken cancellationToken = default) => IsAiAvailableAsync(null, cancellationToken);
+
+    /// <param name="provider"><see cref="AiProviders.Claude"/>, <see cref="AiProviders.Codex"/> ou nulo (qualquer um).</param>
+    public async Task<bool> IsAiAvailableAsync(string? provider, CancellationToken cancellationToken = default) =>
+        aiSelector is not null && await aiSelector.SelectAsync(provider, cancellationToken) is not null;
 
     /// <summary>A análise com IA valida os cenários em runtime quando a requisição não diz o contrário (Runtime:Enabled).</summary>
     public bool RuntimeValidationEnabled => runtime?.Options.Enabled == true;
@@ -101,9 +109,21 @@ public class EndpointAnalysisService(
     /// Abas que usam IA (ignora <paramref name="useAi"/>): Resumo → documentação; Negócio → fluxo de negócio polido
     /// (BusinessFlowAiAnalyzer); Cenários → títulos dos cenários e validação em runtime. Completo não usa IA.
     /// </param>
+    /// <param name="aiProvider">
+    /// Provedor de toda a IA da análise (documentação, fluxo de negócio e validação em runtime): <see cref="AiProviders.Claude"/>,
+    /// <see cref="AiProviders.Codex"/> ou nulo (automático).
+    /// </param>
+    /// <exception cref="AnalysisSessionException">409: já existe uma análise deste endpoint em andamento.</exception>
     public async Task<EndpointAnalysisReport> AnalyzeAsync(string solutionPath, EndpointInfo endpoint, bool useAi = true, bool? validateRuntime = null,
         string? apiToken = null, CancellationToken cancellationToken = default, AnalysisSections sections = AnalysisSections.All,
-        AnalysisSections? aiSections = null)
+        AnalysisSections? aiSections = null, string? aiProvider = null)
+    {
+        using var _ = _running.Start(solutionPath, endpoint.Project, endpoint.Id);
+        return await AnalyzeCoreAsync(solutionPath, endpoint, useAi, validateRuntime, apiToken, cancellationToken, sections, aiSections, aiProvider);
+    }
+
+    private async Task<EndpointAnalysisReport> AnalyzeCoreAsync(string solutionPath, EndpointInfo endpoint, bool useAi, bool? validateRuntime,
+        string? apiToken, CancellationToken cancellationToken, AnalysisSections sections, AnalysisSections? aiSections, string? aiProvider)
     {
         var scenarioTabs = (sections & (AnalysisSections.Scenarios | AnalysisSections.Complete)) != 0;
         var runtimeAllowed = runtime is not null && (validateRuntime ?? runtime.Options.Enabled);
@@ -146,10 +166,10 @@ public class EndpointAnalysisService(
             sessions?.Add(analysis.Solution, analysis.Scenarios, report, analysis.Fingerprint, apiToken);
             return report;
         }
-        var ai = aiSelector is null ? null : await aiSelector.SelectAsync(cancellationToken);
-        if (ai is null)
-            throw new InvalidOperationException("Nenhuma IA disponível. Entre com sua conta do Claude (plano mensal) ou defina ANTHROPIC_API_KEY.");
+        var ai = (aiSelector is null ? null : await aiSelector.SelectAsync(aiProvider, cancellationToken))
+            ?? throw new InvalidOperationException(UnavailableMessage(aiProvider));
 
+        report.Version.AiProvider = ai.Provider;
         report.Version.AiModel = ai.Model;
 
         // Documentação, fluxo de negócio e validação em runtime são independentes: rodam em paralelo.
@@ -171,6 +191,13 @@ public class EndpointAnalysisService(
         sessions?.Add(analysis.Solution, analysis.Scenarios, report, analysis.Fingerprint, apiToken);
         return report;
     }
+
+    private static string UnavailableMessage(string? provider) => provider?.Trim().ToLowerInvariant() switch
+    {
+        AiProviders.Codex => "Codex indisponível: entre com a conta do Codex (ChatGPT) pelo botão 'Entrar com Codex'.",
+        AiProviders.Claude => "Claude indisponível: entre com sua conta do Claude (plano mensal) ou defina ANTHROPIC_API_KEY.",
+        _ => "Nenhuma IA disponível. Entre com sua conta do Claude (plano mensal) ou do Codex, ou defina ANTHROPIC_API_KEY.",
+    };
 
     public async Task<ScenarioRevalidationResult> RevalidateScenarioAsync(string analysisId, string scenarioId, JsonElement body,
         CancellationToken cancellationToken = default, string? apiToken = null)
@@ -241,6 +268,27 @@ public class EndpointAnalysisService(
         session = sessions!.Acquire(session.Id);
         try { return JsonSerializer.Deserialize<EndpointAnalysisReport>(JsonSerializer.Serialize(session.Report)); }
         finally { session.Gate.Release(); }
+    }
+
+    /// <summary>
+    /// Compara a análise com a versão anterior do mesmo endpoint (ou com <paramref name="baseId"/>) a partir dos relatórios
+    /// salvos no SQLite: não chama a IA nem executa o endpoint, e o resultado não é persistido.
+    /// </summary>
+    /// <exception cref="AnalysisSessionException">404: análise (ou base explícita) não encontrada.</exception>
+    /// <exception cref="ArgumentException">Base igual à atual ou de outro endpoint/projeto/solução.</exception>
+    public AnalysisDiffResult Diff(string analysisId, string? baseId = null)
+    {
+        if (sessions is null) throw new AnalysisSessionException(503, "Persistência de análises indisponível.");
+        if (string.IsNullOrWhiteSpace(analysisId)) throw new ArgumentException("Informe analysisId.");
+        var current = sessions.Stored(analysisId.Trim())
+            ?? throw new AnalysisSessionException(404, "Análise não encontrada no banco local.");
+        var explicitBase = !string.IsNullOrWhiteSpace(baseId);
+        var previousId = explicitBase ? baseId!.Trim() : current.PreviousId;
+        if (previousId is null) return _diff.Compare(null, current);
+        if (previousId == current.Id) throw new ArgumentException("Escolha uma versão base diferente da análise atual.");
+        var previous = sessions.Stored(previousId);
+        if (previous is null && explicitBase) throw new AnalysisSessionException(404, "Versão base não encontrada no banco local.");
+        return _diff.Compare(previous, current);
     }
 
     /// <summary>Importa o relatório antigo do navegador sem IA; relatórios já persistidos prevalecem sobre o cache.</summary>

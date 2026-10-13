@@ -12,6 +12,8 @@ public class ClaudeCodeProvider(ClaudeCodeOptions options) : IAiProvider
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 
+    public string Provider => AiProviders.Claude;
+
     // Effort faz parte do nome: entra na chave do cache e no versionamento da análise.
     public string Model => string.IsNullOrEmpty(options.Effort)
         ? $"{options.Model} (assinatura)"
@@ -76,7 +78,7 @@ public class ClaudeCodeProvider(ClaudeCodeOptions options) : IAiProvider
         catch (JsonException)
         {
             var detail = string.IsNullOrWhiteSpace(error) ? output : error;
-            throw new AiProviderException($"Resposta inesperada do Claude Code: {ProcessRunner.StripAnsi(detail).Trim()}");
+            throw new AiProviderException($"Resposta inesperada do Claude Code: {AiFailures.Redact(ProcessRunner.StripAnsi(detail).Trim())}");
         }
 
         using (document)
@@ -85,8 +87,9 @@ public class ClaudeCodeProvider(ClaudeCodeOptions options) : IAiProvider
             var isError = root.TryGetProperty("is_error", out var e) && e.ValueKind == JsonValueKind.True;
             if (isError)
             {
+                // Login ausente/expirado e limite do plano viram falhas tipadas (AiProviderUnavailableException).
                 var message = root.TryGetProperty("result", out var r) ? r.ToString() : "erro desconhecido";
-                throw new AiProviderException($"Claude Code: {message}");
+                throw AiFailures.FromMessage(AiProviders.Claude, message);
             }
 
             if (!root.TryGetProperty("structured_output", out var structured) || structured.ValueKind != JsonValueKind.Object)

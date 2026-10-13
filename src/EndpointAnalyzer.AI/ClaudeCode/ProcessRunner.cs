@@ -7,6 +7,7 @@ namespace EndpointAnalyzer.AI.ClaudeCode;
 
 internal sealed record ProcessResult(int ExitCode, string Output, string Error);
 
+/// <summary>Execução dos CLIs de IA (Claude Code e Codex): stdin/stdout em UTF-8, timeout e encerramento da árvore de processos.</summary>
 internal static partial class ProcessRunner
 {
     public static readonly Encoding Utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
@@ -21,7 +22,17 @@ internal static partial class ProcessRunner
     /// <exception cref="ClaudeCodeNotInstalledException">Executável não encontrado.</exception>
     public static ProcessStartInfo StartInfo(ClaudeCodeOptions options, IEnumerable<string> arguments, string? workingDirectory = null)
     {
-        var command = ClaudeExecutable.Resolve(options.Executable);
+        var info = StartInfo(ClaudeExecutable.Resolve(options.Executable), arguments, workingDirectory);
+
+        // Login separado do Claude Code do terminal: só a conta logada no projeto é usada.
+        Directory.CreateDirectory(options.ConfigDirectory);
+        info.Environment["CLAUDE_CONFIG_DIR"] = options.ConfigDirectory;
+        foreach (var name in CredentialOverrides) info.Environment.Remove(name);
+        return info;
+    }
+
+    public static ProcessStartInfo StartInfo(CliCommand command, IEnumerable<string> arguments, string? workingDirectory = null)
+    {
         var info = new ProcessStartInfo(command.FileName)
         {
             RedirectStandardInput = true,
@@ -35,19 +46,16 @@ internal static partial class ProcessRunner
         };
         foreach (var argument in command.PrefixArguments.Concat(arguments)) info.ArgumentList.Add(argument);
         if (workingDirectory is not null) info.WorkingDirectory = workingDirectory;
-
-        // Login separado do Claude Code do terminal: só a conta logada no projeto é usada.
-        Directory.CreateDirectory(options.ConfigDirectory);
-        info.Environment["CLAUDE_CONFIG_DIR"] = options.ConfigDirectory;
-        foreach (var name in CredentialOverrides) info.Environment.Remove(name);
         return info;
     }
 
     /// <summary>Executa o processo, envia <paramref name="input"/> no stdin e aguarda a saída.</summary>
-    /// <exception cref="ClaudeCodeNotInstalledException">Executável não encontrado.</exception>
-    public static async Task<ProcessResult> RunAsync(ProcessStartInfo info, string? input, TimeSpan timeout, CancellationToken cancellationToken)
+    /// <param name="tool">Nome do CLI nas mensagens de erro.</param>
+    /// <param name="notInstalled">Exceção quando o executável não pode ser iniciado (padrão: Claude Code).</param>
+    public static async Task<ProcessResult> RunAsync(ProcessStartInfo info, string? input, TimeSpan timeout, CancellationToken cancellationToken,
+        string tool = "Claude Code", Func<Exception>? notInstalled = null)
     {
-        using var process = Start(info);
+        using var process = Start(info, notInstalled);
 
         var output = process.StandardOutput.ReadToEndAsync(cancellationToken);
         var error = process.StandardError.ReadToEndAsync(cancellationToken);
@@ -65,22 +73,24 @@ internal static partial class ProcessRunner
         {
             TryKill(process);
             if (cancellationToken.IsCancellationRequested) throw;
-            throw new TimeoutException($"O Claude Code não respondeu em {timeout.TotalMinutes:0} minuto(s).");
+            throw new TimeoutException($"O {tool} não respondeu em {timeout.TotalMinutes:0} minuto(s).");
         }
 
         return new ProcessResult(process.ExitCode, await output, await error);
     }
 
-    public static Process Start(ProcessStartInfo info)
+    public static Process Start(ProcessStartInfo info, Func<Exception>? notInstalled = null)
     {
         try
         {
-            return Process.Start(info) ?? throw new ClaudeCodeNotInstalledException(info.FileName);
+            return Process.Start(info) ?? throw NotInstalled();
         }
         catch (Win32Exception)
         {
-            throw new ClaudeCodeNotInstalledException(info.FileName);
+            throw NotInstalled();
         }
+
+        Exception NotInstalled() => notInstalled?.Invoke() ?? new ClaudeCodeNotInstalledException(info.FileName);
     }
 
     public static void TryKill(Process process)

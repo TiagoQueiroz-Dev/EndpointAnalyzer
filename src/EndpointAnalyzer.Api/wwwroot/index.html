@@ -8,17 +8,19 @@
   :root {
     --bg: #f6f7f9; --panel: #ffffff; --sidebar: #fafbfc; --text: #1d2330; --muted: #5d6677; --border: #dde1e8;
     --hover: #eef0f4; --active: #e4e9f5; --accent: #2f5fd0; --accent-text: #ffffff; --code: #f0f2f5;
-    --post: #1f8a4c; --put: #b26a00; --patch: #7a4cc2; --delete: #c0392b; --get: #2f6fd0; --danger: #c0392b; --claude: #c4633f;
+    --post: #1f8a4c; --put: #b26a00; --patch: #7a4cc2; --delete: #c0392b; --get: #2f6fd0; --danger: #c0392b; --claude: #c4633f; --codex: #1f7a6d;
     --hl: #fbe9a6; --hl-border: #d9a800;
     --scroll-thumb: #c5cbd6; --scroll-thumb-hover: #2f5fd0;
+    --diff-del: #fdeceb; --diff-ins: #e8f6ee; --diff-del-strong: #f8c9c4; --diff-ins-strong: #bfe6cf;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #14171c; --panel: #1c2027; --sidebar: #0f1114; --text: #e4e7ec; --muted: #9aa3b2; --border: #2a2f37;
       --hover: #1b1f25; --active: #222832; --accent: #6b93f0; --accent-text: #0e1116; --code: #242a33;
-      --post: #4cc584; --put: #f0a940; --patch: #b593f0; --delete: #ef7a6d; --get: #6ba6f0; --danger: #ef7a6d; --claude: #c4633f;
+      --post: #4cc584; --put: #f0a940; --patch: #b593f0; --delete: #ef7a6d; --get: #6ba6f0; --danger: #ef7a6d; --claude: #c4633f; --codex: #4cb8a5;
       --hl: rgba(240, 169, 64, .2); --hl-border: #f0a940;
       --scroll-thumb: #3a414c; --scroll-thumb-hover: #6b93f0;
+      --diff-del: rgba(239, 122, 109, .12); --diff-ins: rgba(76, 197, 132, .12); --diff-del-strong: rgba(239, 122, 109, .3); --diff-ins-strong: rgba(76, 197, 132, .3);
     }
   }
   * { box-sizing: border-box; }
@@ -40,8 +42,10 @@
   @media (max-width: 860px) { body { grid-template-columns: 1fr; } }
 
   /* ---- Barra lateral (estilo Scalar) ---- */
+  /* overflow-y: com as duas contas no rodapé, numa tela baixa a barra rola em vez de esconder os botões abaixo da borda. */
   aside { position: sticky; top: 0; align-self: start; height: 100vh; display: flex; flex-direction: column; background: var(--sidebar);
-          border-right: 1px solid var(--border); min-width: 0; }
+          border-right: 1px solid var(--border); min-width: 0; overflow-y: auto; }
+  aside > :not(nav) { flex: none; }
   @media (max-width: 860px) { aside { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--border); } }
   .brand { padding: 14px 14px 6px; font-weight: 700; font-size: 14px; letter-spacing: .04em; }
   .project { display: flex; gap: 6px; padding: 4px 10px; }
@@ -93,6 +97,54 @@
   .method.DELETE { color: var(--delete); } .method.GET { color: var(--get); }
   .empty { padding: 12px 8px; font-size: 13px; color: var(--muted); }
 
+  /* Seleção múltipla para a fila (como nas listas do Linear): o checkbox do endpoint aparece sob o mouse ou com foco e,
+     havendo seleção, em todos; em telas sem hover, sempre. Nos grupos, uma ação em texto com a contagem ("2/4"). */
+  .items > li { display: flex; align-items: flex-start; gap: 2px; }
+  .items > li > .item { width: auto; flex: 1; min-width: 0; }
+  .pick-box { appearance: none; flex: none; display: grid; place-content: center; width: 15px; height: 15px; margin: 8px 0 0 2px;
+              border: 1.5px solid var(--muted); border-radius: 4px; background: var(--panel); cursor: pointer; opacity: 0;
+              transition: opacity .12s, background-color .12s, border-color .12s; }
+  .pick-box::before { content: ""; width: 9px; height: 9px; transform: scale(0); transition: transform .1s; background: var(--accent-text);
+                      clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%); }
+  .pick-box:checked { background: var(--accent); border-color: var(--accent); }
+  .pick-box:checked::before { transform: scale(1); }
+  .pick-box:hover { border-color: var(--accent); }
+  .pick-box:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .items > li:hover > .pick-box, .pick-box:focus-visible, .pick-box:checked, #groups.selecting .pick-box { opacity: 1; }
+  @media (hover: none) { .pick-box { opacity: 1; } }
+  @media (forced-colors: active) { .pick-box { opacity: 1; } .pick-box::before { background: CanvasText; } }
+  .group { position: relative; }
+  .group-toggle > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Sobre o fim do cabeçalho, com fundo em degradê: o nome do grupo não muda de lugar quando a ação aparece. */
+  .group-pick { --row-bg: var(--sidebar); position: absolute; top: 6px; right: 4px; display: flex; align-items: center; gap: 4px;
+                padding-left: 18px; background: linear-gradient(to right, transparent, var(--row-bg) 16px); opacity: 0;
+                pointer-events: none; transition: opacity .12s; }
+  .group-pick .pick-count { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .group-pick button { padding: 2px 6px; border: 0; border-radius: 4px; background: none; color: var(--accent);
+                       font: 600 11.5px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; cursor: pointer; }
+  .group-pick button:hover { background: var(--active); }
+  .group-pick button:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; }
+  .group:has(> .group-toggle:hover) > .group-pick, .group:has(> .group-pick:hover) > .group-pick { --row-bg: var(--hover); }
+  .group:has(> .group-pick:hover) > .group-toggle { background: var(--hover); }
+  .group:has(> .group-toggle:hover) > .group-pick, .group-pick:hover, .group-pick:focus-within, #groups.selecting .group-pick {
+    opacity: 1; pointer-events: auto; }
+  @media (hover: none) { .group-pick { opacity: 1; pointer-events: auto; } }
+  .item-end { flex: none; display: flex; align-items: flex-start; gap: 6px; }
+  /* Situação do endpoint na fila: pendente, analisando, concluído, erro ou cancelado. */
+  .queue-dot { display: none; flex: none; width: 7px; height: 7px; margin-top: 6px; border-radius: 50%; }
+  .queue-dot.pendente, .queue-dot.analisando, .queue-dot.concluido, .queue-dot.erro, .queue-dot.cancelado { display: block; }
+  .queue-dot.pendente { background: var(--muted); }
+  .queue-dot.analisando { background: var(--accent); animation: queue-pulse 1s ease-in-out infinite alternate; }
+  .queue-dot.concluido { background: var(--post); }
+  .queue-dot.erro { background: var(--danger); }
+  .queue-dot.cancelado { border: 1px solid var(--muted); }
+  @keyframes queue-pulse { to { opacity: .3; } }
+  .selection-bar { display: flex; align-items: center; gap: 6px; margin: 0 10px 8px; padding: 6px 6px 6px 10px; border: 1px solid var(--accent);
+                   border-radius: 8px; background: var(--panel); font-size: 12.5px; }
+  .selection-bar[hidden] { display: none; }
+  .selection-bar > span { flex: 1; min-width: 0; }
+  .selection-bar button { padding: 4px 9px; font-size: 12px; }
+
   /* Rodapé: conta do Claude + modelo/effort */
   .claude-footer { border-top: 1px solid var(--border); padding: 10px; display: flex; flex-direction: column; gap: 8px; }
   .claude-btn { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; padding: 9px 12px;
@@ -109,6 +161,21 @@
   .selects select { width: 100%; min-width: 0; padding: 6px 6px; font-size: 12.5px; }
   .footer-note { font-size: 12px; color: var(--muted); }
   .footer-note a { color: var(--accent); }
+  /* Claude e Codex ficam conectados ao mesmo tempo: um bloco por conta, cada um com o seu rótulo. */
+  .provider-label { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; letter-spacing: .06em;
+                    text-transform: uppercase; color: var(--muted); }
+  .provider-label svg { width: 12px; height: 12px; }
+  .claude-footer .provider-label svg { color: var(--claude); }
+  .codex-footer .provider-label svg, .codex-footer .claude-btn svg { color: var(--codex); }
+  .codex-footer .claude-btn:hover { border-color: var(--codex); }
+  .usage { display: flex; flex-direction: column; gap: 4px; --usage-color: var(--codex); }
+  .usage.claude { --usage-color: var(--claude); }
+  .usage-row { display: grid; grid-template-columns: 52px 1fr 36px; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); }
+  .usage-row span:last-child { text-align: right; }
+  .usage-bar { height: 6px; border-radius: 3px; background: var(--hover); overflow: hidden; }
+  .usage-bar > span { display: block; height: 100%; background: var(--usage-color); }
+  .usage-bar.high > span { background: var(--put); }
+  .usage-bar.full > span { background: var(--danger); }
 
   /* ---- Conteúdo ---- */
   main { padding: 24px; min-width: 0; }
@@ -258,6 +325,56 @@
   table.exec td { font-size: 12.5px; } table.exec td.url { font: 12px ui-monospace, Consolas, monospace; overflow-wrap: anywhere; min-width: 220px; }
   .verified { color: var(--post); font-weight: 600; } .unverified { color: var(--put); font-weight: 600; }
 
+  /* ---- Aba Diff: versão anterior à esquerda, atual à direita (como o diff do VS Code) ---- */
+  .diff-versions { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 10px; align-items: stretch; margin-bottom: 10px; }
+  .diff-version { border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; font-size: 13px; min-width: 0; overflow-wrap: anywhere; }
+  .diff-version.before { border-left: 3px solid var(--delete); } .diff-version.after { border-left: 3px solid var(--post); }
+  .diff-version b { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  .diff-version .muted { display: block; font-size: 12px; }
+  .diff-arrow { align-self: center; color: var(--muted); font-size: 18px; }
+  @media (max-width: 700px) { .diff-versions { grid-template-columns: minmax(0, 1fr); } .diff-arrow { display: none; } }
+  .diff-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 6px 0 4px; }
+  .diff-count { font: 600 12px system-ui, sans-serif; padding: 1px 9px; border-radius: 10px; border: 1px solid currentColor; }
+  .diff-count.adicionado, .diff-kind.adicionado { color: var(--post); } .diff-count.removido, .diff-kind.removido { color: var(--delete); }
+  .diff-count.alterado, .diff-kind.alterado { color: var(--put); } .diff-count.incerto, .diff-kind.incerto { color: var(--patch); }
+  .diff-count.nao-comparavel { color: var(--muted); }
+  .diff-empty { border: 1px dashed var(--border); border-radius: 6px; padding: 14px 16px; margin: 10px 0; font-weight: 600; }
+  .diff-off { border: 1px dashed var(--border); border-radius: 6px; padding: 8px 12px; margin: 6px 0; color: var(--muted); font-size: 13px; }
+  .diff-notes { margin: 6px 0; padding-left: 18px; font-size: 12.5px; color: var(--muted); }
+  .diff-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 12px 0 4px; }
+  .diff-toolbar .sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 4px; }
+  .diff-toolbar .chip { cursor: pointer; }
+  .diff-toolbar .check { font-size: 12.5px; color: var(--muted); margin-left: auto; }
+  .diff-group > h3 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+  .diff-group > h3 .muted { font-weight: 400; }
+  .diff-item { border: 1px solid var(--border); border-radius: 6px; margin: 8px 0; overflow: hidden; }
+  .diff-item.alert { border-color: var(--put); }
+  .diff-item-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; padding: 8px 12px; background: var(--code); }
+  .diff-kind { font: 700 10.5px system-ui, sans-serif; padding: 1px 7px; border-radius: 8px; border: 1px solid currentColor; text-transform: uppercase; letter-spacing: .02em; }
+  .diff-impact { font-size: 11px; padding: 0 6px; border-radius: 8px; background: var(--hover); color: var(--muted); }
+  .diff-impact.comportamento { color: var(--text); } .diff-impact.runtime { color: var(--get); } .diff-impact.documentacao { color: var(--patch); }
+  .diff-title { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+  .diff-refs { font-size: 12px; color: var(--muted); }
+  .diff-item-notes { margin: 0; padding: 6px 12px 6px 30px; font-size: 12.5px; color: var(--put); border-bottom: 1px solid var(--border); }
+  .diff-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); font-size: 13px; }
+  .diff-grid > .diff-side { padding: 4px 12px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .diff-grid > .diff-label { grid-column: 1 / -1; padding: 6px 12px 2px; font-size: 11.5px; color: var(--muted); border-top: 1px solid var(--border); }
+  .diff-cell { padding: 4px 12px 8px; min-width: 0; overflow-wrap: anywhere; }
+  .diff-cell + .diff-cell, .diff-side + .diff-side { border-left: 1px solid var(--border); }
+  .diff-cell.del { background: var(--diff-del); } .diff-cell.ins { background: var(--diff-ins); }
+  .diff-cell pre { margin: 0; padding: 0; background: transparent; max-height: 280px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+  .diff-list { margin: 0; padding-left: 16px; } .diff-list li { padding: 0 4px; border-radius: 3px; }
+  .diff-list li.del { background: var(--diff-del-strong); } .diff-list li.ins { background: var(--diff-ins-strong); }
+  details.diff-more { border-top: 1px solid var(--border); }
+  details.diff-more > summary { cursor: pointer; padding: 6px 12px; font-size: 12.5px; color: var(--accent); }
+  details.diff-more .diff-cell pre { max-height: 360px; }
+  @media (max-width: 700px) {
+    .diff-grid { grid-template-columns: minmax(0, 1fr); }
+    .diff-grid > .diff-side { display: none; }
+    .diff-cell + .diff-cell { border-left: 0; border-top: 1px dashed var(--border); }
+    .diff-cell::before { content: attr(data-side); display: block; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  }
+
   /* ---- Fluxograma (Mermaid) do grafo técnico ---- */
   .flow { position: relative; background: var(--code); border-radius: 6px; }
   .flow-actions { position: absolute; top: 8px; right: 8px; z-index: 1; display: flex; gap: 6px; }
@@ -335,6 +452,29 @@
   .code-line.hl .n { color: var(--text); font-weight: 600; }
   .code-line.hl .t { box-shadow: inset 3px 0 var(--hl-border); }
 
+  /* ---- Fila de análises ---- */
+  .queue-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .queue-head h3 { margin: 0; font-size: 15px; }
+  .queue-head .spacer { flex: 1; }
+  .queue-head button, .queue-item button { padding: 4px 10px; font-size: 12.5px; }
+  .queue-note { margin: 6px 0 0; font-size: 13px; }
+  .queue-progress { height: 6px; margin: 10px 0; border-radius: 3px; background: var(--hover); overflow: hidden; }
+  .queue-progress > span { display: block; height: 100%; background: var(--accent); transition: width .3s; }
+  .queue-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow-y: auto; }
+  .queue-item { display: grid; grid-template-columns: 22px 10px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 6px 8px;
+                border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
+  .queue-item.analisando { border-color: var(--accent); background: var(--active); }
+  .queue-item .q-pos { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+  .queue-item .queue-dot { margin-top: 0; }
+  .queue-item .q-main { min-width: 0; }
+  .queue-item .q-route { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
+  .queue-item .q-route .route { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .queue-item .q-status { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+  .queue-item .q-status.error { color: var(--danger); }
+  .queue-item .q-actions { display: flex; gap: 4px; }
+  .queue-item .q-open { padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; min-width: 0; }
+  .queue-item .q-open:hover .route { text-decoration: underline; }
+
   dialog { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); color: var(--text); padding: 20px; width: min(460px, calc(100vw - 32px)); }
   dialog::backdrop { background: rgba(0, 0, 0, .45); }
   dialog h2 { font-size: 17px; margin: 0 0 8px; }
@@ -366,11 +506,14 @@
     <input id="search" type="text" placeholder="Buscar" autocomplete="off" spellcheck="false" aria-label="Buscar endpoints">
     <kbd>Ctrl K</kbd>
   </div>
+  <div id="selectionBar" class="selection-bar" hidden aria-live="polite"></div>
   <nav id="groups" aria-label="Endpoints"></nav>
   <div id="claudeFooter" class="claude-footer"><span class="footer-note">verificando conta do Claude...</span></div>
+  <div id="codexFooter" class="claude-footer codex-footer"><span class="footer-note">verificando conta do Codex...</span></div>
 </aside>
 
 <main>
+  <section id="queuePanel" class="queue-panel" hidden aria-label="Fila de análises"></section>
   <section id="endpointPanel">
     <p class="muted">Selecione um endpoint na barra lateral.</p>
   </section>
@@ -403,6 +546,18 @@
     </div>
     <p id="loginError2" class="error"></p>
   </form>
+</dialog>
+
+<dialog id="codexDialog" aria-labelledby="codexDialogTitle">
+  <h2 id="codexDialogTitle">Entrar com Codex</h2>
+  <p class="muted">Usa o limite do seu plano do ChatGPT (Plus, Pro, Business...) pelo Codex instalado nesta máquina. A conta do Claude continua conectada.</p>
+  <ol>
+    <li>Na aba que abriu, entre com a sua conta do ChatGPT e autorize o Codex.
+      Se ela não abriu, <a id="codexLoginLink" href="#" target="_blank" rel="noopener">abra a página de login</a>.</li>
+    <li>Ao concluir, esta janela fecha sozinha.</li>
+  </ol>
+  <p id="codexLoginState" class="muted" role="status" aria-live="polite"></p>
+  <div class="row"><button id="codexLoginClose" class="secondary" type="button">Cancelar</button></div>
 </dialog>
 
 <dialog id="codeDialog" class="code-dialog" aria-label="Código da etapa do fluxograma">
@@ -438,7 +593,9 @@ const store = {
 let endpoints = [];
 let selected = null;
 let lastResponse = null;
-let authState = null;
+let authState = null;           // conta do Claude (/api/auth/status)
+let codexState = null;          // conta do Codex (/api/auth/codex/status)
+let claudeUsage = null;         // uso do plano do Claude (/api/auth/usage)
 let runtimeAvailable = false;   // Runtime:Enabled no servidor
 let openGroups = new Set(store.get("ea.openGroups", []));
 let openProjects = new Set(store.get("ea.openProjects", []));
@@ -447,8 +604,12 @@ async function api(url, options) {
   const response = await fetch(url, options);
   const body = response.headers.get("content-type")?.includes("json") ? await response.json() : await response.text();
   if (!response.ok) {
-    const error = new Error(body?.error ?? body?.detail ?? body?.title ?? body ?? response.statusText);
+    // Sem corpo (ex.: 404 de uma rota que não existe na API em execução): a mensagem nunca fica vazia.
+    const error = new Error(body?.error ?? body?.detail ?? body?.title ?? (body || `HTTP ${response.status} ${response.statusText ?? ""}`.trim()));
     error.status = response.status;
+    // Falha de conta da IA: "authentication" ou "usage_limit", e qual provedor ("claude" | "codex").
+    error.code = body?.code;
+    error.provider = body?.provider;
     throw error;
   }
   return body;
@@ -459,8 +620,9 @@ async function init() {
   runtimeAvailable = !!info.runtimeValidation;
   // O último arquivo escolhido tem prioridade sobre o padrão do appsettings.
   setSolution(store.get("ea.solutionPath", null) ?? info.defaultSolution ?? "");
+  restoreQueue();
   if (solutionPath) loadEndpoints(false);
-  await refreshAuth(false);
+  await Promise.all([refreshAuth(false), refreshCodex(false)]);
 }
 
 // ---- Solução selecionada ----
@@ -632,11 +794,13 @@ function renderGroups() {
       const id = groupKey(items[0]);
       const open = query || openGroups.has(id);
       return `<div class="group ${open ? "open" : ""}" data-group="${esc(id)}">
-        <button class="group-toggle" aria-expanded="${open}">${chevron}<span>${esc(name)}</span></button>
+        <button class="group-toggle" aria-expanded="${open}" title="${esc(name)}">${chevron}<span>${esc(name)}</span></button>
+        <span class="group-pick"><span class="pick-count" aria-hidden="true"></span><button type="button" data-pick-group>Selecionar tudo</button></span>
         <ul class="items">${items.map(e => `
-          <li><button class="item ${selected && key(selected) === key(e) ? "active" : ""}" data-key="${esc(key(e))}" title="${esc(route(e))}">
+          <li><input type="checkbox" class="pick-box" data-pick="${esc(key(e))}" title="Selecionar para a fila" aria-label="Selecionar ${esc(route(e))} para a fila">
+            <button class="item ${selected && key(selected) === key(e) ? "active" : ""}" data-key="${esc(key(e))}" title="${esc(route(e))}">
             <span class="title">${esc(e.summary || e.route)}</span>
-            <span class="method ${esc(e.httpMethod)}">${esc(methodLabel(e.httpMethod))}</span>
+            <span class="item-end">${queueDotHtml(key(e))}<span class="method ${esc(e.httpMethod)}">${esc(methodLabel(e.httpMethod))}</span></span>
           </button></li>`).join("")}
         </ul></div>`;
     }).join("");
@@ -646,6 +810,7 @@ function renderGroups() {
     const open = query || openProjects.has(name);
     return `<div class="group ${open ? "open" : ""}" data-project="${esc(name)}">
       <button class="group-toggle project-toggle" aria-expanded="${open}" title="${esc(name)}">${chevron}<span>${esc(name)}</span></button>
+      <span class="group-pick"><span class="pick-count" aria-hidden="true"></span><button type="button" data-pick-group>Selecionar tudo</button></span>
       <div class="subgroups">${renderGroupNodes(visible.filter(e => e.project === name))}</div></div>`;
   }).join("");
 
@@ -659,6 +824,18 @@ function renderGroups() {
     store.set(storeKey, [...set]);
   }));
   document.querySelectorAll(".item").forEach(b => b.addEventListener("click", () => selectEndpoint(endpoints.find(e => key(e) === b.dataset.key))));
+  // Checkbox do endpoint: entra/sai da seleção; Shift+clique marca (ou desmarca) o intervalo desde o último clicado.
+  document.querySelectorAll(".pick-box[data-pick]").forEach(box => {
+    box.addEventListener("click", (ev) => pickClicked(box, ev.shiftKey));
+    // Shift+clique não seleciona o texto entre os dois checkboxes.
+    box.addEventListener("mousedown", (ev) => { if (ev.shiftKey) ev.preventDefault(); });
+  });
+  // "Selecionar tudo" do grupo (ou projeto): marca os endpoints exibidos dentro dele; com todos marcados, "Desmarcar".
+  document.querySelectorAll("[data-pick-group]").forEach(button => button.addEventListener("click", () => {
+    const keys = [...button.closest(".group").querySelectorAll(".pick-box[data-pick]")].map(b => b.dataset.pick);
+    togglePick(keys, !keys.every(k => multiPick.has(k)));
+  }));
+  updatePickBoxes();
 }
 
 function selectEndpoint(endpoint) {
@@ -703,7 +880,7 @@ function renderEndpointPanel() {
         <label class="check"><input type="checkbox" data-section="${id}"> ${label}</label>
         ${aiOptions[id] ? `<label class="check sub" title="${esc(aiOptions[id].title)}"><input type="checkbox" data-ai="${id}"> ${aiOptions[id].label}</label>` : ""}
       </div>`).join("")}
-      <div class="tab-option ai-source"><span id="aiSource" class="muted"></span><span id="aiModeSlot"></span></div>
+      <div class="tab-option ai-source"><span id="aiProviderSlot"></span><span id="aiSource" class="muted"></span><span id="aiModeSlot"></span></div>
     </div>
     <div id="tokenRow" ${runtimeAvailable ? "" : "hidden"}>
       <div class="row">
@@ -762,29 +939,63 @@ const aiOptions = {
 /** Abas com a IA marcada e utilizável (aba marcada e IA disponível). */
 const selectedAi = () => [...document.querySelectorAll("[data-ai]")].filter(b => b.checked && !b.disabled).map(b => b.dataset.ai);
 
-/** A IA de cada aba depende da aba marcada e de uma conta do Claude; o token só serve à validação dos cenários. */
+/** A IA de cada aba depende da aba marcada e de uma conta conectada; o token só serve à validação dos cenários. */
 function updateTabOptions() {
   if (!$("aiSource")) return;
-  const source = authState?.activeSource, sections = selectedSections();
+  const provider = currentProvider(), sections = selectedSections();
   document.querySelectorAll("[data-ai]").forEach(box => {
-    box.disabled = !source || !sections.includes(box.dataset.ai);
+    box.disabled = !provider || !sections.includes(box.dataset.ai);
     box.closest("label").classList.toggle("off", box.disabled);
   });
   $("apiToken").disabled = !runtimeAvailable || !selectedAi().includes("scenarios");
 }
 
-/** Origem da IA (conta do Claude) e o seletor de origem. */
+// ---- Provedor da IA (Claude ou Codex) ----
+
+const providerNames = { claude: "Claude", codex: "Codex" };
+const providerName = (id) => providerNames[id] ?? id ?? "IA";
+const providerAvailable = {
+  claude: () => !!authState?.activeSource,
+  codex: () => !!codexState?.loggedIn,
+};
+
+/** Provedor da próxima análise: o escolhido, se a conta estiver conectada; senão, o outro conectado; senão, null. */
+function currentProvider() {
+  const chosen = store.get("ea.provider", "claude");
+  if (providerAvailable[chosen]?.()) return chosen;
+  return Object.keys(providerAvailable).find(id => providerAvailable[id]()) ?? null;
+}
+
+/** Origem da IA (Claude ou Codex), o seletor de provedor e, no Claude, o seletor de origem (plano mensal ou API). */
 function updateAiControls(initial) {
   if (!$("aiSource")) return;
-  const s = authState ?? {};
-  const source = s.activeSource;
-  $("aiSource").textContent = source === "subscription" ? "IA: Claude · plano mensal"
-    : source === "api" ? "IA: Claude · API" : "IA indisponível: entre com Claude para habilitar";
+  const s = authState ?? {}, provider = currentProvider();
+  const connected = Object.keys(providerAvailable).filter(id => providerAvailable[id]());
 
-  $("aiModeSlot").innerHTML = s.apiConfigured && s.cliInstalled ? `<select id="aiMode" title="Origem da IA">
-      <option value="auto">IA: automática</option>
-      <option value="subscription">IA: plano mensal</option>
-      <option value="api">IA: API (por uso)</option></select>` : "";
+  // Com as duas contas conectadas, o usuário escolhe; com uma só, ela é usada (a outra fica indisponível no seletor).
+  $("aiProviderSlot").innerHTML = connected.length ? `<select id="aiProvider" title="IA usada na análise (documentação, fluxo de negócio e validação em runtime)">
+      ${Object.keys(providerNames).map(id => `<option value="${id}" ${providerAvailable[id]() ? "" : "disabled"}>${providerName(id)}${providerAvailable[id]() ? "" : " (desconectado)"}</option>`).join("")}
+    </select>` : "";
+  if ($("aiProvider")) {
+    $("aiProvider").value = provider;
+    $("aiProvider").addEventListener("change", (ev) => { store.set("ea.provider", ev.target.value); updateAiControls(false); });
+  }
+
+  const codex = codexState ?? {};
+  // Limite atingido na conta escolhida: o aviso aparece antes de o usuário clicar em ANALISAR.
+  const limitReached = provider === "codex" ? codex.usage?.limitReached
+    : provider === "claude" && s.activeSource === "subscription" && claudeUsage?.limitReached;
+  $("aiSource").textContent = (provider === "codex"
+    ? `IA: Codex · ${codex.authMethod === "apiKey" ? "chave da API (por uso)" : codex.planType ? `plano ${planName(codex.planType)}` : "conta do ChatGPT"}`
+    : provider === "claude" ? (s.activeSource === "api" ? "IA: Claude · API" : "IA: Claude · plano mensal")
+    : "IA indisponível: entre com Claude ou Codex para habilitar")
+    + (limitReached ? " · limite de uso atingido" : "");
+  $("aiSource").className = limitReached ? "error" : "muted";
+
+  $("aiModeSlot").innerHTML = provider === "claude" && s.apiConfigured && s.cliInstalled ? `<select id="aiMode" title="Origem da IA do Claude">
+      <option value="auto">Claude: automático</option>
+      <option value="subscription">Claude: plano mensal</option>
+      <option value="api">Claude: API (por uso)</option></select>` : "";
   if ($("aiMode")) {
     $("aiMode").value = s.mode;
     $("aiMode").addEventListener("change", async (ev) => renderAuth(await api("/api/auth/mode", {
@@ -831,6 +1042,7 @@ const savedAnalyses = {
 const analysisStatus = (report) => {
   const rt = report.runtime, flow = report.businessFlow;
   return (report.fromCache ? "Concluído (cache)" : "Concluído")
+    + (Object.hasOwn(providerNames, report.version?.aiProvider ?? "") ? ` com o ${providerName(report.version.aiProvider)}` : "")
     + (!rt ? "" : rt.status === "falhou" ? " · a validação em runtime falhou (veja a aba Cenários)"
       : ` · ${rt.matrix?.counts?.confirmado ?? 0} de ${rt.matrix?.scenarios?.length ?? 0} cenário(s) confirmado(s) em runtime`)
     + (flow?.error ? " · o fluxo de negócio por IA falhou (veja a aba Negócio)" : "");
@@ -838,20 +1050,31 @@ const analysisStatus = (report) => {
 
 const savedAtLabel = (time) => new Date(time).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
 
-/** Botões e status do card conforme o endpoint tenha uma análise em andamento. */
+let queueNoteShown = false;   // o status do card mostra a posição na fila (some quando o item sai dela)
+
+/** Botões e status do card conforme o endpoint tenha uma análise em andamento ou esteja na fila. */
 function showAnalysisState(endpoint) {
-  if (!$("analyze") || selected !== endpoint) return;
+  if (!$("analyze") || !selected || key(selected) !== key(endpoint)) return;
   const current = running.get(key(endpoint));
-  $("analyze").disabled = !!current;
+  const queued = !current && queueItem(key(endpoint));
+  // Pendente na fila: ANALISAR fica desabilitado para não analisar o mesmo endpoint duas vezes.
+  $("analyze").disabled = !!current || !!queued;
   $("cancelAnalysis").disabled = !current;
   if (current) {
     $("analyzeStatus").textContent = current.status;
     $("analyzeStatus").className = "muted";
+  } else if (queued) {
+    $("analyzeStatus").textContent = `Na fila: posição ${queue.items.indexOf(queued) + 1} de ${queue.items.length}. Remova-o da fila para analisar agora.`;
+    $("analyzeStatus").className = "muted";
+  } else if (queueNoteShown) {
+    $("analyzeStatus").textContent = "";
   }
+  queueNoteShown = !current && !!queued;
 }
 
 function setAnalyzeStatus(endpoint, text, className) {
-  if (selected !== endpoint || !$("analyzeStatus")) return;
+  if (!selected || key(selected) !== key(endpoint) || !$("analyzeStatus")) return;
+  queueNoteShown = false;
   $("analyzeStatus").textContent = text;
   $("analyzeStatus").className = className;
 }
@@ -901,8 +1124,72 @@ async function restoreAnalysis(endpoint) {
   }
 }
 
+/**
+ * Inicia a análise de um endpoint (botão ANALISAR ou fila) e a registra em `running`: um endpoint nunca tem duas análises
+ * ao mesmo tempo. Devolve a entrada { controller, provider, status, promise }; a promise resolve com { response },
+ * { cancelled } ou { error } (nunca rejeita) e o resultado já fica salvo (localStorage e banco local).
+ */
+function startAnalysis(endpoint, solution, { sections, ai, provider, token }, note = "") {
+  // A IA dos cenários inclui a validação com a API em execução (quando o servidor permite).
+  const runtime = runtimeAvailable && ai.includes("scenarios");
+  const withAi = `com o ${providerName(provider)}`;
+  const controller = new AbortController();
+  const entry = {
+    controller, provider,
+    status: (runtime ? `Analisando ${withAi} e validando os cenários com a API em execução (pode levar vários minutos)...`
+      : ai.length ? `Analisando ${withAi} (pode levar alguns minutos)...` : "Analisando...") + note,
+  };
+  entry.promise = (async () => {
+    try {
+      // Cancelar aborta a requisição; o servidor recebe o cancelamento e encerra a IA e a API iniciada para o runtime.
+      const response = await api("/api/analysis", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          solutionPath: solution,
+          endpoint: { method: endpoint.httpMethod, route: endpoint.route },
+          sections,
+          ai,
+          validateRuntime: runtime,
+          apiToken: runtime && token ? token : null,
+          provider,
+        }),
+      });
+      // Salva mesmo se o usuário já estiver em outro endpoint: ao voltar, o resultado está lá.
+      savedAnalyses.set(endpoint, solution, response);
+      return { response };
+    } catch (error) {
+      return controller.signal.aborted ? { cancelled: true } : { error };
+    } finally {
+      running.delete(key(endpoint));
+    }
+  })();
+  running.set(key(endpoint), entry);
+  return entry;
+}
+
+/** Mostra o desfecho de uma análise no card (se o endpoint estiver aberto) e atualiza a conta e o uso do plano. */
+function finishAnalysis(endpoint, outcome, provider) {
+  if (outcome.response) {
+    if (selected && key(selected) === key(endpoint)) {
+      showResponse(outcome.response);
+      setAnalyzeStatus(endpoint, analysisStatus(outcome.response.report), "muted");
+    }
+  } else if (outcome.cancelled) {
+    setAnalyzeStatus(endpoint, "Análise cancelada.", "muted");
+  } else {
+    setAnalyzeStatus(endpoint, outcome.error.message, "error");
+    // Sessão expirada: o rodapé passa a mostrar o estado real da conta (o limite atingido aparece no uso, abaixo).
+    if (outcome.error.code === "authentication") (outcome.error.provider === "codex" ? refreshCodex : refreshAuth)(true);
+  }
+  showAnalysisState(endpoint);
+  // A análise consumiu o limite do plano: atualiza as barras de uso da conta usada.
+  if (provider && !outcome.cancelled) refreshUsage(provider);
+}
+
 async function analyze() {
-  if (!selected || running.has(key(selected))) return;
+  if (!selected || running.has(key(selected)) || queueItem(key(selected))) return;
   const endpoint = selected, solution = solutionPath;
   const sections = selectedSections();
   if (!sections.length) {
@@ -910,60 +1197,373 @@ async function analyze() {
     return;
   }
   const ai = selectedAi();
-  // A IA dos cenários inclui a validação com a API em execução (quando o servidor permite).
-  const runtime = runtimeAvailable && ai.includes("scenarios");
-  const controller = new AbortController();
-  running.set(key(endpoint), {
-    controller,
-    status: runtime ? "Analisando com IA e validando os cenários com a API em execução (pode levar vários minutos)..."
-      : ai.length ? "Analisando com IA (pode levar alguns minutos)..." : "Analisando...",
-  });
+  // Toda a IA da análise (documentação, fluxo de negócio e runtime) roda no mesmo provedor.
+  const provider = ai.length ? currentProvider() : null;
+  const entry = startAnalysis(endpoint, solution, { sections, ai, provider, token: apiToken() });
   showAnalysisState(endpoint);
-  try {
-    // Cancelar aborta a requisição; o servidor recebe o cancelamento e encerra a IA e a API iniciada para o runtime.
-    const response = await api("/api/analysis", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: controller.signal,
-      body: JSON.stringify({
-        solutionPath: solution,
-        endpoint: { method: endpoint.httpMethod, route: endpoint.route },
-        sections,
-        ai,
-        validateRuntime: runtime,
-        apiToken: runtime && apiToken() ? apiToken() : null,
-      }),
-    });
-    // Salva mesmo se o usuário já estiver em outro endpoint: ao voltar, o resultado está lá.
-    savedAnalyses.set(endpoint, solution, response);
-    if (selected !== endpoint) return;
-    showResponse(response);
-    setAnalyzeStatus(endpoint, analysisStatus(response.report), "muted");
-  } catch (err) {
-    if (controller.signal.aborted) setAnalyzeStatus(endpoint, "Análise cancelada.", "muted");
-    else setAnalyzeStatus(endpoint, err.message, "error");
-  } finally {
-    running.delete(key(endpoint));
-    showAnalysisState(endpoint);
+  finishAnalysis(endpoint, await entry.promise, provider);
+}
+
+// ---- Fila de análises (seleção múltipla de endpoints) ----
+
+/** Endpoints marcados na barra lateral (chaves de key()), na ordem em que entram na fila. */
+const multiPick = new Set();
+
+const queueStatusLabels = { pendente: "Pendente", analisando: "Analisando", concluido: "Concluído", erro: "Erro", cancelado: "Cancelado" };
+
+/**
+ * Fila: analisa um endpoint por vez, na ordem, com as abas, a IA e o provedor fixados ao iniciar. Cada item tem o próprio
+ * status e resultado (salvo como numa análise avulsa); a fila fica no localStorage e, se a página recarregar, volta
+ * pausada. Itens: { key, httpMethod, route, project, summary, status, error, note, provider, startedAt, finishedAt }.
+ */
+const queue = {
+  solution: "",
+  options: null,      // { sections, ai, provider }
+  items: [],
+  active: null,       // item em análise (no máximo um)
+  runner: null,       // laço em execução: um só, por mais que se clique
+  paused: null,       // { reason, provider }: o próximo item não começa até o usuário retomar
+};
+
+const queueKey = "ea.queue";
+const queueItem = (k) => queue.items.find(i => i.key === k && (i.status === "pendente" || i.status === "analisando"));
+const queueStatusOf = (k) => [...queue.items].reverse().find(i => i.key === k)?.status ?? "";
+const queueDotHtml = (k) => {
+  const status = queueStatusOf(k);
+  return `<span class="queue-dot ${status}" ${status ? `title="Fila: ${esc(queueStatusLabels[status])}"` : ""}></span>`;
+};
+const queueEndpoint = (item) => ({ httpMethod: item.httpMethod, route: item.route, project: item.project, summary: item.summary });
+
+function saveQueue() {
+  store.set(queueKey, { solution: queue.solution, options: queue.options, paused: queue.paused, items: queue.items });
+}
+
+/** Ao abrir a página: a fila salva volta pausada (nada roda sem o usuário pedir, para não consumir o limite à toa). */
+function restoreQueue() {
+  const saved = store.get(queueKey, null);
+  if (!saved?.items?.length) return;
+  Object.assign(queue, { solution: saved.solution, options: saved.options, paused: saved.paused, items: saved.items });
+  const interrupted = queue.items.filter(i => i.status === "analisando");
+  for (const item of interrupted) { item.status = "pendente"; item.note = "Interrompido ao recarregar a página."; }
+  if (queue.items.some(i => i.status === "pendente"))
+    queue.paused ??= { reason: "A fila foi interrompida ao recarregar a página. Clique em Retomar para continuar de onde parou.", provider: null };
+  renderQueue();
+}
+
+/** Abas, IA e provedor da fila: os mesmos marcados no card do endpoint (guardados no navegador). */
+function queueOptions() {
+  const sections = store.get("ea.sections", resultTabs.map(([id]) => id));
+  const provider = currentProvider();
+  const ai = provider ? store.get("ea.ai", Object.keys(aiOptions)).filter(id => aiOptions[id] && sections.includes(id)) : [];
+  return { sections, ai, provider: ai.length ? provider : null };
+}
+
+function togglePick(keys, checked) {
+  for (const k of keys) if (checked) multiPick.add(k); else multiPick.delete(k);
+  updatePickBoxes();
+  renderSelectionBar();
+}
+
+let lastPick = null;   // último checkbox clicado: âncora do Shift+clique
+
+/** Clique no checkbox; com Shift, aplica o mesmo estado a todos os endpoints visíveis entre ele e o último clicado. */
+function pickClicked(box, shift) {
+  const boxes = [...document.querySelectorAll(".pick-box[data-pick]")].filter(b => b.getClientRects().length > 0);
+  const from = shift && lastPick ? boxes.findIndex(b => b.dataset.pick === lastPick) : -1, to = boxes.indexOf(box);
+  const range = from >= 0 && to >= 0 ? boxes.slice(Math.min(from, to), Math.max(from, to) + 1) : [box];
+  lastPick = box.dataset.pick;
+  togglePick(range.map(b => b.dataset.pick), box.checked);
+}
+
+/** Checkboxes da árvore conforme a seleção e, em cada grupo, a contagem ("2/4") e a ação (Selecionar tudo / Desmarcar). */
+function updatePickBoxes() {
+  document.querySelectorAll(".pick-box[data-pick]").forEach(box => { box.checked = multiPick.has(box.dataset.pick); });
+  document.querySelectorAll("[data-pick-group]").forEach(button => {
+    const node = button.closest(".group");
+    const children = [...node.querySelectorAll(".pick-box[data-pick]")];
+    const count = children.filter(b => b.checked).length, all = children.length > 0 && count === children.length;
+    const name = node.querySelector(":scope > .group-toggle > span")?.textContent ?? "";
+    button.textContent = all ? "Desmarcar" : "Selecionar tudo";
+    button.setAttribute("aria-label", `${all ? "Desmarcar" : "Selecionar"} os ${children.length} endpoint(s) de ${name} para a fila`);
+    button.parentElement.querySelector(".pick-count").textContent = count ? `${count}/${children.length}` : "";
+  });
+  // Modo seleção: com algo marcado, os checkboxes e as ações dos grupos ficam visíveis sem precisar do mouse.
+  $("groups")?.classList?.toggle("selecting", multiPick.size > 0);
+}
+
+/** Itens selecionados que ainda não estão pendentes nem em análise na fila (os outros seriam duplicados). */
+const pickedToQueue = () => endpoints.filter(e => multiPick.has(key(e)) && !queueItem(key(e)));
+
+function renderSelectionBar() {
+  const bar = $("selectionBar");
+  if (!bar) return;
+  bar.hidden = multiPick.size === 0;
+  if (bar.hidden) { bar.innerHTML = ""; return; }
+  const fresh = pickedToQueue().length, busy = !!queue.runner || queue.items.some(i => i.status === "pendente");
+  bar.innerHTML = `<span title="Shift+clique no checkbox marca um intervalo de endpoints">${multiPick.size} selecionado(s)</span>
+    <button type="button" id="queueStart" ${fresh ? "" : "disabled"} title="${fresh ? "Analisa os selecionados um por vez, na ordem" : "Os selecionados já estão na fila"}">${busy ? `Adicionar à fila (${fresh})` : "Analisar em fila"}</button>
+    <button type="button" class="secondary" id="pickClear">Limpar</button>`;
+  $("queueStart").addEventListener("click", startQueue);
+  $("pickClear").addEventListener("click", () => togglePick([...multiPick], false));
+}
+
+/** Coloca os selecionados na fila (sem duplicar os pendentes/em análise) e inicia a execução, se ela estiver parada. */
+function startQueue() {
+  const busy = !!queue.runner || queue.items.some(i => i.status === "pendente");
+  if (busy && queue.solution !== solutionPath) {
+    alert("A fila em andamento é de outra solução. Cancele os itens restantes dela antes de começar outra.");
+    return;
   }
+  const added = enqueue(pickedToQueue());
+  if (!added) return;
+  togglePick([...multiPick], false);
+  runQueue();
+}
+
+/** Acrescenta endpoints ao fim da fila; um que já terminou volta como pendente. Devolve quantos entraram. */
+function enqueue(list) {
+  const busy = !!queue.runner || queue.items.some(i => i.status === "pendente");
+  if (!busy) {
+    // Fila nova: os resultados da anterior continuam salvos em cada endpoint.
+    Object.assign(queue, { solution: solutionPath, options: queueOptions(), items: [], paused: null });
+  }
+  let added = 0;
+  for (const e of list) {
+    if (queueItem(key(e))) continue;
+    queue.items = queue.items.filter(i => i.key !== key(e));
+    queue.items.push({ key: key(e), httpMethod: e.httpMethod, route: e.route, project: e.project, summary: e.summary, status: "pendente" });
+    added++;
+  }
+  saveQueue();
+  renderQueue();
+  return added;
+}
+
+/** Um laço só: analisa o próximo pendente quando o atual termina, até acabar, pausar ou cancelar os restantes. */
+function runQueue() {
+  if (queue.runner || queue.paused) return queue.runner;
+  queue.runner = (async () => {
+    try {
+      for (let item; !queue.paused && (item = queue.items.find(i => i.status === "pendente"));) {
+        // Conta desconectada no meio da fila: pausa em vez de falhar todos os próximos.
+        const provider = queue.options?.provider;
+        if (provider && !providerAvailable[provider]()) {
+          queue.paused = { reason: `A conta do ${providerName(provider)} não está conectada.`, provider };
+          break;
+        }
+        await runQueueItem(item);
+      }
+    } finally {
+      queue.runner = null;
+      queue.active = null;
+      saveQueue();
+      renderQueue();
+    }
+  })();
+  renderQueue();
+  return queue.runner;
+}
+
+async function runQueueItem(item) {
+  const endpoint = queueEndpoint(item);
+  const options = queue.options;
+  Object.assign(item, { status: "analisando", error: null, note: null, startedAt: Date.now(), finishedAt: null, provider: options.provider });
+  queue.active = item;
+  // O mesmo endpoint já em análise pelo botão ANALISAR: a fila acompanha essa execução em vez de disparar outra.
+  const adopted = running.get(item.key);
+  const entry = adopted ?? startAnalysis(endpoint, queue.solution, {
+    ...options, token: options.ai.includes("scenarios") ? tokenStore()[item.project]?.token ?? null : null,
+  }, ` · fila: ${queue.items.indexOf(item) + 1} de ${queue.items.length}`);
+  saveQueue();
+  renderQueue();
+  showAnalysisState(endpoint);
+
+  const outcome = await entry.promise;
+  queue.active = null;
+  item.finishedAt = Date.now();
+  if (outcome.response) {
+    const report = outcome.response.report;
+    Object.assign(item, { status: "concluido", provider: report.version?.aiProvider ?? item.provider, note: analysisStatus(report) });
+  } else if (outcome.cancelled) {
+    Object.assign(item, { status: "cancelado", note: "Cancelado durante a análise." });
+  } else if (outcome.error.code === "usage_limit" || outcome.error.code === "authentication") {
+    // Limite atingido ou sessão expirada: não é falha do endpoint e os próximos falhariam do mesmo jeito. O item volta
+    // para a fila e ela pausa, preservando a ordem e o progresso para continuar (no mesmo ou em outro provedor).
+    Object.assign(item, { status: "pendente", note: outcome.error.message, finishedAt: null });
+    queue.paused = { reason: outcome.error.message, provider: outcome.error.provider ?? item.provider };
+  } else {
+    Object.assign(item, { status: "erro", error: outcome.error.message });
+  }
+  // A análise adotada é exibida por quem a iniciou (o botão ANALISAR).
+  if (!adopted) finishAnalysis(endpoint, outcome, options.provider);
+  saveQueue();
+  renderQueue();
+}
+
+/** Retoma a fila pausada; com provedor, troca o provedor dos itens restantes (ex.: limite do Claude → Codex). */
+function resumeQueue(provider) {
+  if (provider) queue.options = { ...queue.options, provider };
+  queue.paused = null;
+  for (const item of queue.items) if (item.status === "pendente") item.note = null;
+  saveQueue();
+  runQueue();
+}
+
+function cancelQueueCurrent() {
+  if (!queue.active) return;
+  queue.active.note = "Cancelamento solicitado...";
+  running.get(queue.active.key)?.controller.abort();
+  renderQueue();
+}
+
+/** Os pendentes não começam mais; o item em análise continua (use Cancelar atual para ele). */
+function cancelQueueRemaining() {
+  for (const item of queue.items) {
+    if (item.status !== "pendente") continue;
+    Object.assign(item, { status: "cancelado", note: "Cancelado antes de começar.", finishedAt: Date.now() });
+  }
+  queue.paused = null;
+  saveQueue();
+  renderQueue();
+}
+
+function removeQueueItem(k) {
+  queue.items = queue.items.filter(i => !(i.key === k && i.status === "pendente"));
+  if (!queue.items.some(i => i.status === "pendente")) queue.paused = null;
+  saveQueue();
+  renderQueue();
+}
+
+/** Volta um item com erro (ou cancelado) para o fim da fila. */
+function retryQueueItem(k) {
+  const item = queue.items.find(i => i.key === k);
+  if (!item || item.status === "pendente" || item.status === "analisando") return;
+  queue.items = [...queue.items.filter(i => i !== item), Object.assign(item, { status: "pendente", error: null, note: null, finishedAt: null })];
+  saveQueue();
+  runQueue();
+  renderQueue();
+}
+
+function clearQueue() {
+  if (queue.runner) return;
+  Object.assign(queue, { items: [], paused: null, options: null });
+  saveQueue();
+  renderQueue();
+}
+
+/** O outro provedor conectado, para continuar a fila quando o atual atingir o limite ou desconectar. */
+const otherProvider = (provider) => Object.keys(providerAvailable).find(id => id !== provider && providerAvailable[id]());
+
+function renderQueue() {
+  const panel = $("queuePanel");
+  // Situação na árvore, no card do endpoint aberto e na barra de seleção.
+  document.querySelectorAll(".item[data-key]").forEach(b => {
+    const dot = b.querySelector(".queue-dot");
+    if (dot) dot.outerHTML = queueDotHtml(b.dataset.key);
+  });
+  if (selected) showAnalysisState(selected);
+  renderSelectionBar();
+  if (!panel) return;
+  const items = queue.items;
+  panel.hidden = items.length === 0;
+  if (!items.length) { panel.innerHTML = ""; return; }
+
+  const count = (status) => items.filter(i => i.status === status).length;
+  const finished = count("concluido") + count("erro") + count("cancelado");
+  const active = queue.active, total = items.length;
+  const other = queue.paused && otherProvider(queue.paused.provider ?? queue.options?.provider);
+  const headline = active ? `Analisando ${items.indexOf(active) + 1} de ${total} endpoints`
+    : queue.paused ? `Fila pausada · ${finished} de ${total} finalizados`
+    : count("pendente") ? `Fila aguardando · ${count("pendente")} pendente(s)`
+    : `Fila concluída: ${count("concluido")} concluído(s)` + (count("erro") ? `, ${count("erro")} com erro` : "") + (count("cancelado") ? `, ${count("cancelado")} cancelado(s)` : "");
+  const options = queue.options;
+  const tabs = (ids) => ids.map(id => resultTabs.find(([t]) => t === id)?.[1] ?? id).join(", ");
+  const optionsText = options ? `Abas: ${tabs(options.sections)} · ` + (options.ai.length ? `IA (${providerName(options.provider)}): ${tabs(options.ai)}` : "sem IA") : "";
+  const solutionName = queue.solution.split(/[\\/]/).pop();
+
+  // Duração dos que rodaram: "12 s", "3 min 05 s".
+  const elapsed = (item) => {
+    if (!item.startedAt || !item.finishedAt) return "";
+    const seconds = Math.max(1, Math.round((item.finishedAt - item.startedAt) / 1000));
+    return ` · ${seconds < 90 ? `${seconds} s` : `${Math.floor(seconds / 60)} min ${String(seconds % 60).padStart(2, "0")} s`}`;
+  };
+  const statusText = (item) => item.status === "analisando"
+    ? item.note ?? running.get(item.key)?.status ?? "Analisando..."
+    : (item.status === "erro" ? item.error : item.note ?? queueStatusLabels[item.status]) + elapsed(item);
+  const actions = (item) => item.status === "pendente" ? `<button type="button" class="secondary" data-queue-remove="${esc(item.key)}" title="Tirar da fila">Remover</button>`
+    : item.status === "erro" || item.status === "cancelado" ? `<button type="button" class="secondary" data-queue-retry="${esc(item.key)}" title="Analisar de novo, no fim da fila">Tentar de novo</button>`
+    : "";
+
+  panel.innerHTML = `
+    <div class="queue-head">
+      <h3>Fila de análises</h3><span class="muted" role="status" aria-live="polite">${esc(headline)}</span>
+      <span class="spacer"></span>
+      ${active ? `<button type="button" class="danger" data-queue-action="cancel-current" ${active.note === "Cancelamento solicitado..." ? "disabled" : ""}>Cancelar atual</button>` : ""}
+      ${count("pendente") ? `<button type="button" class="secondary" data-queue-action="cancel-remaining">Cancelar restantes (${count("pendente")})</button>` : ""}
+      ${queue.paused && count("pendente") ? `<button type="button" data-queue-action="resume">Retomar</button>` : ""}
+      ${other && count("pendente") ? `<button type="button" data-queue-action="resume-other" data-provider="${other}">Continuar com o ${providerName(other)}</button>` : ""}
+      ${!queue.runner && !count("pendente") && count("erro") ? `<button type="button" class="secondary" data-queue-action="retry-errors">Reenfileirar com erro (${count("erro")})</button>` : ""}
+      ${!queue.runner ? `<button type="button" class="secondary" data-queue-action="clear">Limpar fila</button>` : ""}
+    </div>
+    ${queue.paused ? `<p class="queue-note error">${esc(queue.paused.reason)}</p>` : ""}
+    <p class="queue-note muted">${esc(optionsText)}${solutionName && queue.solution !== solutionPath ? ` · solução ${esc(solutionName)}` : ""}</p>
+    <div class="queue-progress" role="progressbar" aria-valuemin="0" aria-valuemax="${total}" aria-valuenow="${finished}"><span style="width:${Math.round(finished / total * 100)}%"></span></div>
+    <ol class="queue-list">${items.map((item, i) => `
+      <li class="queue-item ${item.status}">
+        <span class="q-pos">${i + 1}</span>
+        <span class="queue-dot ${item.status}" title="${esc(queueStatusLabels[item.status])}"></span>
+        <div class="q-main">
+          <button type="button" class="q-open" data-queue-open="${esc(item.key)}" title="Abrir ${esc(item.httpMethod)} ${esc(item.route)}">
+            <span class="q-route"><span class="method ${esc(item.httpMethod)}">${esc(methodLabel(item.httpMethod))}</span><span class="route">${esc(item.route)}</span></span>
+          </button>
+          <div class="q-status ${item.status === "erro" ? "error" : ""}">${esc(statusText(item))}</div>
+        </div>
+        <span class="q-actions">${actions(item)}</span>
+      </li>`).join("")}
+    </ol>`;
+}
+
+/** Botões do painel da fila (um listener só; o painel é redesenhado a cada mudança). */
+function onQueueClick(e) {
+  const open = e.target.closest("[data-queue-open]");
+  if (open) {
+    const endpoint = endpoints.find(x => key(x) === open.dataset.queueOpen);
+    if (endpoint && queue.solution === solutionPath) selectEndpoint(endpoint);
+    return;
+  }
+  const remove = e.target.closest("[data-queue-remove]");
+  if (remove) { removeQueueItem(remove.dataset.queueRemove); return; }
+  const retry = e.target.closest("[data-queue-retry]");
+  if (retry) { retryQueueItem(retry.dataset.queueRetry); return; }
+  const action = e.target.closest("[data-queue-action]")?.dataset.queueAction;
+  if (action === "cancel-current") cancelQueueCurrent();
+  else if (action === "cancel-remaining") cancelQueueRemaining();
+  else if (action === "resume") resumeQueue();
+  else if (action === "resume-other") resumeQueue(e.target.closest("[data-provider]").dataset.provider);
+  else if (action === "retry-errors") queue.items.filter(i => i.status === "erro").forEach(i => retryQueueItem(i.key));
+  else if (action === "clear") clearQueue();
 }
 
 function render(tab) {
   const { report, markdown } = lastResponse;
   const ctx = report.context;
+  const previousTab = document.querySelector("[data-tab].active")?.dataset.tab;
   const tabs = [["summary", "Resumo"], ["business", "Negócio"], ["complete", "Completo"],
     ["scenarios", report.runtime?.matrix
       ? `Cenários <span class="badge" title="confirmados em runtime / total">${report.runtime.matrix.counts.confirmado ?? 0}/${report.runtime.matrix.scenarios.length}</span>`
       : `Cenários${ctx.scenarios?.scenarios?.length ? ` <span class="badge">${ctx.scenarios.scenarios.length}</span>` : ""}`]]
     .filter(([id]) => sectionsOf(report).includes(id));
+  // Diff não é uma aba da análise (não roda nada): compara os relatórios já salvos.
+  if (report.analysisId) tabs.push(["diff", diffTabLabel(report)]);
   let body = "";
   if (tab === "summary") body = report.ai ? renderDoc(report.ai, ctx) : renderSummary(ctx);
   if (tab === "business") body = renderBusiness();
   if (tab === "complete") body = renderComplete(ctx, report.runtime);
   if (tab === "scenarios") body = renderScenarios(ctx, report.ai, report.runtime);
+  if (tab === "diff") body = renderDiff(report);
 
   $("result").innerHTML = `<section>
-    <p class="muted" style="margin-top:0">analisador ${esc(report.version.analyzerVersion)}${report.version.commit ? ` · commit ${esc(report.version.commit)}` : ""}${report.version.aiModel ? ` · ${esc(report.version.aiModel)}` : ""}</p>
+    <p class="muted" style="margin-top:0">analisador ${esc(report.version.analyzerVersion)}${report.version.commit ? ` · commit ${esc(report.version.commit)}` : ""}${Object.hasOwn(providerNames, report.version.aiProvider ?? "") ? ` · IA ${esc(providerName(report.version.aiProvider))}` : ""}${report.version.aiModel ? ` · ${esc(report.version.aiModel)}` : ""}</p>
     <div class="tabs">${tabs.map(([id, label]) => `<button data-tab="${id}" class="${id === tab ? "active" : ""}">${label}</button>`).join("")}</div>
     <div class="result-body">${body}</div></section>`;
   document.querySelectorAll("[data-tab]").forEach(b => b.addEventListener("click", () => render(b.dataset.tab)));
@@ -972,6 +1572,8 @@ function render(tab) {
   showSource();
   if (tab === "business") showBusiness();
   if (tab === "scenarios") wireScenarios(ctx, report.ai, report.runtime);
+  // Abrir a aba busca a comparação de novo (a versão atual pode ter sido revalidada); filtros usam a já carregada.
+  if (tab === "diff") loadDiff(report, previousTab !== "diff");
   // Atalhos da aba Completo (sem href: o hash da URL guarda o endpoint selecionado).
   document.querySelectorAll("[data-jump]").forEach(b => b.addEventListener("click", () =>
     $(b.dataset.jump)?.scrollIntoView({ behavior: "smooth", block: "start" })));
@@ -1510,6 +2112,9 @@ async function revalidateScenario() {
     const saved = store.get(savedAnalyses.id(current.endpoint, current.solution), null);
     if (saved?.response.report.analysisId === current.analysisId || saved?.response.report.analysisId === pendingId)
       savedAnalyses.set(current.endpoint, current.solution, current.response);
+    // O runtime da versão atual mudou: o diff em memória fica velho e é buscado de novo.
+    if (diffState.analysisId === current.analysisId || diffState.analysisId === pendingId)
+      diffState = { analysisId: null, loading: false, result: null, error: null, seq: diffState.seq + 1 };
     if (lastResponse === current.response && selected === current.endpoint && solutionPath === current.solution) {
       const activeTab = document.querySelector("[data-tab].active")?.dataset.tab ?? "scenarios";
       render(activeTab);
@@ -1750,6 +2355,137 @@ function renderValidated(ctx, ai, rt) {
       ${scenarioGridHtml(validatedGridRows(m.removed, ai))}` : ""}
     ${rt.notes.length ? `<h3>Observações</h3><ul>${rt.notes.map(n => `<li class="warn">${esc(n)}</li>`).join("")}</ul>` : ""}
     <p class="muted">Execuções, contexto adquirido e logs da validação estão na aba Completo.</p>`;
+}
+
+// ---- Aba Diff: comparação com a versão anterior do endpoint (calculada no servidor a partir do SQLite, sem IA) ----
+
+const diffKinds = { adicionado: "Adicionado", removido: "Removido", alterado: "Alterado", incerto: "Incerto" };
+const diffKindPlurals = [["adicionado", "Adicionados"], ["removido", "Removidos"], ["alterado", "Alterados"], ["incerto", "Incertos"]];
+const diffImpacts = {
+  comportamento: "comportamento", runtime: "runtime", documentacao: "documentação",
+  "dados-teste": "dados de teste", origem: "origem no código", ambiente: "ambiente",
+};
+const primaryImpacts = new Set(["comportamento", "runtime", "documentacao"]);
+let diffState = { analysisId: null, loading: false, result: null, error: null, seq: 0 };
+let diffSection = "summary";   // summary | scenarios
+let diffFilter = "all";        // all | adicionado | removido | alterado | incerto
+let diffMinor = false;         // exibir também o que variou só em dados de teste, origem no código ou ambiente
+
+/** Variação só de dados de teste, origem ou ambiente (fora dos totais; exibida sob demanda). */
+const isMinorDiff = (item) => item.kind !== "incerto" && !primaryImpacts.has(item.impact);
+
+function diffTabLabel(report) {
+  const r = diffState.analysisId === report.analysisId ? diffState.result : null;
+  return `Diff${r?.hasBase ? ` <span class="badge" title="diferenças em relação à análise anterior">${r.counts.total}</span>` : ""}`;
+}
+
+/**
+ * Busca o diff da análise exibida. force: ao abrir a aba (a análise pode ter sido revalidada). Uma resposta atrasada de
+ * outra análise é descartada; a aba só é redesenhada se ainda estiver aberta na mesma análise.
+ */
+async function loadDiff(report, force) {
+  const id = report?.analysisId;
+  if (!id || (!force && diffState.analysisId === id && (diffState.loading || diffState.result || diffState.error))) return;
+  const seq = diffState.seq + 1;
+  diffState = { analysisId: id, loading: true, result: diffState.analysisId === id ? diffState.result : null, error: null, seq };
+  let next;
+  try { next = { result: await api(`/api/analysis/diff?analysisId=${encodeURIComponent(id)}`), error: null }; }
+  catch (error) { next = { result: null, error: error.message }; }
+  if (diffState.seq !== seq) return;
+  diffState = { ...diffState, ...next, loading: false };
+  if (lastResponse?.report.analysisId === id && document.querySelector("[data-tab].active")?.dataset.tab === "diff") render("diff");
+}
+
+function diffVersionHtml(v, side) {
+  if (!v) return `<div class="diff-version ${side}"><b>Anterior</b><span class="muted">nenhuma</span></div>`;
+  const ai = v.aiProvider ? ` · IA ${esc(providerName(v.aiProvider))}${v.aiModel ? ` (${esc(v.aiModel)})` : ""}` : " · sem IA";
+  return `<div class="diff-version ${side}"><b>${side === "before" ? "Anterior" : "Atual"}</b>
+    ${esc(savedAtLabel(v.createdAt))}${v.commit ? ` · commit <code>${esc(v.commit)}</code>` : ""}${v.branch ? ` (${esc(v.branch)})` : ""}
+    <span class="muted">analisador ${esc(v.analyzerVersion)}${ai}${v.runtimeStatus ? ` · runtime ${esc(v.runtimeStatus)}` : ""}</span>
+    <span class="muted">abas: ${esc(v.sections.map(id => resultTabs.find(([t]) => t === id)?.[1] ?? id).join(", "))}</span></div>`;
+}
+
+function diffCountsHtml(counts) {
+  return [["adicionado", "adicionado(s)", counts.added], ["removido", "removido(s)", counts.removed], ["alterado", "alterado(s)", counts.changed],
+    ["incerto", "incerto(s)", counts.uncertain], ["nao-comparavel", "não comparável(is)", counts.notComparable]]
+    .filter(([, , n]) => n > 0).map(([k, label, n]) => `<span class="diff-count ${k}">${n} ${label}</span>`).join("");
+}
+
+function renderDiff(report) {
+  const state = diffState.analysisId === report.analysisId ? diffState : {};
+  const r = state.result;
+  if (!r) return state.error ? `<p class="error">Não foi possível carregar a comparação: ${esc(state.error)}</p>`
+    : `<p class="muted">Carregando a comparação com a análise anterior...</p>`;
+  const head = `<div class="diff-versions">${diffVersionHtml(r.base, "before")}<span class="diff-arrow" aria-hidden="true">→</span>${diffVersionHtml(r.current, "after")}</div>`;
+  if (!r.hasBase) return `${head}<div class="diff-empty">${esc(r.message)}</div>
+    <p class="muted">A próxima análise deste endpoint é comparada com esta. As análises anteriores são preservadas.</p>`;
+
+  const sections = r.sections;
+  const section = sections.find(s => s.id === diffSection) ?? sections[0];
+  const items = section.groups.flatMap(g => g.items);
+  const shown = (item) => (diffMinor || !isMinorDiff(item)) && (diffFilter === "all" || item.kind === diffFilter);
+  const minorCount = items.filter(isMinorDiff).length;
+  const sectionChips = sections.map(s => `<button type="button" class="chip ${s === section ? "on" : ""}" data-diff-section="${esc(s.id)}">${esc(s.title)}<span class="n">${s.comparable ? s.counts.total : "—"}</span></button>`).join("");
+  const kindChips = [["all", "Todos"], ...diffKindPlurals].map(([k, label]) => {
+    const n = items.filter(i => (diffMinor || !isMinorDiff(i)) && (k === "all" || i.kind === k)).length;
+    return `<button type="button" class="chip ${diffFilter === k ? "on" : ""}" data-diff-filter="${k}">${label}<span class="n">${n}</span></button>`;
+  }).join("");
+
+  return `${head}
+    <div class="diff-summary">${diffCountsHtml(r.counts)}${r.hasDifferences ? `<span>${esc(r.message)}</span>` : ""}</div>
+    ${r.hasDifferences ? "" : `<div class="diff-empty">${esc(r.message)}</div>`}
+    ${r.notes.length ? `<ul class="diff-notes">${r.notes.map(n => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}
+    ${state.loading ? `<p class="muted">Atualizando a comparação...</p>` : ""}
+    <div class="diff-toolbar" role="group" aria-label="Filtros do diff">${sectionChips}<span class="sep"></span>${kindChips}
+      ${minorCount ? `<label class="check"><input type="checkbox" data-diff-minor ${diffMinor ? "checked" : ""}> Variações de dados de teste, origem e ambiente (${minorCount})</label>` : ""}</div>
+    ${section.comparable ? section.groups.map(g => diffGroupHtml(g, shown)).join("") : `<div class="diff-off">${esc(section.reason)}</div>`}`;
+}
+
+function diffGroupHtml(group, shown) {
+  const visible = group.items.filter(shown);
+  const c = group.counts;
+  const summary = group.comparable ? [c.total ? diffCountsHtml(c) : "", c.unchanged ? `<span class="muted">${c.unchanged} igual(is)</span>` : ""].join(" ") : "";
+  return `<div class="diff-group"><h3>${esc(group.title)} ${summary}</h3>
+    ${group.comparable ? "" : `<div class="diff-off">${esc(group.reason)}</div>`}
+    ${group.notes.length ? `<ul class="diff-notes">${group.notes.map(n => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}
+    ${!group.comparable ? "" : visible.length ? visible.map(diffItemHtml).join("")
+      : `<p class="muted">Nenhuma diferença${group.items.length ? " com este filtro" : ""}.</p>`}</div>`;
+}
+
+function diffItemHtml(item) {
+  const ref = (id) => id ? `<code>${esc(id)}</code>` : "—";
+  const side = (label, id) => `<div class="diff-side">${label}${id ? ` · ${esc(id)}` : ""}</div>`;
+  const snapshot = (value) => value ? `<pre>${esc(JSON.stringify(value, null, 2))}</pre>` : dash;
+  return `<div class="diff-item ${esc(item.kind)}${item.alert ? " alert" : ""}">
+    <div class="diff-item-head"><span class="diff-kind ${esc(item.kind)}">${esc(diffKinds[item.kind] ?? item.kind)}</span>
+      <span class="diff-impact ${esc(item.impact)}">${esc(diffImpacts[item.impact] ?? item.impact)}</span>
+      <span class="diff-title">${item.alert ? "⚠ " : ""}${esc(item.title)}</span>
+      ${item.baseRef || item.currentRef ? `<span class="diff-refs">${ref(item.baseRef)} → ${ref(item.currentRef)}</span>` : ""}</div>
+    ${item.notes.length ? `<ul class="diff-item-notes">${item.notes.map(n => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}
+    <div class="diff-grid">${side("Anterior", item.baseRef)}${side("Atual", item.currentRef)}${item.fields.map(diffFieldHtml).join("")}</div>
+    ${item.before || item.after ? `<details class="diff-more"><summary>Estrutura completa</summary><div class="diff-grid">
+      <div class="diff-cell" data-side="Anterior">${snapshot(item.before)}</div><div class="diff-cell" data-side="Atual">${snapshot(item.after)}</div></div></details>` : ""}
+  </div>`;
+}
+
+function diffFieldHtml(f) {
+  const tag = f.impact === "comportamento" ? "" : ` <span class="diff-impact ${esc(f.impact)}">${esc(diffImpacts[f.impact] ?? f.impact)}</span>`;
+  return `<div class="diff-label">${esc(f.label)}${tag}</div>
+    <div class="diff-cell ${f.before == null ? "" : "del"}" data-side="Anterior">${diffValueHtml(f.path, f.before, f.after, "del")}</div>
+    <div class="diff-cell ${f.after == null ? "" : "ins"}" data-side="Atual">${diffValueHtml(f.path, f.after, f.before, "ins")}</div>`;
+}
+
+/** Listas destacam só os itens que não existem do outro lado; objetos aparecem como JSON. */
+function diffValueHtml(path, value, other, cls) {
+  if (value === undefined || value === null) return dash;
+  if (Array.isArray(value) && value.every(v => v === null || typeof v !== "object")) {
+    const others = new Set((Array.isArray(other) ? other : []).map(v => JSON.stringify(v)));
+    return `<ul class="diff-list">${value.map(v => `<li class="${others.has(JSON.stringify(v)) ? "" : cls}">${esc(v)}</li>`).join("")}</ul>`;
+  }
+  if (typeof value === "object") return `<pre>${esc(JSON.stringify(value, null, 2))}</pre>`;
+  if (typeof value === "boolean") return value ? "sim" : "não";
+  if (path === "runtime.status") return `<span class="vstatus ${esc(value)}">${esc(validationKinds[value] ?? value)}</span>`;
+  return esc(value);
 }
 
 // ---- Aba Completo: tudo o que a análise produziu ----
@@ -2669,17 +3405,35 @@ function expandCode(direction, panel) {
   // Mantém o foco no botão (se ainda houver linhas a revelar) para expandir várias vezes pelo teclado.
   lines.querySelector(`[data-expand="${direction}"]`)?.focus({ preventScroll: true });
 }
-// ---- Conta do Claude (rodapé da barra lateral) ----
+// ---- Contas da IA (rodapé da barra lateral): Claude e Codex, independentes e conectadas ao mesmo tempo ----
 
 const claudeIcon = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2l1.8 6.6L20 6l-4.2 5.2L22 12l-6.4 1.6L19 19l-5.6-3.4L12 22l-1.4-6.4L5 19l3.4-5.4L2 12l6.2-.8L4 6l6.2 2.6z"/></svg>`;
+const codexIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 9-3 3 3 3"/><path d="M13 15h5"/><rect x="2.5" y="3.5" width="19" height="17" rx="3"/></svg>`;
 const plans = { pro: "Pro", max: "Max", team: "Team", enterprise: "Enterprise" };
+const codexPlans = { free: "Free", go: "Go", plus: "Plus", pro: "Pro", prolite: "Pro Lite", promax: "Pro Max", team: "Team",
+  business: "Business", enterprise: "Enterprise", edu: "Edu" };
+const planName = (plan) => codexPlans[plan] ?? plans[plan] ?? String(plan ?? "").replace(/_/g, " ");
+const providerLabel = (id) => `<span class="provider-label">${id === "codex" ? codexIcon : claudeIcon} ${providerName(id)}</span>`;
 
 async function refreshAuth(refresh) {
   try {
     renderAuth(await api(`/api/auth/status?refresh=${refresh}`));
   } catch (err) {
-    $("claudeFooter").innerHTML = `<span class="footer-note error">${esc(err.message)}</span>`;
+    accountError("claude", err, () => refreshAuth(true));
   }
+}
+
+/** Falha ao consultar a conta: mostra o motivo e permite tentar de novo (o bloco nunca fica vazio). */
+function accountError(provider, err, retry) {
+  const footer = $(`${provider}Footer`);
+  // 404: a API em execução é de um build anterior, sem as rotas desta conta.
+  const message = err.status === 404
+    ? `A API em execução não tem a integração com o ${providerName(provider)}. Reinicie a API (build atual) e tente novamente.`
+    : `Não foi possível verificar a conta do ${providerName(provider)}: ${err.message}`;
+  footer.innerHTML = `${providerLabel(provider)}<span class="footer-note error">${esc(message)}</span>
+    <button class="claude-btn" type="button" data-retry>Tentar novamente</button>`;
+  footer.querySelector("[data-retry]")?.addEventListener("click", retry);
+  updateAiControls(false);
 }
 
 function renderAuth(s) {
@@ -2694,43 +3448,150 @@ function renderAuth(s) {
         <span class="dot"></span><span class="email">${esc(s.email ?? "conectado")}</span>
         <button class="secondary" id="logoutBtn">Sair</button>
       </div>
-      <div class="selects">
-        <select id="modelSelect" title="Modelo do Claude usado na análise" disabled><option>carregando...</option></select>
-        <select id="effortSelect" title="Effort: quanto o modelo raciocina antes de responder" disabled></select>
-      </div>`;
+      ${modelSelects("claude")}
+      <div id="claudeUsage"></div>`;
   } else {
     const note = s.loggedIn ? `<span class="footer-note"><span class="dot warn" style="display:inline-block"></span> Claude Code logado com conta do Console (API).</span>` : "";
     html = `${note}<button class="claude-btn" id="loginBtn">${claudeIcon} Entrar com Claude</button>`;
   }
-  $("claudeFooter").innerHTML = html;
+  $("claudeFooter").innerHTML = providerLabel("claude") + html;
 
   $("loginBtn")?.addEventListener("click", openLogin);
   $("logoutBtn")?.addEventListener("click", logout);
-  if (s.usesSubscription) {
-    $("modelSelect").addEventListener("change", () => {
-      if ($("modelSelect").value === "__refresh") { loadModels(true); return; }
-      selectModel($("modelSelect").value, $("effortSelect").value);
-    });
-    $("effortSelect").addEventListener("change", () => selectModel($("modelSelect").value, $("effortSelect").value));
-    loadModels(false);
-  }
+  if (s.usesSubscription) { bindModels("claude"); loadClaudeUsage(false); }
+  else claudeUsage = null;
   updateAiControls(false);
 }
 
-// ---- Modelo e effort (plano mensal) ----
-
-const effortLabels = { low: "baixo", medium: "médio", high: "alto", xhigh: "extra alto", max: "máximo" };
-let modelState = null; // { models, model, effort }
-
-async function loadModels(refresh) {
-  const select = $("modelSelect");
-  if (!select) return;
-  select.disabled = $("effortSelect").disabled = true;
-  select.innerHTML = `<option>${refresh ? "verificando..." : "carregando..."}</option>`;
-  $("effortSelect").innerHTML = "";
+async function refreshCodex(refresh) {
   try {
-    modelState = await api(`/api/auth/models?refresh=${refresh}`);
-    renderModels();
+    renderCodex(await api(`/api/auth/codex/status?refresh=${refresh}`));
+  } catch (err) {
+    codexState = null;
+    accountError("codex", err, () => refreshCodex(true));
+  }
+}
+
+function renderCodex(s) {
+  codexState = s;
+  let html;
+  if (!s.cliInstalled) {
+    html = `<span class="footer-note">Codex não encontrado —
+      <a href="https://developers.openai.com/codex" target="_blank" rel="noopener">instale</a> (CLI ou app) para usar a conta do ChatGPT.</span>`;
+  } else if (s.loggedIn) {
+    const plan = s.planType ? planName(s.planType) : "";
+    const who = s.email ?? (s.authMethod === "apiKey" ? "chave da API" : "conectado");
+    html = `<div class="account-row" title="${esc([s.email, plan && `plano ${plan}`, s.authMethod === "apiKey" && "login com chave da API (cobrança por uso)"].filter(Boolean).join(" · "))}">
+        <span class="dot ${s.usage?.limitReached ? "warn" : ""}"></span><span class="email">${esc(who)}${plan ? ` · ${esc(plan)}` : ""}</span>
+        <button class="secondary" id="codexLogoutBtn">Sair</button>
+      </div>
+      ${modelSelects("codex")}
+      <div id="codexUsage">${usageHtml(s.usage, "codex")}</div>`;
+  } else {
+    const error = s.loginError ? `<span class="footer-note error">${esc(s.loginError)}</span>` : "";
+    html = `${error}<button class="claude-btn" id="codexLoginBtn">${codexIcon} Entrar com Codex</button>`;
+  }
+  $("codexFooter").innerHTML = providerLabel("codex") + html;
+
+  $("codexLoginBtn")?.addEventListener("click", startCodexLogin);
+  $("codexLogoutBtn")?.addEventListener("click", codexLogout);
+  if (s.loggedIn) bindModels("codex");
+  updateAiControls(false);
+}
+
+/** Uso das janelas do limite do plano (sessão de 5 horas e semana) da conta, com o horário de renovação. */
+function usageHtml(usage, provider) {
+  const windows = [usage?.primary, usage?.secondary].filter(Boolean);
+  if (!windows.length) return "";
+  const label = (minutes) => minutes === 300 ? "sessão" : minutes === 10080 ? "semana"
+    : minutes >= 1440 ? `${Math.round(minutes / 1440)} dias` : minutes ? `${Math.round(minutes / 60)} h` : "uso";
+  const span = (minutes) => minutes === 300 ? "da sessão (5 horas)" : minutes === 10080 ? "semanal" : `de ${label(minutes)}`;
+  const resets = (at) => {
+    if (!at) return "";
+    const date = new Date(at), today = new Date().toDateString() === date.toDateString();
+    return ` · renova ${today ? "às " + date.toLocaleTimeString("pt-BR", { timeStyle: "short" })
+      : "em " + date.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}`;
+  };
+  const other = provider === "codex" ? "o Claude" : "o Codex";
+  return `<div class="usage ${provider}" aria-label="Uso do limite do plano do ${providerName(provider)}">
+    ${windows.map(w => {
+      const used = Math.max(0, Math.min(100, w.usedPercent));
+      return `<div class="usage-row" title="${esc(`${used}% do limite ${span(w.windowMinutes)} usado${resets(w.resetsAt)}`)}">
+        <span>${esc(label(w.windowMinutes))}</span>
+        <span class="usage-bar ${used >= 100 ? "full" : used >= 80 ? "high" : ""}"><span style="width:${used}%"></span></span>
+        <span>${used}%</span></div>`;
+    }).join("")}
+    ${usage.limitReached ? `<span class="footer-note error">Limite de uso atingido: aguarde a renovação ou use ${other}.</span>` : ""}
+  </div>`;
+}
+
+/** Uso do plano do Claude: consulta à parte (o Claude Code leva ~2 s), sem atrasar o status da conta. */
+async function loadClaudeUsage(refresh) {
+  try {
+    const { usage } = await api(`/api/auth/usage?refresh=${refresh}`);
+    claudeUsage = usage ?? null;
+  } catch {
+    claudeUsage = null;   // Sem o uso, a conta continua utilizável; só as barras somem.
+  }
+  const slot = $("claudeUsage");
+  if (slot) slot.innerHTML = usageHtml(claudeUsage, "claude");
+  updateAiControls(false);
+}
+
+/** Atualiza só o uso do Codex (sem refazer os seletores); se a conta mudou, redesenha o bloco inteiro. */
+async function refreshCodexUsage() {
+  try {
+    const s = await api("/api/auth/codex/status?refresh=true");
+    if (!s.loggedIn || !codexState?.loggedIn || s.email !== codexState.email || !$("codexUsage")) { renderCodex(s); return; }
+    codexState = s;
+    $("codexUsage").innerHTML = usageHtml(s.usage, "codex");
+    updateAiControls(false);
+  } catch (err) {
+    codexState = null;
+    accountError("codex", err, () => refreshCodex(true));
+  }
+}
+
+/** Depois de uma análise (e ao voltar para a aba) o uso muda: atualiza a conta usada, ou as duas. */
+let usageRefreshedAt = Date.now();
+function refreshUsage(provider) {
+  usageRefreshedAt = Date.now();
+  if (provider !== "codex" && authState?.usesSubscription) loadClaudeUsage(true);
+  if (provider !== "claude" && codexState?.loggedIn) refreshCodexUsage();
+}
+
+// ---- Modelo e effort (um seletor por conta) ----
+
+const effortLabels = { low: "baixo", medium: "médio", high: "alto", xhigh: "extra alto", max: "máximo", ultra: "ultra" };
+const modelPickers = {
+  claude: { api: "/api/auth", state: null },   // state: { models, model, effort }
+  codex: { api: "/api/auth/codex", state: null },
+};
+
+const modelSelects = (provider) => `<div class="selects">
+    <select id="${provider}Model" title="Modelo do ${providerName(provider)} usado na análise" disabled><option>carregando...</option></select>
+    <select id="${provider}Effort" title="Effort: quanto o modelo raciocina antes de responder" disabled></select>
+  </div>`;
+
+function bindModels(provider) {
+  const model = $(`${provider}Model`), effort = $(`${provider}Effort`);
+  model.addEventListener("change", () => {
+    if (model.value === "__refresh") { loadModels(provider, true); return; }
+    selectModel(provider, model.value, effort.value);
+  });
+  effort.addEventListener("change", () => selectModel(provider, model.value, effort.value));
+  loadModels(provider, false);
+}
+
+async function loadModels(provider, refresh) {
+  const select = $(`${provider}Model`), effort = $(`${provider}Effort`);
+  if (!select) return;
+  select.disabled = effort.disabled = true;
+  select.innerHTML = `<option>${refresh ? "verificando..." : "carregando..."}</option>`;
+  effort.innerHTML = "";
+  try {
+    modelPickers[provider].state = await api(`${modelPickers[provider].api}/models?refresh=${refresh}`);
+    renderModels(provider);
   } catch (err) {
     select.innerHTML = `<option value="" disabled selected>erro ao carregar</option><option value="__refresh">↻ Tentar atualizar novamente</option>`;
     select.disabled = false;
@@ -2738,10 +3599,10 @@ async function loadModels(refresh) {
   }
 }
 
-function renderModels() {
-  const select = $("modelSelect"), effort = $("effortSelect");
-  if (!select || !modelState) return;
-  const { models, model: current } = modelState;
+function renderModels(provider) {
+  const select = $(`${provider}Model`), effort = $(`${provider}Effort`), state = modelPickers[provider].state;
+  if (!select || !state) return;
+  const { models, model: current } = state;
 
   select.innerHTML = models.map(m => `<option value="${esc(m.id)}" ${m.available ? "" : "disabled"} title="${esc(m.reason ?? "")}">
     ${esc(m.name.replace(/^Claude /, ""))}${m.available ? "" : " (indisponível)"}</option>`).join("")
@@ -2749,32 +3610,33 @@ function renderModels() {
   select.value = current;
   select.disabled = false;
   const unavailable = models.filter(m => !m.available);
-  select.title = "Modelo do Claude usado na análise" +
+  select.title = `Modelo do ${providerName(provider)} usado na análise` +
     (unavailable.length ? "\n\nIndisponíveis nesta conta:\n" + unavailable.map(m => `• ${m.name}: ${m.reason ?? ""}`).join("\n") : "");
 
   const chosen = models.find(m => m.id === current);
   const efforts = chosen?.efforts ?? [];
   effort.innerHTML = efforts.length
-    ? `<option value="">Effort: padrão do modelo</option>` + efforts.map(e => `<option value="${e}">Effort: ${effortLabels[e] ?? e}</option>`).join("")
+    ? `<option value="">Effort: padrão do modelo</option>` + efforts.map(e => `<option value="${esc(e)}">Effort: ${esc(effortLabels[e] ?? e)}</option>`).join("")
     : `<option value="">Effort: não suportado</option>`;
-  effort.value = efforts.includes(modelState.effort) ? modelState.effort : (chosen?.defaultEffort ?? "");
+  effort.value = efforts.includes(state.effort) ? state.effort : (chosen?.defaultEffort ?? "");
   effort.disabled = efforts.length === 0;
 }
 
-async function selectModel(model, effort) {
-  const target = modelState?.models.find(m => m.id === model);
+async function selectModel(provider, model, effort) {
+  const picker = modelPickers[provider];
+  const target = picker.state?.models.find(m => m.id === model);
   // Ao trocar de modelo, mantém o effort se ele for suportado; senão usa o padrão do modelo.
   if (target && !target.efforts.includes(effort)) effort = target.defaultEffort ?? "";
   try {
-    const saved = await api("/api/auth/model", {
+    const saved = await api(`${picker.api}/model`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model, effort: effort || null }),
     });
-    modelState = { ...modelState, ...saved };
+    picker.state = { ...picker.state, ...saved };
   } catch (err) {
     alert(err.message);
   }
-  renderModels();
+  renderModels(provider);
 }
 
 // ---- Login ----
@@ -2839,16 +3701,74 @@ async function logout() {
   }
 }
 
+// ---- Login do Codex: o próprio Codex recebe o retorno do navegador, a interface só acompanha ----
+
+let codexLoginTimer = null;
+
+async function startCodexLogin() {
+  // Abre a aba já no clique, para o navegador não bloquear o pop-up.
+  const tab = window.open("about:blank", "_blank"), button = $("codexLoginBtn");
+  if (button) button.disabled = true;
+  try {
+    const { loginUrl } = await api("/api/auth/codex/login", { method: "POST" });
+    $("codexLoginLink").href = loginUrl;
+    if (tab) tab.location.href = loginUrl;
+    $("codexLoginState").textContent = "Aguardando a autorização no navegador...";
+    $("codexLoginState").className = "muted";
+    $("codexDialog").showModal();
+    watchCodexLogin();
+  } catch (err) {
+    tab?.close();
+    refreshCodex(false);
+    alert(err.message);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+/** Consulta o login até a conta aparecer conectada, o login falhar ou o diálogo ser fechado. */
+async function watchCodexLogin() {
+  clearTimeout(codexLoginTimer);
+  if (!$("codexDialog").open) return;
+  try {
+    const s = await api("/api/auth/codex/status");
+    if (!$("codexDialog").open) return;
+    if (s.loggedIn) { renderCodex(s); $("codexDialog").close(); return; }
+    if (!s.loginPending) {
+      $("codexLoginState").textContent = s.loginError ?? "O login não foi concluído. Feche e clique em 'Entrar com Codex' novamente.";
+      $("codexLoginState").className = "error";
+      $("codexLoginClose").textContent = "Fechar";
+      renderCodex(s);
+      return;
+    }
+  } catch (err) {
+    $("codexLoginState").textContent = err.message;
+    $("codexLoginState").className = "error";
+  }
+  codexLoginTimer = setTimeout(watchCodexLogin, 2000);
+}
+
+async function codexLogout() {
+  if (!confirm("Sair da conta do Codex?\n\nIsso desconecta só este projeto; o Codex do terminal e o app continuam logados, e a conta do Claude não é afetada.")) return;
+  try {
+    renderCodex(await api("/api/auth/codex/logout", { method: "POST" }));
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
 // ---- Eventos ----
 
 $("load").addEventListener("click", () => loadEndpoints(true));
+$("queuePanel").addEventListener("click", onQueueClick);
 $("browse").addEventListener("click", browse);
 $("fileName").addEventListener("click", browse);
 $("search").addEventListener("input", renderGroups);
 $("search").addEventListener("keydown", (e) => { if (e.key === "Escape") { $("search").value = ""; renderGroups(); $("search").blur(); } });
 document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); $("search").focus(); $("search").select(); }
-  if (e.key === "Escape" && picked && document.activeElement !== $("search") && !$("loginDialog").open && !$("codeDialog").open && !$("scenDialog").open) pick(null);
+  if (e.key === "Escape" && picked && document.activeElement !== $("search") && !$("loginDialog").open && !$("codexDialog").open
+      && !$("codeDialog").open && !$("scenDialog").open) pick(null);
 });
 // Clique (ou Enter/Espaço) numa regra, validação ou condição mostra o código; clicar de novo fecha.
 $("result").addEventListener("click", (e) => {
@@ -2865,6 +3785,12 @@ $("result").addEventListener("click", (e) => {
   if (filter) { scenarioFilter = filter.dataset.scenFilter; render("scenarios"); return; }
   const vfilter = e.target.closest("[data-vfilter]");
   if (vfilter) { validatedFilter = vfilter.dataset.vfilter; render("scenarios"); return; }
+  const diffTab = e.target.closest("[data-diff-section]");
+  if (diffTab) { diffSection = diffTab.dataset.diffSection; render("diff"); return; }
+  const diffKind = e.target.closest("[data-diff-filter]");
+  if (diffKind) { diffFilter = diffKind.dataset.diffFilter; render("diff"); return; }
+  const diffToggle = e.target.closest("[data-diff-minor]");
+  if (diffToggle) { diffMinor = diffToggle.checked; render("diff"); return; }
   const flowView = e.target.closest("[data-flow-view]");
   if (flowView) { businessView = flowView.dataset.flowView; render("business"); return; }
   const view = e.target.closest("[data-scen-view]");
@@ -2904,6 +3830,18 @@ document.querySelectorAll("[data-close]").forEach(b => b.addEventListener("click
 $("loginDialog").addEventListener("close", () => {
   if (!$("loginStep2").hidden) api("/api/auth/cancel", { method: "POST" }).catch(() => {});
   refreshAuth(true);
+});
+$("codexLoginClose").addEventListener("click", () => $("codexDialog").close());
+// Fechar sem concluir cancela o login pendente (libera o retorno local do Codex); a conta do Claude não é tocada.
+// Ao voltar para a aba, o uso pode ter mudado (ex.: Claude Code ou Codex usados no terminal com a mesma conta).
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && Date.now() - usageRefreshedAt > 2 * 60_000) refreshUsage(null);
+});
+$("codexDialog").addEventListener("close", async () => {
+  clearTimeout(codexLoginTimer);
+  $("codexLoginClose").textContent = "Cancelar";
+  if (!codexState?.loggedIn) await api("/api/auth/codex/cancel", { method: "POST" }).catch(() => {});
+  refreshCodex(false);
 });
 
 init().catch(err => { $("loadStatus").textContent = err.message; $("loadStatus").className = "project-status error"; });

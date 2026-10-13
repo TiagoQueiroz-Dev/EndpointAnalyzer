@@ -20,8 +20,17 @@ public record ModelRequest(string Model, string? Effort);
 [ApiController]
 [Route("api/auth")]
 [LocalOnly]
-public class AuthController(ClaudeCodeAuth auth, AiProviderRouter router, ClaudeModelCatalog catalog, ClaudeCodeOptions claudeCode) : ControllerBase
+public class AuthController(ClaudeCodeAuth auth, AiProviderRouter router, ClaudeModelCatalog catalog, ClaudeCodeOptions claudeCode,
+    ClaudeCodeUsage usage) : ControllerBase
 {
+    /// <summary>Uso dos limites do plano (sessão de 5 horas e semana); nulo quando a conta não tem limites de plano.</summary>
+    [HttpGet("usage")]
+    public async Task<IActionResult> Usage([FromQuery] bool refresh, CancellationToken cancellationToken)
+    {
+        var status = await auth.GetStatusAsync(cancellationToken: cancellationToken);
+        return Ok(new { usage = await usage.GetAsync(status, refresh, cancellationToken) });
+    }
+
     /// <summary>Modelos da conta logada (disponíveis ou não), efforts de cada um e a seleção atual.</summary>
     [HttpGet("models")]
     public async Task<IActionResult> Models([FromQuery] bool refresh, CancellationToken cancellationToken)
@@ -85,8 +94,8 @@ public class AuthController(ClaudeCodeAuth auth, AiProviderRouter router, Claude
 
     private async Task<object> DescribeAsync(ClaudeAuthStatus status, CancellationToken cancellationToken) => new
     {
-        // De onde a próxima análise vai usar a IA: "subscription", "api" ou null.
-        ActiveSource = await router.SelectAsync(cancellationToken) switch
+        // De onde a próxima análise com o Claude vai usar a IA: "subscription", "api" ou null (o Codex tem /api/auth/codex).
+        ActiveSource = await router.SelectClaudeAsync(cancellationToken) switch
         {
             ClaudeCodeProvider => "subscription",
             null => null,

@@ -2,6 +2,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using EndpointAnalyzer.Application;
+using EndpointAnalyzer.Core.Interfaces;
 using Microsoft.Extensions.DependencyInjection;
 
 // Uso:
@@ -10,6 +11,7 @@ using Microsoft.Extensions.DependencyInjection;
 //   EndpointAnalyzer.Cli <solucao.sln> --endpoint "POST /api/x" --ai    análise + documentação pela IA
 //   EndpointAnalyzer.Cli <solucao.sln> --all [--ai] --out docs/         gera um .md por endpoint
 // Opções: --json (imprime o relatório em JSON), --out <arquivo ou pasta>,
+//         --provider claude|codex (IA usada; padrão: Claude e, sem ele, o Codex)
 //         --ai-mode auto|subscription|api (assinatura do Claude via Claude Code ou API)
 //         --view negocio|tecnico|completo (grafo exibido na análise estática)
 //         --no-runtime (com --ai, não valida os cenários com a API em execução)
@@ -17,7 +19,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 if (args.Length == 0 || args[0] is "-h" or "--help")
 {
-    Console.WriteLine("Uso: EndpointAnalyzer.Cli <solucao.sln|projeto.csproj> [--endpoint \"POST /api/rota\"] [--all] [--ai] [--ai-mode auto|subscription|api] [--no-runtime] [--token token] [--json] [--out caminho]");
+    Console.WriteLine("Uso: EndpointAnalyzer.Cli <solucao.sln|projeto.csproj> [--endpoint \"POST /api/rota\"] [--all] [--ai] [--provider claude|codex] [--ai-mode auto|subscription|api] [--no-runtime] [--token token] [--json] [--out caminho]");
     return 1;
 }
 
@@ -32,6 +34,12 @@ var all = args.Contains("--all");
 var view = Option("--view") ?? "negocio"; // negocio | tecnico | completo
 var validateRuntime = !args.Contains("--no-runtime");
 var apiToken = Option("--token");
+var provider = Option("--provider");
+if (provider is not null && provider is not (AiProviders.Claude or AiProviders.Codex))
+{
+    Console.Error.WriteLine("--provider deve ser claude ou codex.");
+    return 1;
+}
 
 var services = new ServiceCollection()
     .AddEndpointAnalyzer(configureClaude: o =>
@@ -68,9 +76,11 @@ var jsonOptions = new JsonSerializerOptions
 
 try
 {
-    if (useAi && !await service.IsAiAvailableAsync())
+    if (useAi && !await service.IsAiAvailableAsync(provider))
     {
-        Console.Error.WriteLine("IA não disponível: entre com a conta do Claude pelo botão 'Entrar com Claude' da interface (plano mensal) ou defina ANTHROPIC_API_KEY.");
+        Console.Error.WriteLine(provider == AiProviders.Codex
+            ? "Codex não disponível: entre com a conta do Codex pelo botão 'Entrar com Codex' da interface."
+            : "IA não disponível: entre com a conta do Claude ou do Codex pelos botões da interface, ou defina ANTHROPIC_API_KEY.");
         return 2;
     }
 
@@ -92,7 +102,7 @@ try
     foreach (var endpoint in selected)
     {
         if (useAi) Console.Error.WriteLine($"Analisando {endpoint.Id} com IA{(validateRuntime ? " e validando os cenários em runtime" : "")}...");
-        var report = await service.AnalyzeAsync(solutionPath, endpoint, useAi, validateRuntime, apiToken);
+        var report = await service.AnalyzeAsync(solutionPath, endpoint, useAi, validateRuntime, apiToken, aiProvider: provider);
 
         var output = asJson
             ? JsonSerializer.Serialize(report, jsonOptions)
@@ -115,7 +125,8 @@ try
     return 0;
 }
 catch (Exception ex) when (ex is FileNotFoundException or KeyNotFoundException or InvalidOperationException or ArgumentException
-                               or EndpointAnalyzer.AI.AiProviderException or TimeoutException)
+                               or EndpointAnalyzer.AI.AiProviderException or AiProviderUnavailableException
+                               or TimeoutException)
 {
     Console.Error.WriteLine(Environment.GetEnvironmentVariable("ENDPOINT_ANALYZER_DEBUG") is null ? ex.Message : ex.ToString());
     return 1;

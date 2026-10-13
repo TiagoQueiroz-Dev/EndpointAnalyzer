@@ -83,7 +83,8 @@ public partial class RuntimeValidationService(RuntimeOptions options, IAppRunner
 
             if (app.HasExited) report.Notes.Add($"A API encerrou durante a validação:\n{app.OutputTail}");
         }
-        catch (Exception e) when (e is RuntimeStartException or HttpRequestException or IOException or InvalidOperationException)
+        catch (Exception e) when (e is RuntimeStartException or HttpRequestException or IOException or InvalidOperationException
+                                      or AiProviderUnavailableException)
         {
             report.Status = RuntimeValidationStatuses.Failed;
             report.Error = e.Message;

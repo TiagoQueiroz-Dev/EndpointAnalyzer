@@ -15,7 +15,7 @@ src/
                                     InterfaceResolver, DependencyInjectionMap, MessageHandlerMap, SyntaxConditions
   EndpointAnalyzer.ChangeDetection  ConditionAnalyzer, EntityChangeAnalyzer, EntityCatalog
   EndpointAnalyzer.Context          AnalysisContextBuilder, SecretSanitizer
-  EndpointAnalyzer.AI               ClaudeProvider, PromptBuilder, AnalysisResultSchema
+  EndpointAnalyzer.AI               ClaudeProvider, ClaudeCode (assinatura), Codex (CodexProvider, CodexAuth), PromptBuilder, AnalysisResultSchema
   EndpointAnalyzer.Runtime          validação da matriz com a API em execução (AppRunner, catálogo, IA, execução, reconciliação)
   EndpointAnalyzer.Application      EndpointAnalysisService (orquestra), cache, versionamento, ReportRenderer
   EndpointAnalyzer.Api              API REST + interface web (wwwroot/index.html)
@@ -29,9 +29,12 @@ tests/EndpointAnalyzer.Tests        testes unitários e de integração
 - .NET SDK 10
 - Para usar a IA, uma das opções abaixo. Sem nenhuma delas, a análise estática funciona normalmente.
   - **Plano mensal do Claude (Pro/Max/Team):** [Claude Code](https://claude.com/claude-code) instalado na máquina (instalador nativo, npm ou no PATH). Faça o login pelo botão **Entrar com Claude** da interface. O login do projeto é separado do Claude Code do terminal (fica em `%LOCALAPPDATA%\EndpointAnalyzer\claude`, configurável em `ClaudeCode:ConfigDirectory`), então a conta logada no projeto pode ser outra. A análise roda via `claude -p` e consome o limite do plano da conta logada no projeto, sem cobrança por uso.
+  - **Conta do Codex (plano do ChatGPT: Plus, Pro, Business...):** Codex CLI instalado na máquina (`npm install -g @openai/codex`, no PATH ou o CLI que acompanha o app desktop do Codex). Faça o login pelo botão **Entrar com Codex** da interface: a autorização abre no navegador e o próprio Codex recebe o retorno (porta local 1455), sem código para colar. O login do projeto é separado do Codex do terminal e do app (fica em `%LOCALAPPDATA%\EndpointAnalyzer\codex`, configurável em `Codex:HomeDirectory`). A análise roda via `codex exec` (sandbox somente leitura, diretório vazio, sessão não gravada) e consome o limite do plano da conta logada no projeto.
   - **API:** a variável `ANTHROPIC_API_KEY` (cobrança por uso).
 
-No modo automático (padrão), o plano mensal tem prioridade quando o Claude Code está logado com a conta do Claude.
+As contas do Claude e do Codex são independentes: as duas podem ficar conectadas ao mesmo tempo, e conectar ou desconectar uma não afeta a outra. A interface escolhe o provedor de cada análise (seletor ao lado da origem da IA); toda a IA da análise (documentação, fluxo de negócio e validação em runtime) roda no provedor escolhido, com o mesmo contexto e o mesmo JSON Schema, então o resultado aparece nos mesmos relatórios. O relatório registra o provedor e o modelo (`version.aiProvider`, `version.aiModel`). Sem provedor na requisição, vale o Claude e, sem ele, o Codex. No Claude, o modo automático (padrão) dá prioridade ao plano mensal quando o Claude Code está logado com a conta do Claude.
+
+Falha de autenticação (sessão expirada, conta desconectada) ou limite de uso atingido volta como erro tipado (`AiProviderUnavailableException`: HTTP 502 com `code: "authentication"` ou HTTP 429 com `code: "usage_limit"`, e `provider`), a validação em runtime para em vez de seguir sem IA, e a interface atualiza o estado da conta. É a base para continuar automaticamente uma análise no outro provedor. Mensagens de erro passam por remoção de tokens antes de chegar aos logs e relatórios.
 
 ## Linha de comando
 
@@ -75,7 +78,7 @@ dotnet run --project src/EndpointAnalyzer.Api
 
 Abra `http://localhost:5168`: informe a `.sln`, selecione o endpoint na barra lateral e clique em **ANALISAR**.
 
-A barra lateral segue o Scalar. Os endpoints aparecem agrupados pela tag do OpenAPI (`[Tags("...")]` no método ou controller, `[SwaggerOperation(Tags = ...)]`; sem tag, o nome do controller). Cada item mostra o resumo (`[EndpointSummary]`, `[SwaggerOperation(Summary = ...)]` ou o `<summary>` do comentário XML). A busca (Ctrl+K) filtra por resumo, rota, método ou grupo. No rodapé ficam a conta do Claude e os seletores de modelo e effort.
+A barra lateral segue o Scalar. Os endpoints aparecem agrupados pela tag do OpenAPI (`[Tags("...")]` no método ou controller, `[SwaggerOperation(Tags = ...)]`; sem tag, o nome do controller). Cada item mostra o resumo (`[EndpointSummary]`, `[SwaggerOperation(Summary = ...)]` ou o `<summary>` do comentário XML). A busca (Ctrl+K) filtra por resumo, rota, método ou grupo. No rodapé ficam as contas do Claude e do Codex, cada uma com os seletores de modelo e effort e o uso do limite do plano (sessão de 5 horas e semana, com o horário de renovação). O uso é atualizado depois de cada análise e ao voltar para a aba; no Claude, vem do mesmo `/usage` do Claude Code (consulta do protocolo de controle, sem prompt ao modelo e sem consumir o limite).
 
 | Método | Rota | Descrição |
 |---|---|---|
@@ -83,20 +86,36 @@ A barra lateral segue o Scalar. Os endpoints aparecem agrupados pela tag do Open
 | GET | `/api/projects/info` | solução padrão e se a IA está configurada |
 | GET | `/api/projects/source?path=...&file=...&line=...` | código do arquivo (só documentos da solução) com o trecho que começa em `line` em destaque (`endLine` opcional) |
 | POST | `/api/projects/source/condition` | `{ "condition": "x != null", "methods": [{ "file", "line" }] }` → código de onde vem a condição do registro |
-| POST | `/api/analysis` | `{ "endpoint": { "method": "POST", "route": "/api/programacoes" }, "useAi": true }` → relatório + Markdown |
+| POST | `/api/analysis` | `{ "endpoint": { "method": "POST", "route": "/api/programacoes" }, "useAi": true, "provider": "codex" }` → relatório + Markdown (`provider`: `claude` ou `codex`, opcional) |
 | POST | `/api/analysis/markdown` | mesmo corpo, devolve `text/markdown` |
 | POST | `/api/analysis/token` | `{ "endpoint": { "method": "POST", "route": "/api/x" }, "token": "eyJ..." }` → sobe o serviço do endpoint (como na análise) e confere se o token é aceito: `{ valid, message }` |
 | GET | `/api/auth/status` | conta do Claude Code (e-mail, plano) e origem da IA ativa |
 | POST | `/api/auth/login` | `{ "email": "..." }` → URL de login da conta do Claude |
 | POST | `/api/auth/code` | `{ "code": "..." }` → conclui o login com o código exibido após autorizar |
 | POST | `/api/auth/logout` | desconecta a conta do Claude do projeto |
-| POST | `/api/auth/mode` | `{ "mode": "auto" \| "subscription" \| "api" }` |
+| POST | `/api/auth/mode` | `{ "mode": "auto" \| "subscription" \| "api" }` (origem do Claude) |
+| GET | `/api/auth/usage` | uso do limite do plano do Claude (`usage.primary`: sessão, `usage.secondary`: semana; percentual e renovação), cache de 1 minuto (`refresh=true` força) |
+| GET | `/api/auth/codex/status` | conta do Codex (e-mail, plano, método de login), uso do limite (`usage.primary`/`secondary`: percentual, janela, renovação), login em andamento |
+| POST | `/api/auth/codex/login` | → URL de autorização da conta do ChatGPT (o retorno do navegador vai direto para o Codex) |
+| POST | `/api/auth/codex/cancel` | cancela o login em andamento |
+| POST | `/api/auth/codex/logout` | desconecta a conta do Codex do projeto |
+| GET | `/api/auth/codex/models` | modelos da conta, efforts de cada um e a seleção atual |
+| POST | `/api/auth/codex/model` | `{ "model": "...", "effort": "high" }` |
 
-As rotas `/api/auth/*` só aceitam chamadas da própria máquina. O login vale só para o projeto: **Sair** não desconecta o Claude Code do terminal, e entrar no terminal não muda a conta do projeto.
+As rotas `/api/auth/*` só aceitam chamadas da própria máquina. O login vale só para o projeto: **Sair** não desconecta o Claude Code nem o Codex do terminal (ou o app do Codex), e entrar neles não muda a conta do projeto. Nenhuma rota devolve tokens: só e-mail, plano e percentuais de uso.
 
-Na CLI, use `--ai-mode subscription` ou `--ai-mode api` para escolher a origem da IA.
+Na CLI, use `--provider claude` ou `--provider codex` para escolher a IA, e `--ai-mode subscription` ou `--ai-mode api` para a origem do Claude.
 
-Configuração em `appsettings.json` (`Analyzer`, `Claude`). A chave da API **não** deve ir para o appsettings; use `ANTHROPIC_API_KEY` ou `dotnet user-secrets set Claude:ApiKey ...`.
+Configuração em `appsettings.json` (`Analyzer`, `Claude`, `ClaudeCode`, `Codex`). Em `Codex`: `Executable`, `HomeDirectory`, `Model` (vazio = padrão da conta), `Effort` e `TimeoutMinutes`. A chave da API **não** deve ir para o appsettings; use `ANTHROPIC_API_KEY` ou `dotnet user-secrets set Claude:ApiKey ...`.
+
+### Fila de análises (vários endpoints)
+
+Marque os endpoints na barra lateral e clique em **Analisar em fila**. O checkbox aparece ao passar o mouse sobre o endpoint (ou com foco pelo teclado) e, havendo seleção, em todos; Shift+clique marca o intervalo desde o último clicado. No cabeçalho do grupo ou do projeto, **Selecionar tudo** marca todos os endpoints exibidos dentro dele (com todos marcados, vira **Desmarcar**), ao lado da contagem ("2/4"). A fila analisa um endpoint por vez, na ordem, com as abas, a IA e o provedor marcados no card do endpoint no momento em que começou; o próximo só começa quando o atual termina. O painel da fila mostra a ordem, o progresso ("Analisando 2 de 8 endpoints"), o endpoint em execução, os pendentes e os concluídos, com erro ou cancelados; clicar num item abre o resultado dele, que fica salvo como o de uma análise avulsa (navegador e banco local).
+
+- **Sem duplicidade:** um endpoint pendente ou em análise não entra de novo na fila, e o ANALISAR dele fica desabilitado enquanto estiver nela. Se o endpoint já estiver em análise pelo botão, a fila acompanha essa execução em vez de iniciar outra. No servidor, uma segunda análise do mesmo endpoint (outra aba, cliques repetidos) recebe 409 enquanto a primeira não termina.
+- **Cancelamento:** **Cancelar atual** interrompe a análise em andamento (como o CANCELAR ANÁLISE) e a fila segue para o próximo; **Cancelar restantes** impede que os pendentes comecem. Um pendente pode ser removido; um item com erro ou cancelado pode voltar para o fim da fila (**Tentar de novo**).
+- **Falhas:** a falha de um endpoint fica registrada no item e a fila continua. Limite de uso atingido ou sessão expirada não são falhas do endpoint: o item volta para a fila e ela pausa, preservando a ordem e os resultados, com **Retomar** e **Continuar com o Codex/Claude** (quando a outra conta está conectada).
+- **Persistência:** a fila fica salva no navegador. Ao recarregar a página ela volta pausada (o item interrompido volta a pendente) e só continua com **Retomar**, para não consumir o limite sem o usuário pedir.
 
 ## O que o MVP detecta
 
@@ -199,25 +218,38 @@ As análises são persistidas no SQLite, incluindo a matriz original, expectativ
 
 O token da API é armazenado criptografado com ASP.NET Core Data Protection e recuperado após reiniciar o analisador. No Windows, as chaves são protegidas por DPAPI do usuário atual. O token não aparece nos relatórios nem no localStorage das análises. Ele é reutilizado enquanto a API o aceitar; se expirar, informe um novo token no campo existente e a próxima tentativa atualiza a credencial salva. Perder as chaves de proteção exige reinformar o token, mas não refazer a análise. Há um lock por análise e orçamento manual independente da exploração automática. POST/PUT/PATCH/DELETE respeitam `Runtime:AllowWrites`.
 
-O banco padrão é `%LOCALAPPDATA%/EndpointAnalyzer/analyses.db` (personalizável por `Runtime:AnalysisDatabasePath`); as chaves ficam na pasta `keys` ao lado dele. A migração inicial é automática, com `PRAGMA user_version=1`.
+O banco padrão é `%LOCALAPPDATA%/EndpointAnalyzer/analyses.db` (personalizável por `Runtime:AnalysisDatabasePath`); as chaves ficam na pasta `keys` ao lado dele. As migrações são automáticas (`PRAGMA user_version=2`); a da versão 1 para a 2 preserva relatórios, sessões e execuções, numera as análises existentes pela data de criação e liga cada uma à anterior do mesmo endpoint.
 
 | Tabela | Conteúdo |
 |---|---|
-| `analyses` | ID permanente, caminho da solução, método/rota/projeto, versão original, relatório JSON com cenários e datas |
+| `analyses` | ID permanente, caminho da solução, método/rota/projeto, versão original, relatório JSON com cenários e datas, ordem de criação (`sequence`) e versão anterior do endpoint (`previous_analysis_id`) |
 | `analysis_sessions` | Referência à análise, token protegido, contador de chamadas manuais e último uso |
 | `manual_executions` | Histórico por análise/execução: cenário, data, versão testada e JSON da tentativa |
 
-O relatório completo é mantido como snapshot JSON, e o histórico manual também é indexado em tabela própria. Snapshot, histórico e contador são salvos em uma transação. `GET /api/analysis/saved` recupera a última análise por solução/método/rota/projeto. A interface usa o localStorage como cache e importa automaticamente relatórios antigos através de `POST /api/analysis/restore`, sem IA. O JSON de importação precisa conter o relatório completo (`context.scenarios` e `runtime.matrix`); o download da matriz runtime isolada não contém todo esse contexto.
+O relatório completo é mantido como snapshot JSON, e o histórico manual também é indexado em tabela própria. Snapshot, histórico e contador são salvos em uma transação. `GET /api/analysis/saved` recupera a análise mais recente (pela ordem de criação, não pela última revalidação) por solução/método/rota/projeto. A interface usa o localStorage como cache e importa automaticamente relatórios antigos através de `POST /api/analysis/restore`, sem IA. O JSON de importação precisa conter o relatório completo (`context.scenarios` e `runtime.matrix`); o download da matriz runtime isolada não contém todo esse contexto.
 
 Configurações em `Runtime`: `AnalysisDatabasePath`, `AnalysisSessionMinutes` (30, retenção apenas em memória), `MaxAnalysisSessions` (20 contextos em memória), `MaxManualRequests` (30 por análise, persistidos), `MaxManualAttemptsPerScenario` (10) e `MaxManualBodyChars` (100000). Erros controlados: JSON inválido (400), análise/cenário/endpoint inexistente (404), alteração durante inicialização ou tentativa concorrente (409), escrita/rota bloqueada (403), limites (413/429) e API indisponível (503).
 
+## Diff entre análises
+
+Cada clique em ANALISAR cria uma nova versão no SQLite, ligada à anterior do mesmo solução + método + rota + projeto; nenhuma versão é sobrescrita, e revalidar uma análise antiga não a torna a mais recente nem muda a ligação. A aba **Diff** do resultado compara a análise exibida com a anterior a partir dos relatórios estruturados já salvos: sem IA, sem executar o endpoint e sem gravar o resultado (é calculado sob demanda e funciona depois de reiniciar o aplicativo).
+
+- **Resumo:** validações e regras (da matriz estruturada; sem ela nas duas versões, das condições do código), efeitos e entidades alteradas, campo a campo (expressão, limite, mensagem, operação, propriedade). A documentação da IA (objetivo, títulos, contexto, mensagens) fica num grupo próprio, separada das mudanças de comportamento.
+- **Cenários:** matriz estática com matriz estática e, quando as duas têm, matriz validada em runtime com matriz validada em runtime (status, HTTP observado, esperado × observado). Confirmado → inconclusivo é um alerta, não prova de regressão; inalcançável é um status, não um cenário excluído do código.
+- **Correspondência semântica:** os cenários são pareados pelo comportamento (tipo, foco, regra, mensagens), nunca pelo id: CEN-xx, Dx e Cx são renumerados a cada análise. Ordem, formatação e número de linha são ignorados; mudanças só em dados de teste (valores do payload, datas relativas a hoje), origem no código ou ambiente ficam fora dos totais e aparecem sob demanda. Correspondências ambíguas (ou só pela origem no código) são marcadas como **incertas**, nunca como inclusão/remoção.
+- **Abas ausentes:** se uma aba (ou a IA, ou o runtime) não foi gerada numa das versões, ela aparece como **não comparável**, nunca como removida.
+
+Contrato: `GET /api/analysis/diff?analysisId={atual}&baseId={opcional}`. Sem `baseId`, a base é a versão anterior salva; com ele, compara com qualquer versão histórica do mesmo endpoint. A resposta traz as versões comparadas (datas, commits, analisador, IA), `counts` (adicionados, removidos, alterados, incertos, não comparáveis) e, por aba e grupo, os itens com `kind`, `impact` (comportamento, runtime, documentação, dados de teste, origem, ambiente), identificador semântico e campos com antes/depois. Credenciais, headers de autorização e campos sensíveis do payload são mascarados. Erros: análise ou base inexistente (404), base igual à atual ou de outro endpoint (400).
+
 ## Fica para depois (seção 42 da especificação)
 
-Minimal APIs (`MapPost`), mensageria entre serviços (filas e consumidores em outros processos), `CodexProvider`, persistência em PostgreSQL e captura das alterações em runtime (`SaveChangesInterceptor`).
+Minimal APIs (`MapPost`), mensageria entre serviços (filas e consumidores em outros processos), continuidade automática de uma análise entre Claude e Codex, persistência em PostgreSQL e captura das alterações em runtime (`SaveChangesInterceptor`).
 
 ## Testes
 
 ```powershell
 dotnet test
 node --test tests/frontend/manual-revalidation.test.cjs
+node --test tests/frontend/ai-provider.test.cjs
+node --test tests/frontend/analysis-queue.test.cjs
 ```

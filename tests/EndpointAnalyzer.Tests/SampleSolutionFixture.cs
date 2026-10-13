@@ -76,6 +76,8 @@ public sealed class FakeAiProvider : IAiProvider
 {
     public int Calls { get; private set; }
 
+    public string Provider => "fake";
+
     public string Model => "fake-model";
 
     public Task<EndpointAnalysisResult> AnalyzeAsync(EndpointAnalysisContext context, CancellationToken cancellationToken = default)

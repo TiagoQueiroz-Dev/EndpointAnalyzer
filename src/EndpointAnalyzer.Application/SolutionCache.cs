@@ -35,12 +35,18 @@ public class SolutionCache(ISolutionLoader loader)
         var key = Path.GetFullPath(path);
         if (reload) _solutions.TryRemove(key, out _);
 
-        var lazy = _solutions.GetOrAdd(key, k => new Lazy<Task<LoadedSolution>>(() => LoadAsync(k, cancellationToken)));
+        // O carregamento é compartilhado: não usa o token de quem pediu primeiro (uma requisição abortada, como ao
+        // recarregar a página, cancelaria o carregamento que as outras esperam). Cada chamador espera com o próprio token.
+        var lazy = _solutions.GetOrAdd(key, k => new Lazy<Task<LoadedSolution>>(() => LoadAsync(k, CancellationToken.None)));
         var task = lazy.Value;
 
-        // Falhou ao carregar: não guarda o erro no cache.
-        if (task.IsFaulted || task.IsCanceled) _solutions.TryRemove(key, out _);
-        return task;
+        // Falhou ao carregar: não guarda o erro no cache, nem quando a falha chega depois desta consulta.
+        if (!task.IsCompletedSuccessfully)
+            _ = task.ContinueWith(t =>
+            {
+                if (!t.IsCompletedSuccessfully) _solutions.TryRemove(new KeyValuePair<string, Lazy<Task<LoadedSolution>>>(key, lazy));
+            }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        return task.WaitAsync(cancellationToken);
     }
 
     public IReadOnlyCollection<string> Loaded => _solutions.Keys.ToList();
