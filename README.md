@@ -218,17 +218,28 @@ As análises são persistidas no SQLite, incluindo a matriz original, expectativ
 
 O token da API é armazenado criptografado com ASP.NET Core Data Protection e recuperado após reiniciar o analisador. No Windows, as chaves são protegidas por DPAPI do usuário atual. O token não aparece nos relatórios nem no localStorage das análises. Ele é reutilizado enquanto a API o aceitar; se expirar, informe um novo token no campo existente e a próxima tentativa atualiza a credencial salva. Perder as chaves de proteção exige reinformar o token, mas não refazer a análise. Há um lock por análise e orçamento manual independente da exploração automática. POST/PUT/PATCH/DELETE respeitam `Runtime:AllowWrites`.
 
-O banco padrão é `%LOCALAPPDATA%/EndpointAnalyzer/analyses.db` (personalizável por `Runtime:AnalysisDatabasePath`); as chaves ficam na pasta `keys` ao lado dele. A migração inicial é automática, com `PRAGMA user_version=1`.
+O banco padrão é `%LOCALAPPDATA%/EndpointAnalyzer/analyses.db` (personalizável por `Runtime:AnalysisDatabasePath`); as chaves ficam na pasta `keys` ao lado dele. As migrações são automáticas (`PRAGMA user_version=2`); a da versão 1 para a 2 preserva relatórios, sessões e execuções, numera as análises existentes pela data de criação e liga cada uma à anterior do mesmo endpoint.
 
 | Tabela | Conteúdo |
 |---|---|
-| `analyses` | ID permanente, caminho da solução, método/rota/projeto, versão original, relatório JSON com cenários e datas |
+| `analyses` | ID permanente, caminho da solução, método/rota/projeto, versão original, relatório JSON com cenários e datas, ordem de criação (`sequence`) e versão anterior do endpoint (`previous_analysis_id`) |
 | `analysis_sessions` | Referência à análise, token protegido, contador de chamadas manuais e último uso |
 | `manual_executions` | Histórico por análise/execução: cenário, data, versão testada e JSON da tentativa |
 
-O relatório completo é mantido como snapshot JSON, e o histórico manual também é indexado em tabela própria. Snapshot, histórico e contador são salvos em uma transação. `GET /api/analysis/saved` recupera a última análise por solução/método/rota/projeto. A interface usa o localStorage como cache e importa automaticamente relatórios antigos através de `POST /api/analysis/restore`, sem IA. O JSON de importação precisa conter o relatório completo (`context.scenarios` e `runtime.matrix`); o download da matriz runtime isolada não contém todo esse contexto.
+O relatório completo é mantido como snapshot JSON, e o histórico manual também é indexado em tabela própria. Snapshot, histórico e contador são salvos em uma transação. `GET /api/analysis/saved` recupera a análise mais recente (pela ordem de criação, não pela última revalidação) por solução/método/rota/projeto. A interface usa o localStorage como cache e importa automaticamente relatórios antigos através de `POST /api/analysis/restore`, sem IA. O JSON de importação precisa conter o relatório completo (`context.scenarios` e `runtime.matrix`); o download da matriz runtime isolada não contém todo esse contexto.
 
 Configurações em `Runtime`: `AnalysisDatabasePath`, `AnalysisSessionMinutes` (30, retenção apenas em memória), `MaxAnalysisSessions` (20 contextos em memória), `MaxManualRequests` (30 por análise, persistidos), `MaxManualAttemptsPerScenario` (10) e `MaxManualBodyChars` (100000). Erros controlados: JSON inválido (400), análise/cenário/endpoint inexistente (404), alteração durante inicialização ou tentativa concorrente (409), escrita/rota bloqueada (403), limites (413/429) e API indisponível (503).
+
+## Diff entre análises
+
+Cada clique em ANALISAR cria uma nova versão no SQLite, ligada à anterior do mesmo solução + método + rota + projeto; nenhuma versão é sobrescrita, e revalidar uma análise antiga não a torna a mais recente nem muda a ligação. A aba **Diff** do resultado compara a análise exibida com a anterior a partir dos relatórios estruturados já salvos: sem IA, sem executar o endpoint e sem gravar o resultado (é calculado sob demanda e funciona depois de reiniciar o aplicativo).
+
+- **Resumo:** validações e regras (da matriz estruturada; sem ela nas duas versões, das condições do código), efeitos e entidades alteradas, campo a campo (expressão, limite, mensagem, operação, propriedade). A documentação da IA (objetivo, títulos, contexto, mensagens) fica num grupo próprio, separada das mudanças de comportamento.
+- **Cenários:** matriz estática com matriz estática e, quando as duas têm, matriz validada em runtime com matriz validada em runtime (status, HTTP observado, esperado × observado). Confirmado → inconclusivo é um alerta, não prova de regressão; inalcançável é um status, não um cenário excluído do código.
+- **Correspondência semântica:** os cenários são pareados pelo comportamento (tipo, foco, regra, mensagens), nunca pelo id: CEN-xx, Dx e Cx são renumerados a cada análise. Ordem, formatação e número de linha são ignorados; mudanças só em dados de teste (valores do payload, datas relativas a hoje), origem no código ou ambiente ficam fora dos totais e aparecem sob demanda. Correspondências ambíguas (ou só pela origem no código) são marcadas como **incertas**, nunca como inclusão/remoção.
+- **Abas ausentes:** se uma aba (ou a IA, ou o runtime) não foi gerada numa das versões, ela aparece como **não comparável**, nunca como removida.
+
+Contrato: `GET /api/analysis/diff?analysisId={atual}&baseId={opcional}`. Sem `baseId`, a base é a versão anterior salva; com ele, compara com qualquer versão histórica do mesmo endpoint. A resposta traz as versões comparadas (datas, commits, analisador, IA), `counts` (adicionados, removidos, alterados, incertos, não comparáveis) e, por aba e grupo, os itens com `kind`, `impact` (comportamento, runtime, documentação, dados de teste, origem, ambiente), identificador semântico e campos com antes/depois. Credenciais, headers de autorização e campos sensíveis do payload são mascarados. Erros: análise ou base inexistente (404), base igual à atual ou de outro endpoint (400).
 
 ## Fica para depois (seção 42 da especificação)
 

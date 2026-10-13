@@ -70,6 +70,7 @@ public static class ServiceCollectionExtensions
         if (OperatingSystem.IsWindows()) protection.ProtectKeysWithDpapi();
         services.AddSingleton<SqliteAnalysisStore>();
         services.AddSingleton<AnalysisSessionStore>();
+        services.AddSingleton<AnalysisDiffService>();
         services.AddSingleton<IAppRunner, AppRunner>();
         services.AddSingleton<RuntimeValidationService>();
         services.AddSingleton<ApiTokenChecker>();

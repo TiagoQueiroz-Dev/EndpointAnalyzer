@@ -11,6 +11,7 @@
     --post: #1f8a4c; --put: #b26a00; --patch: #7a4cc2; --delete: #c0392b; --get: #2f6fd0; --danger: #c0392b; --claude: #c4633f; --codex: #1f7a6d;
     --hl: #fbe9a6; --hl-border: #d9a800;
     --scroll-thumb: #c5cbd6; --scroll-thumb-hover: #2f5fd0;
+    --diff-del: #fdeceb; --diff-ins: #e8f6ee; --diff-del-strong: #f8c9c4; --diff-ins-strong: #bfe6cf;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -19,6 +20,7 @@
       --post: #4cc584; --put: #f0a940; --patch: #b593f0; --delete: #ef7a6d; --get: #6ba6f0; --danger: #ef7a6d; --claude: #c4633f; --codex: #4cb8a5;
       --hl: rgba(240, 169, 64, .2); --hl-border: #f0a940;
       --scroll-thumb: #3a414c; --scroll-thumb-hover: #6b93f0;
+      --diff-del: rgba(239, 122, 109, .12); --diff-ins: rgba(76, 197, 132, .12); --diff-del-strong: rgba(239, 122, 109, .3); --diff-ins-strong: rgba(76, 197, 132, .3);
     }
   }
   * { box-sizing: border-box; }
@@ -322,6 +324,56 @@
   details.rt pre { white-space: pre-wrap; word-break: break-all; max-height: 240px; overflow: auto; font-size: 11.5px; }
   table.exec td { font-size: 12.5px; } table.exec td.url { font: 12px ui-monospace, Consolas, monospace; overflow-wrap: anywhere; min-width: 220px; }
   .verified { color: var(--post); font-weight: 600; } .unverified { color: var(--put); font-weight: 600; }
+
+  /* ---- Aba Diff: versão anterior à esquerda, atual à direita (como o diff do VS Code) ---- */
+  .diff-versions { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 10px; align-items: stretch; margin-bottom: 10px; }
+  .diff-version { border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; font-size: 13px; min-width: 0; overflow-wrap: anywhere; }
+  .diff-version.before { border-left: 3px solid var(--delete); } .diff-version.after { border-left: 3px solid var(--post); }
+  .diff-version b { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  .diff-version .muted { display: block; font-size: 12px; }
+  .diff-arrow { align-self: center; color: var(--muted); font-size: 18px; }
+  @media (max-width: 700px) { .diff-versions { grid-template-columns: minmax(0, 1fr); } .diff-arrow { display: none; } }
+  .diff-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 6px 0 4px; }
+  .diff-count { font: 600 12px system-ui, sans-serif; padding: 1px 9px; border-radius: 10px; border: 1px solid currentColor; }
+  .diff-count.adicionado, .diff-kind.adicionado { color: var(--post); } .diff-count.removido, .diff-kind.removido { color: var(--delete); }
+  .diff-count.alterado, .diff-kind.alterado { color: var(--put); } .diff-count.incerto, .diff-kind.incerto { color: var(--patch); }
+  .diff-count.nao-comparavel { color: var(--muted); }
+  .diff-empty { border: 1px dashed var(--border); border-radius: 6px; padding: 14px 16px; margin: 10px 0; font-weight: 600; }
+  .diff-off { border: 1px dashed var(--border); border-radius: 6px; padding: 8px 12px; margin: 6px 0; color: var(--muted); font-size: 13px; }
+  .diff-notes { margin: 6px 0; padding-left: 18px; font-size: 12.5px; color: var(--muted); }
+  .diff-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 12px 0 4px; }
+  .diff-toolbar .sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 4px; }
+  .diff-toolbar .chip { cursor: pointer; }
+  .diff-toolbar .check { font-size: 12.5px; color: var(--muted); margin-left: auto; }
+  .diff-group > h3 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+  .diff-group > h3 .muted { font-weight: 400; }
+  .diff-item { border: 1px solid var(--border); border-radius: 6px; margin: 8px 0; overflow: hidden; }
+  .diff-item.alert { border-color: var(--put); }
+  .diff-item-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; padding: 8px 12px; background: var(--code); }
+  .diff-kind { font: 700 10.5px system-ui, sans-serif; padding: 1px 7px; border-radius: 8px; border: 1px solid currentColor; text-transform: uppercase; letter-spacing: .02em; }
+  .diff-impact { font-size: 11px; padding: 0 6px; border-radius: 8px; background: var(--hover); color: var(--muted); }
+  .diff-impact.comportamento { color: var(--text); } .diff-impact.runtime { color: var(--get); } .diff-impact.documentacao { color: var(--patch); }
+  .diff-title { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+  .diff-refs { font-size: 12px; color: var(--muted); }
+  .diff-item-notes { margin: 0; padding: 6px 12px 6px 30px; font-size: 12.5px; color: var(--put); border-bottom: 1px solid var(--border); }
+  .diff-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); font-size: 13px; }
+  .diff-grid > .diff-side { padding: 4px 12px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .diff-grid > .diff-label { grid-column: 1 / -1; padding: 6px 12px 2px; font-size: 11.5px; color: var(--muted); border-top: 1px solid var(--border); }
+  .diff-cell { padding: 4px 12px 8px; min-width: 0; overflow-wrap: anywhere; }
+  .diff-cell + .diff-cell, .diff-side + .diff-side { border-left: 1px solid var(--border); }
+  .diff-cell.del { background: var(--diff-del); } .diff-cell.ins { background: var(--diff-ins); }
+  .diff-cell pre { margin: 0; padding: 0; background: transparent; max-height: 280px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+  .diff-list { margin: 0; padding-left: 16px; } .diff-list li { padding: 0 4px; border-radius: 3px; }
+  .diff-list li.del { background: var(--diff-del-strong); } .diff-list li.ins { background: var(--diff-ins-strong); }
+  details.diff-more { border-top: 1px solid var(--border); }
+  details.diff-more > summary { cursor: pointer; padding: 6px 12px; font-size: 12.5px; color: var(--accent); }
+  details.diff-more .diff-cell pre { max-height: 360px; }
+  @media (max-width: 700px) {
+    .diff-grid { grid-template-columns: minmax(0, 1fr); }
+    .diff-grid > .diff-side { display: none; }
+    .diff-cell + .diff-cell { border-left: 0; border-top: 1px dashed var(--border); }
+    .diff-cell::before { content: attr(data-side); display: block; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  }
 
   /* ---- Fluxograma (Mermaid) do grafo técnico ---- */
   .flow { position: relative; background: var(--code); border-radius: 6px; }
@@ -1495,16 +1547,20 @@ function onQueueClick(e) {
 function render(tab) {
   const { report, markdown } = lastResponse;
   const ctx = report.context;
+  const previousTab = document.querySelector("[data-tab].active")?.dataset.tab;
   const tabs = [["summary", "Resumo"], ["business", "Negócio"], ["complete", "Completo"],
     ["scenarios", report.runtime?.matrix
       ? `Cenários <span class="badge" title="confirmados em runtime / total">${report.runtime.matrix.counts.confirmado ?? 0}/${report.runtime.matrix.scenarios.length}</span>`
       : `Cenários${ctx.scenarios?.scenarios?.length ? ` <span class="badge">${ctx.scenarios.scenarios.length}</span>` : ""}`]]
     .filter(([id]) => sectionsOf(report).includes(id));
+  // Diff não é uma aba da análise (não roda nada): compara os relatórios já salvos.
+  if (report.analysisId) tabs.push(["diff", diffTabLabel(report)]);
   let body = "";
   if (tab === "summary") body = report.ai ? renderDoc(report.ai, ctx) : renderSummary(ctx);
   if (tab === "business") body = renderBusiness();
   if (tab === "complete") body = renderComplete(ctx, report.runtime);
   if (tab === "scenarios") body = renderScenarios(ctx, report.ai, report.runtime);
+  if (tab === "diff") body = renderDiff(report);
 
   $("result").innerHTML = `<section>
     <p class="muted" style="margin-top:0">analisador ${esc(report.version.analyzerVersion)}${report.version.commit ? ` · commit ${esc(report.version.commit)}` : ""}${Object.hasOwn(providerNames, report.version.aiProvider ?? "") ? ` · IA ${esc(providerName(report.version.aiProvider))}` : ""}${report.version.aiModel ? ` · ${esc(report.version.aiModel)}` : ""}</p>
@@ -1516,6 +1572,8 @@ function render(tab) {
   showSource();
   if (tab === "business") showBusiness();
   if (tab === "scenarios") wireScenarios(ctx, report.ai, report.runtime);
+  // Abrir a aba busca a comparação de novo (a versão atual pode ter sido revalidada); filtros usam a já carregada.
+  if (tab === "diff") loadDiff(report, previousTab !== "diff");
   // Atalhos da aba Completo (sem href: o hash da URL guarda o endpoint selecionado).
   document.querySelectorAll("[data-jump]").forEach(b => b.addEventListener("click", () =>
     $(b.dataset.jump)?.scrollIntoView({ behavior: "smooth", block: "start" })));
@@ -2054,6 +2112,9 @@ async function revalidateScenario() {
     const saved = store.get(savedAnalyses.id(current.endpoint, current.solution), null);
     if (saved?.response.report.analysisId === current.analysisId || saved?.response.report.analysisId === pendingId)
       savedAnalyses.set(current.endpoint, current.solution, current.response);
+    // O runtime da versão atual mudou: o diff em memória fica velho e é buscado de novo.
+    if (diffState.analysisId === current.analysisId || diffState.analysisId === pendingId)
+      diffState = { analysisId: null, loading: false, result: null, error: null, seq: diffState.seq + 1 };
     if (lastResponse === current.response && selected === current.endpoint && solutionPath === current.solution) {
       const activeTab = document.querySelector("[data-tab].active")?.dataset.tab ?? "scenarios";
       render(activeTab);
@@ -2294,6 +2355,137 @@ function renderValidated(ctx, ai, rt) {
       ${scenarioGridHtml(validatedGridRows(m.removed, ai))}` : ""}
     ${rt.notes.length ? `<h3>Observações</h3><ul>${rt.notes.map(n => `<li class="warn">${esc(n)}</li>`).join("")}</ul>` : ""}
     <p class="muted">Execuções, contexto adquirido e logs da validação estão na aba Completo.</p>`;
+}
+
+// ---- Aba Diff: comparação com a versão anterior do endpoint (calculada no servidor a partir do SQLite, sem IA) ----
+
+const diffKinds = { adicionado: "Adicionado", removido: "Removido", alterado: "Alterado", incerto: "Incerto" };
+const diffKindPlurals = [["adicionado", "Adicionados"], ["removido", "Removidos"], ["alterado", "Alterados"], ["incerto", "Incertos"]];
+const diffImpacts = {
+  comportamento: "comportamento", runtime: "runtime", documentacao: "documentação",
+  "dados-teste": "dados de teste", origem: "origem no código", ambiente: "ambiente",
+};
+const primaryImpacts = new Set(["comportamento", "runtime", "documentacao"]);
+let diffState = { analysisId: null, loading: false, result: null, error: null, seq: 0 };
+let diffSection = "summary";   // summary | scenarios
+let diffFilter = "all";        // all | adicionado | removido | alterado | incerto
+let diffMinor = false;         // exibir também o que variou só em dados de teste, origem no código ou ambiente
+
+/** Variação só de dados de teste, origem ou ambiente (fora dos totais; exibida sob demanda). */
+const isMinorDiff = (item) => item.kind !== "incerto" && !primaryImpacts.has(item.impact);
+
+function diffTabLabel(report) {
+  const r = diffState.analysisId === report.analysisId ? diffState.result : null;
+  return `Diff${r?.hasBase ? ` <span class="badge" title="diferenças em relação à análise anterior">${r.counts.total}</span>` : ""}`;
+}
+
+/**
+ * Busca o diff da análise exibida. force: ao abrir a aba (a análise pode ter sido revalidada). Uma resposta atrasada de
+ * outra análise é descartada; a aba só é redesenhada se ainda estiver aberta na mesma análise.
+ */
+async function loadDiff(report, force) {
+  const id = report?.analysisId;
+  if (!id || (!force && diffState.analysisId === id && (diffState.loading || diffState.result || diffState.error))) return;
+  const seq = diffState.seq + 1;
+  diffState = { analysisId: id, loading: true, result: diffState.analysisId === id ? diffState.result : null, error: null, seq };
+  let next;
+  try { next = { result: await api(`/api/analysis/diff?analysisId=${encodeURIComponent(id)}`), error: null }; }
+  catch (error) { next = { result: null, error: error.message }; }
+  if (diffState.seq !== seq) return;
+  diffState = { ...diffState, ...next, loading: false };
+  if (lastResponse?.report.analysisId === id && document.querySelector("[data-tab].active")?.dataset.tab === "diff") render("diff");
+}
+
+function diffVersionHtml(v, side) {
+  if (!v) return `<div class="diff-version ${side}"><b>Anterior</b><span class="muted">nenhuma</span></div>`;
+  const ai = v.aiProvider ? ` · IA ${esc(providerName(v.aiProvider))}${v.aiModel ? ` (${esc(v.aiModel)})` : ""}` : " · sem IA";
+  return `<div class="diff-version ${side}"><b>${side === "before" ? "Anterior" : "Atual"}</b>
+    ${esc(savedAtLabel(v.createdAt))}${v.commit ? ` · commit <code>${esc(v.commit)}</code>` : ""}${v.branch ? ` (${esc(v.branch)})` : ""}
+    <span class="muted">analisador ${esc(v.analyzerVersion)}${ai}${v.runtimeStatus ? ` · runtime ${esc(v.runtimeStatus)}` : ""}</span>
+    <span class="muted">abas: ${esc(v.sections.map(id => resultTabs.find(([t]) => t === id)?.[1] ?? id).join(", "))}</span></div>`;
+}
+
+function diffCountsHtml(counts) {
+  return [["adicionado", "adicionado(s)", counts.added], ["removido", "removido(s)", counts.removed], ["alterado", "alterado(s)", counts.changed],
+    ["incerto", "incerto(s)", counts.uncertain], ["nao-comparavel", "não comparável(is)", counts.notComparable]]
+    .filter(([, , n]) => n > 0).map(([k, label, n]) => `<span class="diff-count ${k}">${n} ${label}</span>`).join("");
+}
+
+function renderDiff(report) {
+  const state = diffState.analysisId === report.analysisId ? diffState : {};
+  const r = state.result;
+  if (!r) return state.error ? `<p class="error">Não foi possível carregar a comparação: ${esc(state.error)}</p>`
+    : `<p class="muted">Carregando a comparação com a análise anterior...</p>`;
+  const head = `<div class="diff-versions">${diffVersionHtml(r.base, "before")}<span class="diff-arrow" aria-hidden="true">→</span>${diffVersionHtml(r.current, "after")}</div>`;
+  if (!r.hasBase) return `${head}<div class="diff-empty">${esc(r.message)}</div>
+    <p class="muted">A próxima análise deste endpoint é comparada com esta. As análises anteriores são preservadas.</p>`;
+
+  const sections = r.sections;
+  const section = sections.find(s => s.id === diffSection) ?? sections[0];
+  const items = section.groups.flatMap(g => g.items);
+  const shown = (item) => (diffMinor || !isMinorDiff(item)) && (diffFilter === "all" || item.kind === diffFilter);
+  const minorCount = items.filter(isMinorDiff).length;
+  const sectionChips = sections.map(s => `<button type="button" class="chip ${s === section ? "on" : ""}" data-diff-section="${esc(s.id)}">${esc(s.title)}<span class="n">${s.comparable ? s.counts.total : "—"}</span></button>`).join("");
+  const kindChips = [["all", "Todos"], ...diffKindPlurals].map(([k, label]) => {
+    const n = items.filter(i => (diffMinor || !isMinorDiff(i)) && (k === "all" || i.kind === k)).length;
+    return `<button type="button" class="chip ${diffFilter === k ? "on" : ""}" data-diff-filter="${k}">${label}<span class="n">${n}</span></button>`;
+  }).join("");
+
+  return `${head}
+    <div class="diff-summary">${diffCountsHtml(r.counts)}${r.hasDifferences ? `<span>${esc(r.message)}</span>` : ""}</div>
+    ${r.hasDifferences ? "" : `<div class="diff-empty">${esc(r.message)}</div>`}
+    ${r.notes.length ? `<ul class="diff-notes">${r.notes.map(n => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}
+    ${state.loading ? `<p class="muted">Atualizando a comparação...</p>` : ""}
+    <div class="diff-toolbar" role="group" aria-label="Filtros do diff">${sectionChips}<span class="sep"></span>${kindChips}
+      ${minorCount ? `<label class="check"><input type="checkbox" data-diff-minor ${diffMinor ? "checked" : ""}> Variações de dados de teste, origem e ambiente (${minorCount})</label>` : ""}</div>
+    ${section.comparable ? section.groups.map(g => diffGroupHtml(g, shown)).join("") : `<div class="diff-off">${esc(section.reason)}</div>`}`;
+}
+
+function diffGroupHtml(group, shown) {
+  const visible = group.items.filter(shown);
+  const c = group.counts;
+  const summary = group.comparable ? [c.total ? diffCountsHtml(c) : "", c.unchanged ? `<span class="muted">${c.unchanged} igual(is)</span>` : ""].join(" ") : "";
+  return `<div class="diff-group"><h3>${esc(group.title)} ${summary}</h3>
+    ${group.comparable ? "" : `<div class="diff-off">${esc(group.reason)}</div>`}
+    ${group.notes.length ? `<ul class="diff-notes">${group.notes.map(n => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}
+    ${!group.comparable ? "" : visible.length ? visible.map(diffItemHtml).join("")
+      : `<p class="muted">Nenhuma diferença${group.items.length ? " com este filtro" : ""}.</p>`}</div>`;
+}
+
+function diffItemHtml(item) {
+  const ref = (id) => id ? `<code>${esc(id)}</code>` : "—";
+  const side = (label, id) => `<div class="diff-side">${label}${id ? ` · ${esc(id)}` : ""}</div>`;
+  const snapshot = (value) => value ? `<pre>${esc(JSON.stringify(value, null, 2))}</pre>` : dash;
+  return `<div class="diff-item ${esc(item.kind)}${item.alert ? " alert" : ""}">
+    <div class="diff-item-head"><span class="diff-kind ${esc(item.kind)}">${esc(diffKinds[item.kind] ?? item.kind)}</span>
+      <span class="diff-impact ${esc(item.impact)}">${esc(diffImpacts[item.impact] ?? item.impact)}</span>
+      <span class="diff-title">${item.alert ? "⚠ " : ""}${esc(item.title)}</span>
+      ${item.baseRef || item.currentRef ? `<span class="diff-refs">${ref(item.baseRef)} → ${ref(item.currentRef)}</span>` : ""}</div>
+    ${item.notes.length ? `<ul class="diff-item-notes">${item.notes.map(n => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}
+    <div class="diff-grid">${side("Anterior", item.baseRef)}${side("Atual", item.currentRef)}${item.fields.map(diffFieldHtml).join("")}</div>
+    ${item.before || item.after ? `<details class="diff-more"><summary>Estrutura completa</summary><div class="diff-grid">
+      <div class="diff-cell" data-side="Anterior">${snapshot(item.before)}</div><div class="diff-cell" data-side="Atual">${snapshot(item.after)}</div></div></details>` : ""}
+  </div>`;
+}
+
+function diffFieldHtml(f) {
+  const tag = f.impact === "comportamento" ? "" : ` <span class="diff-impact ${esc(f.impact)}">${esc(diffImpacts[f.impact] ?? f.impact)}</span>`;
+  return `<div class="diff-label">${esc(f.label)}${tag}</div>
+    <div class="diff-cell ${f.before == null ? "" : "del"}" data-side="Anterior">${diffValueHtml(f.path, f.before, f.after, "del")}</div>
+    <div class="diff-cell ${f.after == null ? "" : "ins"}" data-side="Atual">${diffValueHtml(f.path, f.after, f.before, "ins")}</div>`;
+}
+
+/** Listas destacam só os itens que não existem do outro lado; objetos aparecem como JSON. */
+function diffValueHtml(path, value, other, cls) {
+  if (value === undefined || value === null) return dash;
+  if (Array.isArray(value) && value.every(v => v === null || typeof v !== "object")) {
+    const others = new Set((Array.isArray(other) ? other : []).map(v => JSON.stringify(v)));
+    return `<ul class="diff-list">${value.map(v => `<li class="${others.has(JSON.stringify(v)) ? "" : cls}">${esc(v)}</li>`).join("")}</ul>`;
+  }
+  if (typeof value === "object") return `<pre>${esc(JSON.stringify(value, null, 2))}</pre>`;
+  if (typeof value === "boolean") return value ? "sim" : "não";
+  if (path === "runtime.status") return `<span class="vstatus ${esc(value)}">${esc(validationKinds[value] ?? value)}</span>`;
+  return esc(value);
 }
 
 // ---- Aba Completo: tudo o que a análise produziu ----
@@ -3593,6 +3785,12 @@ $("result").addEventListener("click", (e) => {
   if (filter) { scenarioFilter = filter.dataset.scenFilter; render("scenarios"); return; }
   const vfilter = e.target.closest("[data-vfilter]");
   if (vfilter) { validatedFilter = vfilter.dataset.vfilter; render("scenarios"); return; }
+  const diffTab = e.target.closest("[data-diff-section]");
+  if (diffTab) { diffSection = diffTab.dataset.diffSection; render("diff"); return; }
+  const diffKind = e.target.closest("[data-diff-filter]");
+  if (diffKind) { diffFilter = diffKind.dataset.diffFilter; render("diff"); return; }
+  const diffToggle = e.target.closest("[data-diff-minor]");
+  if (diffToggle) { diffMinor = diffToggle.checked; render("diff"); return; }
   const flowView = e.target.closest("[data-flow-view]");
   if (flowView) { businessView = flowView.dataset.flowView; render("business"); return; }
   const view = e.target.closest("[data-scen-view]");

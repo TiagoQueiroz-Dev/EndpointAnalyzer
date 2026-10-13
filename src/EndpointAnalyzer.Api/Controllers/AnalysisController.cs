@@ -65,6 +65,13 @@ public class AnalysisController(EndpointAnalysisService service, IConfiguration 
             : Ok(new AnalysisResponse(report, ReportRenderer.Markdown(report)));
     }
 
+    /// <summary>
+    /// Diff da análise com a versão anterior do mesmo endpoint (ou com baseId, para comparar versões históricas), calculado
+    /// a partir dos relatórios salvos: sem IA e sem executar o endpoint.
+    /// </summary>
+    [HttpGet("diff")]
+    public ActionResult<AnalysisDiffResult> Diff(string analysisId, string? baseId = null) => Ok(service.Diff(analysisId, baseId));
+
     [HttpPost("restore")]
     [RequestSizeLimit(20_971_520)]
     public async Task<ActionResult<AnalysisResponse>> Restore(RestoreAnalysisRequest request, CancellationToken cancellationToken)

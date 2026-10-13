@@ -34,7 +34,8 @@ public class EndpointAnalysisService(
     RuntimeValidationService? runtime = null,
     ApiTokenChecker? tokens = null,
     IBusinessFlowAiAnalyzer? businessFlow = null,
-    AnalysisSessionStore? sessions = null)
+    AnalysisSessionStore? sessions = null,
+    AnalysisDiffService? diff = null)
 {
     /// <summary>Abas cuja IA vai na chamada da documentação (Resumo: regras; Cenários: títulos). Negócio tem chamada própria.</summary>
     private const AnalysisSections DocumentationSections = AnalysisSections.Summary | AnalysisSections.Scenarios;
@@ -42,6 +43,8 @@ public class EndpointAnalysisService(
     private readonly ILogger _logger = logger ?? NullLogger<EndpointAnalysisService>.Instance;
 
     private readonly IBusinessFlowAiAnalyzer _businessFlow = businessFlow ?? new BusinessFlowAiAnalyzer();
+
+    private readonly AnalysisDiffService _diff = diff ?? new AnalysisDiffService();
 
     private readonly RunningAnalyses _running = new();
 
@@ -265,6 +268,27 @@ public class EndpointAnalysisService(
         session = sessions!.Acquire(session.Id);
         try { return JsonSerializer.Deserialize<EndpointAnalysisReport>(JsonSerializer.Serialize(session.Report)); }
         finally { session.Gate.Release(); }
+    }
+
+    /// <summary>
+    /// Compara a análise com a versão anterior do mesmo endpoint (ou com <paramref name="baseId"/>) a partir dos relatórios
+    /// salvos no SQLite: não chama a IA nem executa o endpoint, e o resultado não é persistido.
+    /// </summary>
+    /// <exception cref="AnalysisSessionException">404: análise (ou base explícita) não encontrada.</exception>
+    /// <exception cref="ArgumentException">Base igual à atual ou de outro endpoint/projeto/solução.</exception>
+    public AnalysisDiffResult Diff(string analysisId, string? baseId = null)
+    {
+        if (sessions is null) throw new AnalysisSessionException(503, "Persistência de análises indisponível.");
+        if (string.IsNullOrWhiteSpace(analysisId)) throw new ArgumentException("Informe analysisId.");
+        var current = sessions.Stored(analysisId.Trim())
+            ?? throw new AnalysisSessionException(404, "Análise não encontrada no banco local.");
+        var explicitBase = !string.IsNullOrWhiteSpace(baseId);
+        var previousId = explicitBase ? baseId!.Trim() : current.PreviousId;
+        if (previousId is null) return _diff.Compare(null, current);
+        if (previousId == current.Id) throw new ArgumentException("Escolha uma versão base diferente da análise atual.");
+        var previous = sessions.Stored(previousId);
+        if (previous is null && explicitBase) throw new AnalysisSessionException(404, "Versão base não encontrada no banco local.");
+        return _diff.Compare(previous, current);
     }
 
     /// <summary>Importa o relatório antigo do navegador sem IA; relatórios já persistidos prevalecem sobre o cache.</summary>

@@ -9,15 +9,79 @@ using Microsoft.Data.Sqlite;
 
 namespace EndpointAnalyzer.Application;
 
-/// <summary>Relatórios, histórico manual e credenciais protegidas, persistidos em uma transação.</summary>
+/// <summary>Relatório salvo, lido sem a sessão (token protegido e orçamento manual ficam de fora).</summary>
+public sealed record StoredAnalysis(string Id, string? PreviousId, string SolutionPath, string Method, string Route, string Project,
+    string Fingerprint, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, EndpointAnalysisReport Report);
+
+/// <summary>
+/// Relatórios, histórico manual e credenciais protegidas, persistidos em uma transação. Cada análise é uma versão: a ordem
+/// de criação (sequence) e a ligação com a versão anterior do mesmo endpoint (previous_analysis_id) são gravadas só na
+/// criação; revalidar uma análise antiga altera o relatório e updated_at, nunca a ordem nem a ligação.
+/// </summary>
 public sealed class SqliteAnalysisStore
 {
+    public const int SchemaVersion = 2;
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
     };
     private readonly string _connectionString;
     private readonly IDataProtector _protector;
+
+    private const string Schema = """
+        CREATE TABLE IF NOT EXISTS analyses (
+            id TEXT PRIMARY KEY,
+            solution_path TEXT NOT NULL COLLATE NOCASE,
+            endpoint_method TEXT NOT NULL,
+            endpoint_route TEXT NOT NULL,
+            project_name TEXT NOT NULL,
+            source_fingerprint TEXT NOT NULL,
+            report_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            previous_analysis_id TEXT NULL REFERENCES analyses(id) ON DELETE SET NULL,
+            sequence INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS analysis_sessions (
+            analysis_id TEXT PRIMARY KEY REFERENCES analyses(id) ON DELETE CASCADE,
+            protected_api_token TEXT,
+            manual_requests INTEGER NOT NULL DEFAULT 0 CHECK(manual_requests >= 0),
+            last_used_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS manual_executions (
+            analysis_id TEXT NOT NULL REFERENCES analyses(id) ON DELETE CASCADE,
+            execution_id TEXT NOT NULL,
+            scenario_id TEXT,
+            started_at TEXT NOT NULL,
+            source_fingerprint TEXT,
+            execution_json TEXT NOT NULL,
+            PRIMARY KEY(analysis_id, execution_id)
+        );
+        """;
+
+    /// <summary>
+    /// v1 → v2: numera as análises existentes pela criação (created_at; rowid no empate) e liga cada uma à anterior do mesmo
+    /// endpoint. O índice antigo ordenava por updated_at, o que fazia uma análise revalidada virar a "mais recente".
+    /// </summary>
+    private const string MigrationV2 = """
+        ALTER TABLE analyses ADD COLUMN previous_analysis_id TEXT NULL REFERENCES analyses(id) ON DELETE SET NULL;
+        ALTER TABLE analyses ADD COLUMN sequence INTEGER NOT NULL DEFAULT 0;
+        UPDATE analyses SET sequence = (SELECT COUNT(*) FROM analyses b
+            WHERE b.created_at < analyses.created_at OR (b.created_at = analyses.created_at AND b.rowid <= analyses.rowid));
+        UPDATE analyses SET previous_analysis_id = (SELECT p.id FROM analyses p
+            WHERE p.solution_path = analyses.solution_path AND p.endpoint_method = analyses.endpoint_method
+                AND p.endpoint_route = analyses.endpoint_route AND p.project_name = analyses.project_name
+                AND p.sequence < analyses.sequence
+            ORDER BY p.sequence DESC LIMIT 1);
+        DROP INDEX IF EXISTS ix_analyses_endpoint;
+        """;
+
+    private const string Indexes = """
+        CREATE UNIQUE INDEX IF NOT EXISTS ix_analyses_sequence ON analyses(sequence);
+        CREATE INDEX IF NOT EXISTS ix_analyses_history
+            ON analyses(solution_path, endpoint_method, endpoint_route, project_name, sequence);
+        """;
 
     public static string DatabasePath(RuntimeOptions options) => Path.GetFullPath(options.AnalysisDatabasePath
         ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "EndpointAnalyzer", "analyses.db"));
@@ -35,42 +99,14 @@ public sealed class SqliteAnalysisStore
         using var command = connection.CreateCommand();
         command.CommandText = "PRAGMA journal_mode=WAL;";
         command.ExecuteNonQuery();
-        command.CommandText = "PRAGMA user_version;";
-        if (Convert.ToInt32(command.ExecuteScalar()) > 1)
-            throw new InvalidOperationException("O banco de análises foi criado por uma versão mais nova do EndpointAnalyzer.");
+        // BEGIN IMMEDIATE: outro processo abrindo o mesmo banco espera e, ao ler a versão, já encontra a migração feita.
         using var transaction = connection.BeginTransaction();
         command.Transaction = transaction;
-        command.CommandText = """
-            CREATE TABLE IF NOT EXISTS analyses (
-                id TEXT PRIMARY KEY,
-                solution_path TEXT NOT NULL COLLATE NOCASE,
-                endpoint_method TEXT NOT NULL,
-                endpoint_route TEXT NOT NULL,
-                project_name TEXT NOT NULL,
-                source_fingerprint TEXT NOT NULL,
-                report_json TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS ix_analyses_endpoint
-                ON analyses(solution_path, endpoint_method, endpoint_route, project_name, updated_at);
-            CREATE TABLE IF NOT EXISTS analysis_sessions (
-                analysis_id TEXT PRIMARY KEY REFERENCES analyses(id) ON DELETE CASCADE,
-                protected_api_token TEXT,
-                manual_requests INTEGER NOT NULL DEFAULT 0 CHECK(manual_requests >= 0),
-                last_used_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS manual_executions (
-                analysis_id TEXT NOT NULL REFERENCES analyses(id) ON DELETE CASCADE,
-                execution_id TEXT NOT NULL,
-                scenario_id TEXT,
-                started_at TEXT NOT NULL,
-                source_fingerprint TEXT,
-                execution_json TEXT NOT NULL,
-                PRIMARY KEY(analysis_id, execution_id)
-            );
-            PRAGMA user_version=1;
-            """;
+        command.CommandText = "PRAGMA user_version;";
+        var version = Convert.ToInt32(command.ExecuteScalar());
+        if (version > SchemaVersion)
+            throw new InvalidOperationException("O banco de análises foi criado por uma versão mais nova do EndpointAnalyzer.");
+        command.CommandText = (version == 1 ? MigrationV2 : Schema) + Indexes + $"PRAGMA user_version={SchemaVersion};";
         command.ExecuteNonQuery();
         transaction.Commit();
     }
@@ -88,9 +124,15 @@ public sealed class SqliteAnalysisStore
         using var transaction = connection.BeginTransaction();
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
+        // A versão anterior e a ordem de criação são lidas e gravadas na mesma transação (BEGIN IMMEDIATE): duas análises
+        // simultâneas do endpoint nunca apontam para a mesma antecessora. Atualizar uma análise não toca nessas colunas.
         command.CommandText = """
-            INSERT INTO analyses(id, solution_path, endpoint_method, endpoint_route, project_name, source_fingerprint, report_json, created_at, updated_at)
-            VALUES($id, $path, $method, $route, $project, $fingerprint, $report, $created, $updated)
+            INSERT INTO analyses(id, solution_path, endpoint_method, endpoint_route, project_name, source_fingerprint, report_json,
+                created_at, updated_at, previous_analysis_id, sequence)
+            VALUES($id, $path, $method, $route, $project, $fingerprint, $report, $created, $updated,
+                (SELECT p.id FROM analyses p WHERE p.solution_path=$path AND p.endpoint_method=$method AND p.endpoint_route=$route
+                    AND p.project_name=$project AND p.id<>$id ORDER BY p.sequence DESC LIMIT 1),
+                (SELECT COALESCE(MAX(sequence), 0) + 1 FROM analyses))
             ON CONFLICT(id) DO UPDATE SET report_json=excluded.report_json, updated_at=excluded.updated_at;
             INSERT INTO analysis_sessions(analysis_id, protected_api_token, manual_requests, last_used_at)
             VALUES($id, $token, $requests, $updated)
@@ -157,13 +199,34 @@ public sealed class SqliteAnalysisStore
         };
     }
 
+    /// <summary>Relatório salvo e a ligação com a versão anterior, sem abrir a sessão (o token protegido não é lido).</summary>
+    public StoredAnalysis? LoadStored(string id)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT id, previous_analysis_id, solution_path, endpoint_method, endpoint_route, project_name, source_fingerprint,
+                report_json, created_at, updated_at
+            FROM analyses WHERE id=$id;
+            """;
+        command.Parameters.AddWithValue("$id", id);
+        using var reader = command.ExecuteReader();
+        if (!reader.Read()) return null;
+        return new StoredAnalysis(reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1), reader.GetString(2),
+            reader.GetString(3), reader.GetString(4), reader.GetString(5), reader.GetString(6),
+            DateTimeOffset.Parse(reader.GetString(8), CultureInfo.InvariantCulture),
+            DateTimeOffset.Parse(reader.GetString(9), CultureInfo.InvariantCulture),
+            JsonSerializer.Deserialize<EndpointAnalysisReport>(reader.GetString(7), JsonOptions)!);
+    }
+
+    /// <summary>Versão mais recente do endpoint pela ordem de criação (não pela última alteração).</summary>
     public string? LatestId(string solutionPath, string method, string route, string project)
     {
         using var connection = Open();
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT id FROM analyses WHERE solution_path=$path AND endpoint_method=$method
-                AND endpoint_route=$route AND project_name=$project ORDER BY updated_at DESC LIMIT 1;
+                AND endpoint_route=$route AND project_name=$project ORDER BY sequence DESC LIMIT 1;
             """;
         command.Parameters.AddWithValue("$path", Path.GetFullPath(solutionPath));
         command.Parameters.AddWithValue("$method", method.ToUpperInvariant());
