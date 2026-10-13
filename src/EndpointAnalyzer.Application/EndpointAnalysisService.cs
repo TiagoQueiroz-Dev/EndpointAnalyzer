@@ -43,6 +43,8 @@ public class EndpointAnalysisService(
 
     private readonly IBusinessFlowAiAnalyzer _businessFlow = businessFlow ?? new BusinessFlowAiAnalyzer();
 
+    private readonly RunningAnalyses _running = new();
+
     private sealed record StaticAnalysis(LoadedSolution Solution, EndpointAnalysisContext Context, ScenarioModel? Scenarios, string Fingerprint);
 
     public Task<bool> IsAiAvailableAsync(CancellationToken cancellationToken = default) => IsAiAvailableAsync(null, cancellationToken);
@@ -108,9 +110,17 @@ public class EndpointAnalysisService(
     /// Provedor de toda a IA da análise (documentação, fluxo de negócio e validação em runtime): <see cref="AiProviders.Claude"/>,
     /// <see cref="AiProviders.Codex"/> ou nulo (automático).
     /// </param>
+    /// <exception cref="AnalysisSessionException">409: já existe uma análise deste endpoint em andamento.</exception>
     public async Task<EndpointAnalysisReport> AnalyzeAsync(string solutionPath, EndpointInfo endpoint, bool useAi = true, bool? validateRuntime = null,
         string? apiToken = null, CancellationToken cancellationToken = default, AnalysisSections sections = AnalysisSections.All,
         AnalysisSections? aiSections = null, string? aiProvider = null)
+    {
+        using var _ = _running.Start(solutionPath, endpoint.Project, endpoint.Id);
+        return await AnalyzeCoreAsync(solutionPath, endpoint, useAi, validateRuntime, apiToken, cancellationToken, sections, aiSections, aiProvider);
+    }
+
+    private async Task<EndpointAnalysisReport> AnalyzeCoreAsync(string solutionPath, EndpointInfo endpoint, bool useAi, bool? validateRuntime,
+        string? apiToken, CancellationToken cancellationToken, AnalysisSections sections, AnalysisSections? aiSections, string? aiProvider)
     {
         var scenarioTabs = (sections & (AnalysisSections.Scenarios | AnalysisSections.Complete)) != 0;
         var runtimeAllowed = runtime is not null && (validateRuntime ?? runtime.Options.Enabled);

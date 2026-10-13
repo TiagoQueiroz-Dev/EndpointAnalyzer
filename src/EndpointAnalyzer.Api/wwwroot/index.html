@@ -95,6 +95,54 @@
   .method.DELETE { color: var(--delete); } .method.GET { color: var(--get); }
   .empty { padding: 12px 8px; font-size: 13px; color: var(--muted); }
 
+  /* Seleção múltipla para a fila (como nas listas do Linear): o checkbox do endpoint aparece sob o mouse ou com foco e,
+     havendo seleção, em todos; em telas sem hover, sempre. Nos grupos, uma ação em texto com a contagem ("2/4"). */
+  .items > li { display: flex; align-items: flex-start; gap: 2px; }
+  .items > li > .item { width: auto; flex: 1; min-width: 0; }
+  .pick-box { appearance: none; flex: none; display: grid; place-content: center; width: 15px; height: 15px; margin: 8px 0 0 2px;
+              border: 1.5px solid var(--muted); border-radius: 4px; background: var(--panel); cursor: pointer; opacity: 0;
+              transition: opacity .12s, background-color .12s, border-color .12s; }
+  .pick-box::before { content: ""; width: 9px; height: 9px; transform: scale(0); transition: transform .1s; background: var(--accent-text);
+                      clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%); }
+  .pick-box:checked { background: var(--accent); border-color: var(--accent); }
+  .pick-box:checked::before { transform: scale(1); }
+  .pick-box:hover { border-color: var(--accent); }
+  .pick-box:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .items > li:hover > .pick-box, .pick-box:focus-visible, .pick-box:checked, #groups.selecting .pick-box { opacity: 1; }
+  @media (hover: none) { .pick-box { opacity: 1; } }
+  @media (forced-colors: active) { .pick-box { opacity: 1; } .pick-box::before { background: CanvasText; } }
+  .group { position: relative; }
+  .group-toggle > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Sobre o fim do cabeçalho, com fundo em degradê: o nome do grupo não muda de lugar quando a ação aparece. */
+  .group-pick { --row-bg: var(--sidebar); position: absolute; top: 6px; right: 4px; display: flex; align-items: center; gap: 4px;
+                padding-left: 18px; background: linear-gradient(to right, transparent, var(--row-bg) 16px); opacity: 0;
+                pointer-events: none; transition: opacity .12s; }
+  .group-pick .pick-count { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .group-pick button { padding: 2px 6px; border: 0; border-radius: 4px; background: none; color: var(--accent);
+                       font: 600 11.5px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; cursor: pointer; }
+  .group-pick button:hover { background: var(--active); }
+  .group-pick button:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; }
+  .group:has(> .group-toggle:hover) > .group-pick, .group:has(> .group-pick:hover) > .group-pick { --row-bg: var(--hover); }
+  .group:has(> .group-pick:hover) > .group-toggle { background: var(--hover); }
+  .group:has(> .group-toggle:hover) > .group-pick, .group-pick:hover, .group-pick:focus-within, #groups.selecting .group-pick {
+    opacity: 1; pointer-events: auto; }
+  @media (hover: none) { .group-pick { opacity: 1; pointer-events: auto; } }
+  .item-end { flex: none; display: flex; align-items: flex-start; gap: 6px; }
+  /* Situação do endpoint na fila: pendente, analisando, concluído, erro ou cancelado. */
+  .queue-dot { display: none; flex: none; width: 7px; height: 7px; margin-top: 6px; border-radius: 50%; }
+  .queue-dot.pendente, .queue-dot.analisando, .queue-dot.concluido, .queue-dot.erro, .queue-dot.cancelado { display: block; }
+  .queue-dot.pendente { background: var(--muted); }
+  .queue-dot.analisando { background: var(--accent); animation: queue-pulse 1s ease-in-out infinite alternate; }
+  .queue-dot.concluido { background: var(--post); }
+  .queue-dot.erro { background: var(--danger); }
+  .queue-dot.cancelado { border: 1px solid var(--muted); }
+  @keyframes queue-pulse { to { opacity: .3; } }
+  .selection-bar { display: flex; align-items: center; gap: 6px; margin: 0 10px 8px; padding: 6px 6px 6px 10px; border: 1px solid var(--accent);
+                   border-radius: 8px; background: var(--panel); font-size: 12.5px; }
+  .selection-bar[hidden] { display: none; }
+  .selection-bar > span { flex: 1; min-width: 0; }
+  .selection-bar button { padding: 4px 9px; font-size: 12px; }
+
   /* Rodapé: conta do Claude + modelo/effort */
   .claude-footer { border-top: 1px solid var(--border); padding: 10px; display: flex; flex-direction: column; gap: 8px; }
   .claude-btn { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; padding: 9px 12px;
@@ -352,6 +400,29 @@
   .code-line.hl .n { color: var(--text); font-weight: 600; }
   .code-line.hl .t { box-shadow: inset 3px 0 var(--hl-border); }
 
+  /* ---- Fila de análises ---- */
+  .queue-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .queue-head h3 { margin: 0; font-size: 15px; }
+  .queue-head .spacer { flex: 1; }
+  .queue-head button, .queue-item button { padding: 4px 10px; font-size: 12.5px; }
+  .queue-note { margin: 6px 0 0; font-size: 13px; }
+  .queue-progress { height: 6px; margin: 10px 0; border-radius: 3px; background: var(--hover); overflow: hidden; }
+  .queue-progress > span { display: block; height: 100%; background: var(--accent); transition: width .3s; }
+  .queue-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow-y: auto; }
+  .queue-item { display: grid; grid-template-columns: 22px 10px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 6px 8px;
+                border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
+  .queue-item.analisando { border-color: var(--accent); background: var(--active); }
+  .queue-item .q-pos { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+  .queue-item .queue-dot { margin-top: 0; }
+  .queue-item .q-main { min-width: 0; }
+  .queue-item .q-route { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
+  .queue-item .q-route .route { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .queue-item .q-status { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+  .queue-item .q-status.error { color: var(--danger); }
+  .queue-item .q-actions { display: flex; gap: 4px; }
+  .queue-item .q-open { padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; min-width: 0; }
+  .queue-item .q-open:hover .route { text-decoration: underline; }
+
   dialog { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); color: var(--text); padding: 20px; width: min(460px, calc(100vw - 32px)); }
   dialog::backdrop { background: rgba(0, 0, 0, .45); }
   dialog h2 { font-size: 17px; margin: 0 0 8px; }
@@ -383,12 +454,14 @@
     <input id="search" type="text" placeholder="Buscar" autocomplete="off" spellcheck="false" aria-label="Buscar endpoints">
     <kbd>Ctrl K</kbd>
   </div>
+  <div id="selectionBar" class="selection-bar" hidden aria-live="polite"></div>
   <nav id="groups" aria-label="Endpoints"></nav>
   <div id="claudeFooter" class="claude-footer"><span class="footer-note">verificando conta do Claude...</span></div>
   <div id="codexFooter" class="claude-footer codex-footer"><span class="footer-note">verificando conta do Codex...</span></div>
 </aside>
 
 <main>
+  <section id="queuePanel" class="queue-panel" hidden aria-label="Fila de análises"></section>
   <section id="endpointPanel">
     <p class="muted">Selecione um endpoint na barra lateral.</p>
   </section>
@@ -495,6 +568,7 @@ async function init() {
   runtimeAvailable = !!info.runtimeValidation;
   // O último arquivo escolhido tem prioridade sobre o padrão do appsettings.
   setSolution(store.get("ea.solutionPath", null) ?? info.defaultSolution ?? "");
+  restoreQueue();
   if (solutionPath) loadEndpoints(false);
   await Promise.all([refreshAuth(false), refreshCodex(false)]);
 }
@@ -668,11 +742,13 @@ function renderGroups() {
       const id = groupKey(items[0]);
       const open = query || openGroups.has(id);
       return `<div class="group ${open ? "open" : ""}" data-group="${esc(id)}">
-        <button class="group-toggle" aria-expanded="${open}">${chevron}<span>${esc(name)}</span></button>
+        <button class="group-toggle" aria-expanded="${open}" title="${esc(name)}">${chevron}<span>${esc(name)}</span></button>
+        <span class="group-pick"><span class="pick-count" aria-hidden="true"></span><button type="button" data-pick-group>Selecionar tudo</button></span>
         <ul class="items">${items.map(e => `
-          <li><button class="item ${selected && key(selected) === key(e) ? "active" : ""}" data-key="${esc(key(e))}" title="${esc(route(e))}">
+          <li><input type="checkbox" class="pick-box" data-pick="${esc(key(e))}" title="Selecionar para a fila" aria-label="Selecionar ${esc(route(e))} para a fila">
+            <button class="item ${selected && key(selected) === key(e) ? "active" : ""}" data-key="${esc(key(e))}" title="${esc(route(e))}">
             <span class="title">${esc(e.summary || e.route)}</span>
-            <span class="method ${esc(e.httpMethod)}">${esc(methodLabel(e.httpMethod))}</span>
+            <span class="item-end">${queueDotHtml(key(e))}<span class="method ${esc(e.httpMethod)}">${esc(methodLabel(e.httpMethod))}</span></span>
           </button></li>`).join("")}
         </ul></div>`;
     }).join("");
@@ -682,6 +758,7 @@ function renderGroups() {
     const open = query || openProjects.has(name);
     return `<div class="group ${open ? "open" : ""}" data-project="${esc(name)}">
       <button class="group-toggle project-toggle" aria-expanded="${open}" title="${esc(name)}">${chevron}<span>${esc(name)}</span></button>
+      <span class="group-pick"><span class="pick-count" aria-hidden="true"></span><button type="button" data-pick-group>Selecionar tudo</button></span>
       <div class="subgroups">${renderGroupNodes(visible.filter(e => e.project === name))}</div></div>`;
   }).join("");
 
@@ -695,6 +772,18 @@ function renderGroups() {
     store.set(storeKey, [...set]);
   }));
   document.querySelectorAll(".item").forEach(b => b.addEventListener("click", () => selectEndpoint(endpoints.find(e => key(e) === b.dataset.key))));
+  // Checkbox do endpoint: entra/sai da seleção; Shift+clique marca (ou desmarca) o intervalo desde o último clicado.
+  document.querySelectorAll(".pick-box[data-pick]").forEach(box => {
+    box.addEventListener("click", (ev) => pickClicked(box, ev.shiftKey));
+    // Shift+clique não seleciona o texto entre os dois checkboxes.
+    box.addEventListener("mousedown", (ev) => { if (ev.shiftKey) ev.preventDefault(); });
+  });
+  // "Selecionar tudo" do grupo (ou projeto): marca os endpoints exibidos dentro dele; com todos marcados, "Desmarcar".
+  document.querySelectorAll("[data-pick-group]").forEach(button => button.addEventListener("click", () => {
+    const keys = [...button.closest(".group").querySelectorAll(".pick-box[data-pick]")].map(b => b.dataset.pick);
+    togglePick(keys, !keys.every(k => multiPick.has(k)));
+  }));
+  updatePickBoxes();
 }
 
 function selectEndpoint(endpoint) {
@@ -909,20 +998,31 @@ const analysisStatus = (report) => {
 
 const savedAtLabel = (time) => new Date(time).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
 
-/** Botões e status do card conforme o endpoint tenha uma análise em andamento. */
+let queueNoteShown = false;   // o status do card mostra a posição na fila (some quando o item sai dela)
+
+/** Botões e status do card conforme o endpoint tenha uma análise em andamento ou esteja na fila. */
 function showAnalysisState(endpoint) {
-  if (!$("analyze") || selected !== endpoint) return;
+  if (!$("analyze") || !selected || key(selected) !== key(endpoint)) return;
   const current = running.get(key(endpoint));
-  $("analyze").disabled = !!current;
+  const queued = !current && queueItem(key(endpoint));
+  // Pendente na fila: ANALISAR fica desabilitado para não analisar o mesmo endpoint duas vezes.
+  $("analyze").disabled = !!current || !!queued;
   $("cancelAnalysis").disabled = !current;
   if (current) {
     $("analyzeStatus").textContent = current.status;
     $("analyzeStatus").className = "muted";
+  } else if (queued) {
+    $("analyzeStatus").textContent = `Na fila: posição ${queue.items.indexOf(queued) + 1} de ${queue.items.length}. Remova-o da fila para analisar agora.`;
+    $("analyzeStatus").className = "muted";
+  } else if (queueNoteShown) {
+    $("analyzeStatus").textContent = "";
   }
+  queueNoteShown = !current && !!queued;
 }
 
 function setAnalyzeStatus(endpoint, text, className) {
-  if (selected !== endpoint || !$("analyzeStatus")) return;
+  if (!selected || key(selected) !== key(endpoint) || !$("analyzeStatus")) return;
+  queueNoteShown = false;
   $("analyzeStatus").textContent = text;
   $("analyzeStatus").className = className;
 }
@@ -972,8 +1072,72 @@ async function restoreAnalysis(endpoint) {
   }
 }
 
+/**
+ * Inicia a análise de um endpoint (botão ANALISAR ou fila) e a registra em `running`: um endpoint nunca tem duas análises
+ * ao mesmo tempo. Devolve a entrada { controller, provider, status, promise }; a promise resolve com { response },
+ * { cancelled } ou { error } (nunca rejeita) e o resultado já fica salvo (localStorage e banco local).
+ */
+function startAnalysis(endpoint, solution, { sections, ai, provider, token }, note = "") {
+  // A IA dos cenários inclui a validação com a API em execução (quando o servidor permite).
+  const runtime = runtimeAvailable && ai.includes("scenarios");
+  const withAi = `com o ${providerName(provider)}`;
+  const controller = new AbortController();
+  const entry = {
+    controller, provider,
+    status: (runtime ? `Analisando ${withAi} e validando os cenários com a API em execução (pode levar vários minutos)...`
+      : ai.length ? `Analisando ${withAi} (pode levar alguns minutos)...` : "Analisando...") + note,
+  };
+  entry.promise = (async () => {
+    try {
+      // Cancelar aborta a requisição; o servidor recebe o cancelamento e encerra a IA e a API iniciada para o runtime.
+      const response = await api("/api/analysis", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          solutionPath: solution,
+          endpoint: { method: endpoint.httpMethod, route: endpoint.route },
+          sections,
+          ai,
+          validateRuntime: runtime,
+          apiToken: runtime && token ? token : null,
+          provider,
+        }),
+      });
+      // Salva mesmo se o usuário já estiver em outro endpoint: ao voltar, o resultado está lá.
+      savedAnalyses.set(endpoint, solution, response);
+      return { response };
+    } catch (error) {
+      return controller.signal.aborted ? { cancelled: true } : { error };
+    } finally {
+      running.delete(key(endpoint));
+    }
+  })();
+  running.set(key(endpoint), entry);
+  return entry;
+}
+
+/** Mostra o desfecho de uma análise no card (se o endpoint estiver aberto) e atualiza a conta e o uso do plano. */
+function finishAnalysis(endpoint, outcome, provider) {
+  if (outcome.response) {
+    if (selected && key(selected) === key(endpoint)) {
+      showResponse(outcome.response);
+      setAnalyzeStatus(endpoint, analysisStatus(outcome.response.report), "muted");
+    }
+  } else if (outcome.cancelled) {
+    setAnalyzeStatus(endpoint, "Análise cancelada.", "muted");
+  } else {
+    setAnalyzeStatus(endpoint, outcome.error.message, "error");
+    // Sessão expirada: o rodapé passa a mostrar o estado real da conta (o limite atingido aparece no uso, abaixo).
+    if (outcome.error.code === "authentication") (outcome.error.provider === "codex" ? refreshCodex : refreshAuth)(true);
+  }
+  showAnalysisState(endpoint);
+  // A análise consumiu o limite do plano: atualiza as barras de uso da conta usada.
+  if (provider && !outcome.cancelled) refreshUsage(provider);
+}
+
 async function analyze() {
-  if (!selected || running.has(key(selected))) return;
+  if (!selected || running.has(key(selected)) || queueItem(key(selected))) return;
   const endpoint = selected, solution = solutionPath;
   const sections = selectedSections();
   if (!sections.length) {
@@ -981,50 +1145,351 @@ async function analyze() {
     return;
   }
   const ai = selectedAi();
-  // A IA dos cenários inclui a validação com a API em execução (quando o servidor permite).
-  const runtime = runtimeAvailable && ai.includes("scenarios");
   // Toda a IA da análise (documentação, fluxo de negócio e runtime) roda no mesmo provedor.
   const provider = ai.length ? currentProvider() : null;
-  const withAi = `com o ${providerName(provider)}`;
-  const controller = new AbortController();
-  running.set(key(endpoint), {
-    controller,
-    status: runtime ? `Analisando ${withAi} e validando os cenários com a API em execução (pode levar vários minutos)...`
-      : ai.length ? `Analisando ${withAi} (pode levar alguns minutos)...` : "Analisando...",
-  });
+  const entry = startAnalysis(endpoint, solution, { sections, ai, provider, token: apiToken() });
   showAnalysisState(endpoint);
-  try {
-    // Cancelar aborta a requisição; o servidor recebe o cancelamento e encerra a IA e a API iniciada para o runtime.
-    const response = await api("/api/analysis", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: controller.signal,
-      body: JSON.stringify({
-        solutionPath: solution,
-        endpoint: { method: endpoint.httpMethod, route: endpoint.route },
-        sections,
-        ai,
-        validateRuntime: runtime,
-        apiToken: runtime && apiToken() ? apiToken() : null,
-        provider,
-      }),
-    });
-    // Salva mesmo se o usuário já estiver em outro endpoint: ao voltar, o resultado está lá.
-    savedAnalyses.set(endpoint, solution, response);
-    if (selected !== endpoint) return;
-    showResponse(response);
-    setAnalyzeStatus(endpoint, analysisStatus(response.report), "muted");
-  } catch (err) {
-    if (controller.signal.aborted) setAnalyzeStatus(endpoint, "Análise cancelada.", "muted");
-    else setAnalyzeStatus(endpoint, err.message, "error");
-    // Sessão expirada: o rodapé passa a mostrar o estado real da conta (o limite atingido aparece no uso, abaixo).
-    if (err.code === "authentication") (err.provider === "codex" ? refreshCodex : refreshAuth)(true);
-  } finally {
-    running.delete(key(endpoint));
-    showAnalysisState(endpoint);
-    // A análise consumiu o limite do plano: atualiza as barras de uso da conta usada.
-    if (provider && !controller.signal.aborted) refreshUsage(provider);
+  finishAnalysis(endpoint, await entry.promise, provider);
+}
+
+// ---- Fila de análises (seleção múltipla de endpoints) ----
+
+/** Endpoints marcados na barra lateral (chaves de key()), na ordem em que entram na fila. */
+const multiPick = new Set();
+
+const queueStatusLabels = { pendente: "Pendente", analisando: "Analisando", concluido: "Concluído", erro: "Erro", cancelado: "Cancelado" };
+
+/**
+ * Fila: analisa um endpoint por vez, na ordem, com as abas, a IA e o provedor fixados ao iniciar. Cada item tem o próprio
+ * status e resultado (salvo como numa análise avulsa); a fila fica no localStorage e, se a página recarregar, volta
+ * pausada. Itens: { key, httpMethod, route, project, summary, status, error, note, provider, startedAt, finishedAt }.
+ */
+const queue = {
+  solution: "",
+  options: null,      // { sections, ai, provider }
+  items: [],
+  active: null,       // item em análise (no máximo um)
+  runner: null,       // laço em execução: um só, por mais que se clique
+  paused: null,       // { reason, provider }: o próximo item não começa até o usuário retomar
+};
+
+const queueKey = "ea.queue";
+const queueItem = (k) => queue.items.find(i => i.key === k && (i.status === "pendente" || i.status === "analisando"));
+const queueStatusOf = (k) => [...queue.items].reverse().find(i => i.key === k)?.status ?? "";
+const queueDotHtml = (k) => {
+  const status = queueStatusOf(k);
+  return `<span class="queue-dot ${status}" ${status ? `title="Fila: ${esc(queueStatusLabels[status])}"` : ""}></span>`;
+};
+const queueEndpoint = (item) => ({ httpMethod: item.httpMethod, route: item.route, project: item.project, summary: item.summary });
+
+function saveQueue() {
+  store.set(queueKey, { solution: queue.solution, options: queue.options, paused: queue.paused, items: queue.items });
+}
+
+/** Ao abrir a página: a fila salva volta pausada (nada roda sem o usuário pedir, para não consumir o limite à toa). */
+function restoreQueue() {
+  const saved = store.get(queueKey, null);
+  if (!saved?.items?.length) return;
+  Object.assign(queue, { solution: saved.solution, options: saved.options, paused: saved.paused, items: saved.items });
+  const interrupted = queue.items.filter(i => i.status === "analisando");
+  for (const item of interrupted) { item.status = "pendente"; item.note = "Interrompido ao recarregar a página."; }
+  if (queue.items.some(i => i.status === "pendente"))
+    queue.paused ??= { reason: "A fila foi interrompida ao recarregar a página. Clique em Retomar para continuar de onde parou.", provider: null };
+  renderQueue();
+}
+
+/** Abas, IA e provedor da fila: os mesmos marcados no card do endpoint (guardados no navegador). */
+function queueOptions() {
+  const sections = store.get("ea.sections", resultTabs.map(([id]) => id));
+  const provider = currentProvider();
+  const ai = provider ? store.get("ea.ai", Object.keys(aiOptions)).filter(id => aiOptions[id] && sections.includes(id)) : [];
+  return { sections, ai, provider: ai.length ? provider : null };
+}
+
+function togglePick(keys, checked) {
+  for (const k of keys) if (checked) multiPick.add(k); else multiPick.delete(k);
+  updatePickBoxes();
+  renderSelectionBar();
+}
+
+let lastPick = null;   // último checkbox clicado: âncora do Shift+clique
+
+/** Clique no checkbox; com Shift, aplica o mesmo estado a todos os endpoints visíveis entre ele e o último clicado. */
+function pickClicked(box, shift) {
+  const boxes = [...document.querySelectorAll(".pick-box[data-pick]")].filter(b => b.getClientRects().length > 0);
+  const from = shift && lastPick ? boxes.findIndex(b => b.dataset.pick === lastPick) : -1, to = boxes.indexOf(box);
+  const range = from >= 0 && to >= 0 ? boxes.slice(Math.min(from, to), Math.max(from, to) + 1) : [box];
+  lastPick = box.dataset.pick;
+  togglePick(range.map(b => b.dataset.pick), box.checked);
+}
+
+/** Checkboxes da árvore conforme a seleção e, em cada grupo, a contagem ("2/4") e a ação (Selecionar tudo / Desmarcar). */
+function updatePickBoxes() {
+  document.querySelectorAll(".pick-box[data-pick]").forEach(box => { box.checked = multiPick.has(box.dataset.pick); });
+  document.querySelectorAll("[data-pick-group]").forEach(button => {
+    const node = button.closest(".group");
+    const children = [...node.querySelectorAll(".pick-box[data-pick]")];
+    const count = children.filter(b => b.checked).length, all = children.length > 0 && count === children.length;
+    const name = node.querySelector(":scope > .group-toggle > span")?.textContent ?? "";
+    button.textContent = all ? "Desmarcar" : "Selecionar tudo";
+    button.setAttribute("aria-label", `${all ? "Desmarcar" : "Selecionar"} os ${children.length} endpoint(s) de ${name} para a fila`);
+    button.parentElement.querySelector(".pick-count").textContent = count ? `${count}/${children.length}` : "";
+  });
+  // Modo seleção: com algo marcado, os checkboxes e as ações dos grupos ficam visíveis sem precisar do mouse.
+  $("groups")?.classList?.toggle("selecting", multiPick.size > 0);
+}
+
+/** Itens selecionados que ainda não estão pendentes nem em análise na fila (os outros seriam duplicados). */
+const pickedToQueue = () => endpoints.filter(e => multiPick.has(key(e)) && !queueItem(key(e)));
+
+function renderSelectionBar() {
+  const bar = $("selectionBar");
+  if (!bar) return;
+  bar.hidden = multiPick.size === 0;
+  if (bar.hidden) { bar.innerHTML = ""; return; }
+  const fresh = pickedToQueue().length, busy = !!queue.runner || queue.items.some(i => i.status === "pendente");
+  bar.innerHTML = `<span title="Shift+clique no checkbox marca um intervalo de endpoints">${multiPick.size} selecionado(s)</span>
+    <button type="button" id="queueStart" ${fresh ? "" : "disabled"} title="${fresh ? "Analisa os selecionados um por vez, na ordem" : "Os selecionados já estão na fila"}">${busy ? `Adicionar à fila (${fresh})` : "Analisar em fila"}</button>
+    <button type="button" class="secondary" id="pickClear">Limpar</button>`;
+  $("queueStart").addEventListener("click", startQueue);
+  $("pickClear").addEventListener("click", () => togglePick([...multiPick], false));
+}
+
+/** Coloca os selecionados na fila (sem duplicar os pendentes/em análise) e inicia a execução, se ela estiver parada. */
+function startQueue() {
+  const busy = !!queue.runner || queue.items.some(i => i.status === "pendente");
+  if (busy && queue.solution !== solutionPath) {
+    alert("A fila em andamento é de outra solução. Cancele os itens restantes dela antes de começar outra.");
+    return;
   }
+  const added = enqueue(pickedToQueue());
+  if (!added) return;
+  togglePick([...multiPick], false);
+  runQueue();
+}
+
+/** Acrescenta endpoints ao fim da fila; um que já terminou volta como pendente. Devolve quantos entraram. */
+function enqueue(list) {
+  const busy = !!queue.runner || queue.items.some(i => i.status === "pendente");
+  if (!busy) {
+    // Fila nova: os resultados da anterior continuam salvos em cada endpoint.
+    Object.assign(queue, { solution: solutionPath, options: queueOptions(), items: [], paused: null });
+  }
+  let added = 0;
+  for (const e of list) {
+    if (queueItem(key(e))) continue;
+    queue.items = queue.items.filter(i => i.key !== key(e));
+    queue.items.push({ key: key(e), httpMethod: e.httpMethod, route: e.route, project: e.project, summary: e.summary, status: "pendente" });
+    added++;
+  }
+  saveQueue();
+  renderQueue();
+  return added;
+}
+
+/** Um laço só: analisa o próximo pendente quando o atual termina, até acabar, pausar ou cancelar os restantes. */
+function runQueue() {
+  if (queue.runner || queue.paused) return queue.runner;
+  queue.runner = (async () => {
+    try {
+      for (let item; !queue.paused && (item = queue.items.find(i => i.status === "pendente"));) {
+        // Conta desconectada no meio da fila: pausa em vez de falhar todos os próximos.
+        const provider = queue.options?.provider;
+        if (provider && !providerAvailable[provider]()) {
+          queue.paused = { reason: `A conta do ${providerName(provider)} não está conectada.`, provider };
+          break;
+        }
+        await runQueueItem(item);
+      }
+    } finally {
+      queue.runner = null;
+      queue.active = null;
+      saveQueue();
+      renderQueue();
+    }
+  })();
+  renderQueue();
+  return queue.runner;
+}
+
+async function runQueueItem(item) {
+  const endpoint = queueEndpoint(item);
+  const options = queue.options;
+  Object.assign(item, { status: "analisando", error: null, note: null, startedAt: Date.now(), finishedAt: null, provider: options.provider });
+  queue.active = item;
+  // O mesmo endpoint já em análise pelo botão ANALISAR: a fila acompanha essa execução em vez de disparar outra.
+  const adopted = running.get(item.key);
+  const entry = adopted ?? startAnalysis(endpoint, queue.solution, {
+    ...options, token: options.ai.includes("scenarios") ? tokenStore()[item.project]?.token ?? null : null,
+  }, ` · fila: ${queue.items.indexOf(item) + 1} de ${queue.items.length}`);
+  saveQueue();
+  renderQueue();
+  showAnalysisState(endpoint);
+
+  const outcome = await entry.promise;
+  queue.active = null;
+  item.finishedAt = Date.now();
+  if (outcome.response) {
+    const report = outcome.response.report;
+    Object.assign(item, { status: "concluido", provider: report.version?.aiProvider ?? item.provider, note: analysisStatus(report) });
+  } else if (outcome.cancelled) {
+    Object.assign(item, { status: "cancelado", note: "Cancelado durante a análise." });
+  } else if (outcome.error.code === "usage_limit" || outcome.error.code === "authentication") {
+    // Limite atingido ou sessão expirada: não é falha do endpoint e os próximos falhariam do mesmo jeito. O item volta
+    // para a fila e ela pausa, preservando a ordem e o progresso para continuar (no mesmo ou em outro provedor).
+    Object.assign(item, { status: "pendente", note: outcome.error.message, finishedAt: null });
+    queue.paused = { reason: outcome.error.message, provider: outcome.error.provider ?? item.provider };
+  } else {
+    Object.assign(item, { status: "erro", error: outcome.error.message });
+  }
+  // A análise adotada é exibida por quem a iniciou (o botão ANALISAR).
+  if (!adopted) finishAnalysis(endpoint, outcome, options.provider);
+  saveQueue();
+  renderQueue();
+}
+
+/** Retoma a fila pausada; com provedor, troca o provedor dos itens restantes (ex.: limite do Claude → Codex). */
+function resumeQueue(provider) {
+  if (provider) queue.options = { ...queue.options, provider };
+  queue.paused = null;
+  for (const item of queue.items) if (item.status === "pendente") item.note = null;
+  saveQueue();
+  runQueue();
+}
+
+function cancelQueueCurrent() {
+  if (!queue.active) return;
+  queue.active.note = "Cancelamento solicitado...";
+  running.get(queue.active.key)?.controller.abort();
+  renderQueue();
+}
+
+/** Os pendentes não começam mais; o item em análise continua (use Cancelar atual para ele). */
+function cancelQueueRemaining() {
+  for (const item of queue.items) {
+    if (item.status !== "pendente") continue;
+    Object.assign(item, { status: "cancelado", note: "Cancelado antes de começar.", finishedAt: Date.now() });
+  }
+  queue.paused = null;
+  saveQueue();
+  renderQueue();
+}
+
+function removeQueueItem(k) {
+  queue.items = queue.items.filter(i => !(i.key === k && i.status === "pendente"));
+  if (!queue.items.some(i => i.status === "pendente")) queue.paused = null;
+  saveQueue();
+  renderQueue();
+}
+
+/** Volta um item com erro (ou cancelado) para o fim da fila. */
+function retryQueueItem(k) {
+  const item = queue.items.find(i => i.key === k);
+  if (!item || item.status === "pendente" || item.status === "analisando") return;
+  queue.items = [...queue.items.filter(i => i !== item), Object.assign(item, { status: "pendente", error: null, note: null, finishedAt: null })];
+  saveQueue();
+  runQueue();
+  renderQueue();
+}
+
+function clearQueue() {
+  if (queue.runner) return;
+  Object.assign(queue, { items: [], paused: null, options: null });
+  saveQueue();
+  renderQueue();
+}
+
+/** O outro provedor conectado, para continuar a fila quando o atual atingir o limite ou desconectar. */
+const otherProvider = (provider) => Object.keys(providerAvailable).find(id => id !== provider && providerAvailable[id]());
+
+function renderQueue() {
+  const panel = $("queuePanel");
+  // Situação na árvore, no card do endpoint aberto e na barra de seleção.
+  document.querySelectorAll(".item[data-key]").forEach(b => {
+    const dot = b.querySelector(".queue-dot");
+    if (dot) dot.outerHTML = queueDotHtml(b.dataset.key);
+  });
+  if (selected) showAnalysisState(selected);
+  renderSelectionBar();
+  if (!panel) return;
+  const items = queue.items;
+  panel.hidden = items.length === 0;
+  if (!items.length) { panel.innerHTML = ""; return; }
+
+  const count = (status) => items.filter(i => i.status === status).length;
+  const finished = count("concluido") + count("erro") + count("cancelado");
+  const active = queue.active, total = items.length;
+  const other = queue.paused && otherProvider(queue.paused.provider ?? queue.options?.provider);
+  const headline = active ? `Analisando ${items.indexOf(active) + 1} de ${total} endpoints`
+    : queue.paused ? `Fila pausada · ${finished} de ${total} finalizados`
+    : count("pendente") ? `Fila aguardando · ${count("pendente")} pendente(s)`
+    : `Fila concluída: ${count("concluido")} concluído(s)` + (count("erro") ? `, ${count("erro")} com erro` : "") + (count("cancelado") ? `, ${count("cancelado")} cancelado(s)` : "");
+  const options = queue.options;
+  const tabs = (ids) => ids.map(id => resultTabs.find(([t]) => t === id)?.[1] ?? id).join(", ");
+  const optionsText = options ? `Abas: ${tabs(options.sections)} · ` + (options.ai.length ? `IA (${providerName(options.provider)}): ${tabs(options.ai)}` : "sem IA") : "";
+  const solutionName = queue.solution.split(/[\\/]/).pop();
+
+  // Duração dos que rodaram: "12 s", "3 min 05 s".
+  const elapsed = (item) => {
+    if (!item.startedAt || !item.finishedAt) return "";
+    const seconds = Math.max(1, Math.round((item.finishedAt - item.startedAt) / 1000));
+    return ` · ${seconds < 90 ? `${seconds} s` : `${Math.floor(seconds / 60)} min ${String(seconds % 60).padStart(2, "0")} s`}`;
+  };
+  const statusText = (item) => item.status === "analisando"
+    ? item.note ?? running.get(item.key)?.status ?? "Analisando..."
+    : (item.status === "erro" ? item.error : item.note ?? queueStatusLabels[item.status]) + elapsed(item);
+  const actions = (item) => item.status === "pendente" ? `<button type="button" class="secondary" data-queue-remove="${esc(item.key)}" title="Tirar da fila">Remover</button>`
+    : item.status === "erro" || item.status === "cancelado" ? `<button type="button" class="secondary" data-queue-retry="${esc(item.key)}" title="Analisar de novo, no fim da fila">Tentar de novo</button>`
+    : "";
+
+  panel.innerHTML = `
+    <div class="queue-head">
+      <h3>Fila de análises</h3><span class="muted" role="status" aria-live="polite">${esc(headline)}</span>
+      <span class="spacer"></span>
+      ${active ? `<button type="button" class="danger" data-queue-action="cancel-current" ${active.note === "Cancelamento solicitado..." ? "disabled" : ""}>Cancelar atual</button>` : ""}
+      ${count("pendente") ? `<button type="button" class="secondary" data-queue-action="cancel-remaining">Cancelar restantes (${count("pendente")})</button>` : ""}
+      ${queue.paused && count("pendente") ? `<button type="button" data-queue-action="resume">Retomar</button>` : ""}
+      ${other && count("pendente") ? `<button type="button" data-queue-action="resume-other" data-provider="${other}">Continuar com o ${providerName(other)}</button>` : ""}
+      ${!queue.runner && !count("pendente") && count("erro") ? `<button type="button" class="secondary" data-queue-action="retry-errors">Reenfileirar com erro (${count("erro")})</button>` : ""}
+      ${!queue.runner ? `<button type="button" class="secondary" data-queue-action="clear">Limpar fila</button>` : ""}
+    </div>
+    ${queue.paused ? `<p class="queue-note error">${esc(queue.paused.reason)}</p>` : ""}
+    <p class="queue-note muted">${esc(optionsText)}${solutionName && queue.solution !== solutionPath ? ` · solução ${esc(solutionName)}` : ""}</p>
+    <div class="queue-progress" role="progressbar" aria-valuemin="0" aria-valuemax="${total}" aria-valuenow="${finished}"><span style="width:${Math.round(finished / total * 100)}%"></span></div>
+    <ol class="queue-list">${items.map((item, i) => `
+      <li class="queue-item ${item.status}">
+        <span class="q-pos">${i + 1}</span>
+        <span class="queue-dot ${item.status}" title="${esc(queueStatusLabels[item.status])}"></span>
+        <div class="q-main">
+          <button type="button" class="q-open" data-queue-open="${esc(item.key)}" title="Abrir ${esc(item.httpMethod)} ${esc(item.route)}">
+            <span class="q-route"><span class="method ${esc(item.httpMethod)}">${esc(methodLabel(item.httpMethod))}</span><span class="route">${esc(item.route)}</span></span>
+          </button>
+          <div class="q-status ${item.status === "erro" ? "error" : ""}">${esc(statusText(item))}</div>
+        </div>
+        <span class="q-actions">${actions(item)}</span>
+      </li>`).join("")}
+    </ol>`;
+}
+
+/** Botões do painel da fila (um listener só; o painel é redesenhado a cada mudança). */
+function onQueueClick(e) {
+  const open = e.target.closest("[data-queue-open]");
+  if (open) {
+    const endpoint = endpoints.find(x => key(x) === open.dataset.queueOpen);
+    if (endpoint && queue.solution === solutionPath) selectEndpoint(endpoint);
+    return;
+  }
+  const remove = e.target.closest("[data-queue-remove]");
+  if (remove) { removeQueueItem(remove.dataset.queueRemove); return; }
+  const retry = e.target.closest("[data-queue-retry]");
+  if (retry) { retryQueueItem(retry.dataset.queueRetry); return; }
+  const action = e.target.closest("[data-queue-action]")?.dataset.queueAction;
+  if (action === "cancel-current") cancelQueueCurrent();
+  else if (action === "cancel-remaining") cancelQueueRemaining();
+  else if (action === "resume") resumeQueue();
+  else if (action === "resume-other") resumeQueue(e.target.closest("[data-provider]").dataset.provider);
+  else if (action === "retry-errors") queue.items.filter(i => i.status === "erro").forEach(i => retryQueueItem(i.key));
+  else if (action === "clear") clearQueue();
 }
 
 function render(tab) {
@@ -3103,6 +3568,7 @@ async function codexLogout() {
 // ---- Eventos ----
 
 $("load").addEventListener("click", () => loadEndpoints(true));
+$("queuePanel").addEventListener("click", onQueueClick);
 $("browse").addEventListener("click", browse);
 $("fileName").addEventListener("click", browse);
 $("search").addEventListener("input", renderGroups);

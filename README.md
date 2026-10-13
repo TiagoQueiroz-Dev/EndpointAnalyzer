@@ -108,6 +108,15 @@ Na CLI, use `--provider claude` ou `--provider codex` para escolher a IA, e `--a
 
 Configuração em `appsettings.json` (`Analyzer`, `Claude`, `ClaudeCode`, `Codex`). Em `Codex`: `Executable`, `HomeDirectory`, `Model` (vazio = padrão da conta), `Effort` e `TimeoutMinutes`. A chave da API **não** deve ir para o appsettings; use `ANTHROPIC_API_KEY` ou `dotnet user-secrets set Claude:ApiKey ...`.
 
+### Fila de análises (vários endpoints)
+
+Marque os endpoints na barra lateral e clique em **Analisar em fila**. O checkbox aparece ao passar o mouse sobre o endpoint (ou com foco pelo teclado) e, havendo seleção, em todos; Shift+clique marca o intervalo desde o último clicado. No cabeçalho do grupo ou do projeto, **Selecionar tudo** marca todos os endpoints exibidos dentro dele (com todos marcados, vira **Desmarcar**), ao lado da contagem ("2/4"). A fila analisa um endpoint por vez, na ordem, com as abas, a IA e o provedor marcados no card do endpoint no momento em que começou; o próximo só começa quando o atual termina. O painel da fila mostra a ordem, o progresso ("Analisando 2 de 8 endpoints"), o endpoint em execução, os pendentes e os concluídos, com erro ou cancelados; clicar num item abre o resultado dele, que fica salvo como o de uma análise avulsa (navegador e banco local).
+
+- **Sem duplicidade:** um endpoint pendente ou em análise não entra de novo na fila, e o ANALISAR dele fica desabilitado enquanto estiver nela. Se o endpoint já estiver em análise pelo botão, a fila acompanha essa execução em vez de iniciar outra. No servidor, uma segunda análise do mesmo endpoint (outra aba, cliques repetidos) recebe 409 enquanto a primeira não termina.
+- **Cancelamento:** **Cancelar atual** interrompe a análise em andamento (como o CANCELAR ANÁLISE) e a fila segue para o próximo; **Cancelar restantes** impede que os pendentes comecem. Um pendente pode ser removido; um item com erro ou cancelado pode voltar para o fim da fila (**Tentar de novo**).
+- **Falhas:** a falha de um endpoint fica registrada no item e a fila continua. Limite de uso atingido ou sessão expirada não são falhas do endpoint: o item volta para a fila e ela pausa, preservando a ordem e os resultados, com **Retomar** e **Continuar com o Codex/Claude** (quando a outra conta está conectada).
+- **Persistência:** a fila fica salva no navegador. Ao recarregar a página ela volta pausada (o item interrompido volta a pendente) e só continua com **Retomar**, para não consumir o limite sem o usuário pedir.
+
 ## O que o MVP detecta
 
 - **Endpoints:** controllers (`[ApiController]`, `ControllerBase` ou sufixo `Controller`), `[Route]` do controller e da classe base, `[HttpPost/Put/Patch("template")]`, tokens `[controller]`/`[action]`/`[area]`.
@@ -231,4 +240,5 @@ Minimal APIs (`MapPost`), mensageria entre serviços (filas e consumidores em ou
 dotnet test
 node --test tests/frontend/manual-revalidation.test.cjs
 node --test tests/frontend/ai-provider.test.cjs
+node --test tests/frontend/analysis-queue.test.cjs
 ```
