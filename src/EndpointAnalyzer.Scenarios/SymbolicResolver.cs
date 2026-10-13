@@ -98,6 +98,12 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
 
     public InputModel Input => input;
 
+    /// <summary>
+    /// Chamadas de condição que sempre retornam true no cenário: o método chamado já notifica o erro numa regra própria
+    /// (if (!Existe(...)) return ...), que encerra o cenário antes.
+    /// </summary>
+    public HashSet<SyntaxNode> AssumedTrue { get; } = [];
+
     public Scope ScopeOf(AnalyzedMethod method) => new(method.Model, method);
 
     // ---- Termos ----
@@ -131,7 +137,11 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
         if (symbol is IFieldSymbol { Name: "Empty", IsStatic: true } empty && empty.ContainingType.Name == "Guid")
             return ConstTerm.Of(Values.EmptyGuid, "Guid.Empty");
         if (e is LiteralExpressionSyntax lit && lit.IsKind(SyntaxKind.DefaultLiteralExpression) || e is DefaultExpressionSyntax)
-            return DefaultOf(model.GetTypeInfo(e).ConvertedType ?? model.GetTypeInfo(e).Type);
+        {
+            // default(TKey) usa o tipo escrito (em pId.Equals(default(TKey)) o tipo convertido é object).
+            var type = e is DefaultExpressionSyntax written ? model.GetTypeInfo(written.Type).Type : model.GetTypeInfo(e).ConvertedType ?? model.GetTypeInfo(e).Type;
+            return DefaultOf(scope.Method?.ResolveType(type) ?? type);
+        }
 
         if (scope.Bindings is not null && symbol is not null && scope.Bindings.TryGetValue(symbol, out var bound)) return bound;
 
@@ -201,6 +211,14 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
 
     private Term? MemberOf(Term? target, string name, ISymbol? symbol)
     {
+        if (target is TupleTerm tuple && TypeOf(symbol) is { } memberType)
+        {
+            foreach (var item in tuple.Items.Where(i => i.Var.Kind == VarKind.Object))
+                if (MemberOf(item, name, symbol) is { } found) return found;
+            var kind = InputModel.KindOf(InputModel.Underlying(memberType).Type);
+            var scalars = tuple.Items.Where(i => i.Var.Kind is not (VarKind.Object or VarKind.Collection)).ToList();
+            return scalars.Count == 1 && scalars[0].Var.Kind == kind ? scalars[0] : null;
+        }
         if (target is not VarTerm { Measure: Measure.Value } vt || TypeOf(symbol) is not { } type) return null;
         if (name is "Length" or "Count" && vt.Var.Kind is VarKind.String or VarKind.Collection) return vt with { Measure = Measure.Length };
         return vars.Member(vt.Var, name, type) is { } member ? new VarTerm(member) : null;
@@ -216,11 +234,20 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
                 or "GetValueOrDefault" or "ToString" && invocation.ArgumentList.Arguments.Count == 0)
             return Term(receiver, scope, depth + 1);
 
-        // mapper.Map<AdicionarPedidoCommand>(viewModel): o AutoMapper copia as propriedades de mesmo nome do payload.
-        if (method.Name == "Map" && method.ContainingNamespace?.ToDisplayString().StartsWith("AutoMapper", StringComparison.Ordinal) == true
-            && invocation.ArgumentList.Arguments.Count == 1
-            && Term(invocation.ArgumentList.Arguments[0].Expression, scope, depth + 1) is VarTerm { Var: { Origin: VarOrigin.Input, Kind: VarKind.Object }, Measure: Measure.Value } source)
-            return source;
+        // mapper.Map<AdicionarPedidoCommand>(viewModel): o mapper copia as propriedades de mesmo nome do payload.
+        if (method.Name == "Map" && IsMapper(method) && invocation.ArgumentList.Arguments.Count == 1)
+        {
+            var mapped = Unwrap(invocation.ArgumentList.Arguments[0].Expression);
+            if (mapped is TupleExpressionSyntax tuple)
+            {
+                // Map<Command>((id, viewModel)): membros do view model e o valor simples da rota.
+                var items = tuple.Arguments.Select(a => Term(a.Expression, scope, depth + 1)).ToList();
+                var inputs = items.OfType<VarTerm>().Where(t => t is { Var.Origin: VarOrigin.Input, Measure: Measure.Value }).ToList();
+                if (inputs.Count == items.Count && inputs.Any(i => i.Var.Kind == VarKind.Object)) return new TupleTerm(inputs);
+            }
+            else if (Term(mapped, scope, depth + 1) is VarTerm { Var: { Origin: VarOrigin.Input, Kind: VarKind.Object }, Measure: Measure.Value } source)
+                return source;
+        }
 
         // DateTime.Today.AddDays(n)
         if (receiver is not null && method.Name == "AddDays" && Term(receiver, scope, depth + 1) is NowTerm now
@@ -276,6 +303,8 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
         {
             foreach (var child in node.ChildNodes())
             {
+                // nameof(request.EnderecoId) é o nome, não o valor.
+                if (child is InvocationExpressionSyntax { Expression: IdentifierNameSyntax { Identifier.Text: "nameof" } }) continue;
                 if (child is ExpressionSyntax e and (IdentifierNameSyntax or MemberAccessExpressionSyntax or ConditionalAccessExpressionSyntax)
                     && !(child.Parent is MemberAccessExpressionSyntax parent && parent.Name == child)
                     && !(child.Parent is InvocationExpressionSyntax inv && inv.Expression == child)
@@ -316,6 +345,14 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
 
         if (method == graph.EntryPoint)
             return vars.Input(parameter) is { } v ? new VarTerm(v) : null;
+
+        // Existe(id, nome, out entidade): o valor do out é o que o método atribui (entidade = consulta(id)).
+        if (parameter.RefKind == RefKind.Out)
+        {
+            var assignments = method.Declaration.DescendantNodes().OfType<AssignmentExpressionSyntax>()
+                .Where(a => SymbolEqualityComparer.Default.Equals(method.Model.GetSymbolInfo(a.Left).Symbol, parameter)).ToList();
+            return assignments.Count == 1 ? Term(assignments[0].Right, scope, depth + 1) : null;
+        }
 
         if (CallSiteOf(method) is not { } site) return null;
         // Handler de mensagem (mediator.Send(command) → Handle(command, ct)): só o parâmetro da mensagem vem da chamada.
@@ -418,6 +455,9 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
             case MemberAccessExpressionSyntax { Name.Identifier.Text: "IsValid", Expression: var ms } when ms.ToString().EndsWith("ModelState", StringComparison.Ordinal):
                 return new ModelValidPred();
 
+            case InvocationExpressionSyntax inv when AssumedTrue.Contains(inv):
+                return Scenarios.Pred.True;
+
             case InvocationExpressionSyntax inv when model.GetSymbolInfo(inv).Symbol is IMethodSymbol method:
                 if (Call(inv, method, scope) is { } call) return call;
                 break;
@@ -437,6 +477,8 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
         var reduced = method.ReducedFrom ?? method;
         var receiver = inv.Expression is MemberAccessExpressionSyntax ma ? ma.Expression : null;
 
+        if (IsNotificationQuery(method)) return Scenarios.Pred.False;
+
         if (method.ContainingType.SpecialType == SpecialType.System_String && method.IsStatic
             && method.Name is "IsNullOrEmpty" or "IsNullOrWhiteSpace" && args.Count == 1)
             return Term(args[0].Expression, scope) is VarTerm { Measure: Measure.Value } t && t.Var.Kind == VarKind.String
@@ -452,7 +494,7 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
             return new CmpPred(c with { Measure = Measure.Length }, ">", ConstTerm.Of(0), inv.Compact());
 
         if (method.Name == "Equals" && args.Count == 1 && receiver is not null
-            && Term(receiver, scope) is { } l && Term(args[0].Expression, scope) is { } r)
+            && Term(receiver, scope) is { } l and not TupleTerm && Term(args[0].Expression, scope) is { } r and not TupleTerm)
             return new CmpPred(l, "==", r, inv.Compact());
 
         return null;
@@ -474,7 +516,7 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
             return op == "==" ? isNull : Scenarios.Pred.Not(isNull);
         }
 
-        if (left is null || right is null) return null;
+        if (left is null or TupleTerm || right is null or TupleTerm) return null;
 
         // flag == true / flag != false
         var (flagTerm, flagConst) = (left, right) switch
@@ -506,7 +548,7 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
                 if (k.Bool is { } b && v.Var.Kind == VarKind.Bool)
                     return b ? new BoolPred(v.Var, subjectSyntax.Compact()) : Scenarios.Pred.Not(new BoolPred(v.Var, subjectSyntax.Compact()));
                 return new CmpPred(subject, "==", k, text);
-            case RelationalPatternSyntax r when subject is not null && Term(r.Expression, scope) is ConstTerm k2:
+            case RelationalPatternSyntax r when subject is not (null or TupleTerm) && Term(r.Expression, scope) is ConstTerm k2:
                 return new CmpPred(subject, r.OperatorToken.Text, k2, text);
             case UnaryPatternSyntax u when u.IsKind(SyntaxKind.NotPattern):
                 return Pattern(subject, subjectSyntax, u.Pattern, scope) is { } inner ? Scenarios.Pred.Not(inner) : null;
@@ -720,7 +762,7 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
     private static DispatchedMessage? MessageOf(AnalyzedMethod method) =>
         method.Caller?.CallSites.FirstOrDefault(cs => cs.Node == method.Node)?.Message;
 
-    private static ExpressionSyntax? Argument(SyntaxNode call, IMethodSymbol callee, IParameterSymbol parameter)
+    internal static ExpressionSyntax? Argument(SyntaxNode call, IMethodSymbol callee, IParameterSymbol parameter)
     {
         var arguments = call switch
         {
@@ -741,6 +783,27 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
         var named = arguments.FirstOrDefault(a => a.NameColon?.Name.Identifier.Text == parameter.Name);
         if (named is not null) return named.Expression;
         return ordinal < arguments.Count && arguments[ordinal].NameColon is null ? arguments[ordinal].Expression : null;
+    }
+
+    /// <summary>Mapper de objetos (AutoMapper, Mapster, mapper próprio): IMapper.Map&lt;T&gt;(origem).</summary>
+    private static bool IsMapper(IMethodSymbol method)
+    {
+        var type = (method.ReducedFrom ?? method).ContainingType;
+        return type.ContainingNamespace?.ToDisplayString().StartsWith("AutoMapper", StringComparison.Ordinal) == true
+            || type.Name.Contains("Mapper", StringComparison.Ordinal) || type.AllInterfaces.Any(i => i.Name.Contains("Mapper", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// "Há notificações?" (PossuiNotificacoes, HasNotifications): toda notificação de erro é uma regra que encerra o
+    /// cenário, então no ponto avaliado não há notificação pendente.
+    /// </summary>
+    private static bool IsNotificationQuery(IMethodSymbol method)
+    {
+        if (method.ReturnType.SpecialType != SpecialType.System_Boolean || method.Parameters.Length > 0) return false;
+        static bool Notification(string name) => name.Contains("Notific", StringComparison.OrdinalIgnoreCase);
+        var type = method.ContainingType;
+        var asks = new[] { "Possui", "Has", "Tem", "Existe" }.Any(p => method.Name.StartsWith(p, StringComparison.Ordinal));
+        return asks && Notification(method.Name) && (Notification(type.Name) || type.AllInterfaces.Any(i => Notification(i.Name)));
     }
 
     /// <summary>Consulta ao estado: repositório, DbContext ou código sem fonte (EF, bibliotecas).</summary>
@@ -810,7 +873,7 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
         _ => ConstTerm.Of(Convert.ToDecimal(value, System.Globalization.CultureInfo.InvariantCulture), display),
     };
 
-    private static ConstTerm? DefaultOf(ITypeSymbol? type)
+    internal static ConstTerm? DefaultOf(ITypeSymbol? type)
     {
         if (type is null) return null;
         if (IsNullable(type) || !type.IsValueType) return ConstTerm.Null;

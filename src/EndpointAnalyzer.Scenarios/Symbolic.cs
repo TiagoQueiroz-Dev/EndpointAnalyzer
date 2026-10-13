@@ -105,6 +105,12 @@ public sealed record NowTerm(int OffsetDays, bool Exact) : Term;
 
 public sealed record ArithTerm(string Op, Term Left, Term Right) : Term;
 
+/// <summary>
+/// Origem de um Map&lt;Command&gt;((id, viewModel)): os membros vêm do objeto do payload pelo nome ou, quando o objeto
+/// não tem o membro, do único valor simples da tupla com o mesmo tipo (rota/query).
+/// </summary>
+public sealed record TupleTerm(IReadOnlyList<VarTerm> Items) : Term;
+
 /// <summary>Predicado sobre as variáveis. Text é a expressão como no código (forma positiva).</summary>
 public abstract record Pred
 {

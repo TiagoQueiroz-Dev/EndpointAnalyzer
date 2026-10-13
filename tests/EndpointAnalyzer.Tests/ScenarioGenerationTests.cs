@@ -196,6 +196,80 @@ public class ScenarioGenerationTests(SampleSolutionFixture fixture)
     }
 
     [Fact]
+    public async Task Notificacao_de_dominio_vira_regra_e_o_ApiResponse_responde_200_sem_notificacao()
+    {
+        var matrix = await MatrixAsync("POST /api/programacoes-transporte/{id}/origens");
+
+        // if (ModelState.IsValid) return ApiResponse(...): resposta normal (Ok ou BadRequest pelas notificações), não regra 400.
+        var happy = matrix.Scenarios[0];
+        Assert.Equal(ScenarioKinds.Success, happy.Kind);
+        Assert.Equal(200, happy.Expected.HttpStatus);
+        Assert.DoesNotContain(matrix.Notes, n => n.StartsWith("Nenhum caminho de sucesso", StringComparison.Ordinal));
+        Assert.DoesNotContain(matrix.Conditions, c => c is { Kind: "regra", Expression: "ModelState.IsValid" });
+
+        // return await Falha("chave", $"{nameof(X)} não existe"): mensagem do argumento, status do BadRequest do ApiResponse.
+        var programacao = Rule(matrix, "ProgramacaoTransporte não existe");
+        Assert.Equal(400, programacao.Expected.HttpStatus);
+        Assert.Equal("código", programacao.Expected.StatusSource);
+        Assert.Contains(programacao.Preconditions, p => p.Description == "Não existe ProgramacaoTransporte para programacoes.ObterPorId(1)");
+
+        // Map<Command>((id, viewModel)): ProgramacaoTransporteId vem da rota.
+        Assert.Equal("/api/programacoes-transporte/1/origens", programacao.Request.Url);
+
+        // Existe notifica dentro do próprio if ($"{propriedade} não existe" com nameof do argumento); o if (!Existe(...)) do handler não é outra regra.
+        var endereco = Rule(matrix, "EnderecoId não existe");
+        Assert.Contains(endereco.Preconditions, p => p.Description.StartsWith("Não existe Endereco", StringComparison.Ordinal));
+        Assert.DoesNotContain(matrix.Conditions, c => c.Expression.StartsWith("Existe<int, Endereco>", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Erro_registrado_pelo_metodo_da_condicao_e_falha_no_commit_viram_regras()
+    {
+        var matrix = await MatrixAsync("POST /api/programacoes-transporte/{id}/origens");
+
+        // if (!ValidarProgramacaoFaturada()) return;: AdicionarErroValidacao(..., "mensagem") registra o erro.
+        var faturada = Rule(matrix, "Não é possível alterar uma programação já faturada");
+        Assert.Equal(400, faturada.Expected.HttpStatus);
+        Assert.False(faturada.Expected.Persisted);
+
+        // catch que notifica num método interno: falha de infraestrutura com a exceção como pré-condição.
+        var commit = Assert.Single(matrix.Scenarios, s => s.Kind == ScenarioKinds.Rule && s.Title.Contains("exceção capturada", StringComparison.Ordinal));
+        Assert.Equal(400, commit.Expected.HttpStatus);
+        Assert.Contains(commit.Preconditions, p => p.Kind == "suposicao" && p.Expression?.StartsWith("exceção capturada", StringComparison.Ordinal) == true);
+
+        // Sem exceção é o normal: o caminho feliz não pede para preparar a ausência dela.
+        Assert.DoesNotContain(matrix.Scenarios[0].Preconditions, p => p.Expression?.StartsWith("exceção capturada", StringComparison.Ordinal) == true);
+    }
+
+    [Fact]
+    public async Task Required_em_int_nao_falha_e_o_valor_padrao_segue_o_fluxo()
+    {
+        var matrix = await MatrixAsync("POST /api/programacoes-transporte/{id}/origens");
+
+        var sequencia = Assert.Single(matrix.Scenarios, s => s.Title.StartsWith("sequencia ausente ou 0", StringComparison.Ordinal));
+        Assert.Equal(0, (long)sequencia.Request.Body!["sequencia"]!);
+        Assert.Equal("sucesso", sequencia.Expected.Outcome);
+        Assert.Contains(sequencia.Notes!, n => n.StartsWith("Omitir sequencia no JSON", StringComparison.Ordinal));
+
+        // enderecoId = 0: Existe retorna true sem consultar (id == default).
+        var zero = Assert.Single(matrix.Scenarios, s => s.Focus?.Expression == "id == null || id.Equals(default(TKey))");
+        Assert.Equal(0, (long)zero.Request.Body!["enderecoId"]!);
+    }
+
+    [Fact]
+    public async Task Cada_condicao_do_fluxo_aparece_verdadeira_e_falsa()
+    {
+        var matrix = await MatrixAsync("POST /api/programacoes-transporte/{id}/origens");
+
+        var existeOrigem = Assert.Single(matrix.Conditions, c => c is { Kind: "ramo", Expression: "existeOrigem" });
+        Assert.Contains(matrix.Scenarios, s => s.Decisions[existeOrigem.Id] == true);
+        Assert.Contains(matrix.Scenarios, s => s.Decisions[existeOrigem.Id] == false);
+
+        // Saída antecipada que nunca acontece (notificações pendentes já encerraram o cenário) fica explicada nas notas.
+        Assert.Contains(matrix.Notes, n => n.Contains("notifications.PossuiNotificacoes()", StringComparison.Ordinal) && n.EndsWith("sempre falsa neste fluxo.", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Prompt_leva_os_cenarios_sem_datas_concretas()
     {
         var context = await fixture.ContextAsync("POST /api/programacoes");

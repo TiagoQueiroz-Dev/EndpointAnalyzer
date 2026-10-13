@@ -16,6 +16,7 @@ public class EndpointScannerTests(SampleSolutionFixture fixture)
         Assert.Equal(
         [
             "Carga | POST /api/cargas",
+            "Origem | POST /api/programacoes-transporte/{id}/origens",
             "Pedido | POST /api/pedidos",
             "Pedido | PUT /api/pedidos/{id}/cancelar",
             "Programação de transporte | POST /api/programacoes",

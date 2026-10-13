@@ -18,4 +18,10 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<Cadastro.HistoricoVeiculo> HistoricosVeiculo => Set<Cadastro.HistoricoVeiculo>();
 
     public DbSet<Pedidos.Pedido> Pedidos => Set<Pedidos.Pedido>();
+
+    public DbSet<Origens.ProgramacaoTransporte> ProgramacoesTransporte => Set<Origens.ProgramacaoTransporte>();
+
+    public DbSet<Origens.Local> Locais => Set<Origens.Local>();
+
+    public DbSet<Origens.Endereco> Enderecos => Set<Origens.Endereco>();
 }

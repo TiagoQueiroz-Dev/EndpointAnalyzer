@@ -55,7 +55,8 @@ public partial class ScenarioGenerator : IScenarioGenerator
         }
     }
 
-    private sealed record Candidate(string Kind, string Technique, string Title, List<Pred> Constraints, ScenarioFocus? Focus = null, bool HidePreconditions = false);
+    private sealed record Candidate(string Kind, string Technique, string Title, List<Pred> Constraints, ScenarioFocus? Focus = null, bool HidePreconditions = false,
+        string? Note = null);
 
     private sealed record Outcome(
         bool Success,
@@ -124,6 +125,7 @@ public partial class ScenarioGenerator : IScenarioGenerator
                 candidates.AddRange(EarlyExits(happy, avoidance));
             }
             candidates.AddRange(ValidationCandidates(happy, branches));
+            candidates.AddRange(DefaultValueCandidates(happy));
             candidates.AddRange(RuleCandidates(branches));
             candidates.AddRange(BoundaryCandidates(happy));
 
@@ -131,7 +133,8 @@ public partial class ScenarioGenerator : IScenarioGenerator
             var scenarios = new List<Scenario>();
             var entries = new Dictionary<Scenario, Entry>(ReferenceEqualityComparer.Instance);
             var seen = new HashSet<string>();
-            var effectSignatures = new HashSet<string>();
+            // Condições já exercitadas (expressão + valor): cada condição do fluxo verdadeira e falsa ao menos uma vez.
+            var covered = new HashSet<(string, bool)>();
             foreach (var candidate in candidates)
             {
                 if (scenarios.Count >= MaxScenarios)
@@ -143,14 +146,16 @@ public partial class ScenarioGenerator : IScenarioGenerator
                 var outcome = Simulate(assignment);
                 var scenario = ToScenario(candidate, assignment, outcome, conditions);
 
-                // Variação que não muda nada em relação ao que já existe não é um cenário novo.
-                var effects = $"{outcome.Success}|{outcome.Status}|{string.Join(";", scenario.Expected.Effects.Select(e => e.Description + string.Join(",", e.Properties ?? [])))}";
-                if (candidate.Kind == ScenarioKinds.Success && candidate.Focus is not null && effectSignatures.Contains(effects)) continue;
+                // Variação que não exercita nenhum valor de condição novo não é um cenário novo.
+                if (candidate.Kind == ScenarioKinds.Success && candidate.Focus is { } focus && covered.Contains((focus.Expression, focus.Value))) continue;
                 if (!seen.Add(Signature(scenario))) continue;
-                if (candidate.Kind == ScenarioKinds.Success) effectSignatures.Add(effects);
+                foreach (var (condition, _) in conditions)
+                    if (scenario.Decisions.GetValueOrDefault(condition.Id) is { } value) covered.Add((condition.Expression, value));
+                if (candidate.Note is { } note) scenario.Notes = [.. scenario.Notes ?? [], note];
                 scenarios.Add(scenario);
                 entries[scenario] = new Entry(scenario, candidate.Constraints, candidate.HidePreconditions, assignment, outcome, null);
             }
+            Coverage(scenarios, conditions);
 
             var happyScenario = scenarios.FirstOrDefault(s => s.Kind == ScenarioKinds.Success);
             if (scenarios.Count < MaxScenarios && TypeMismatch(happyScenario, conditions, out var mismatchField) is { } mismatch)
@@ -257,7 +262,7 @@ public partial class ScenarioGenerator : IScenarioGenerator
                 constraints.Add(exit.Site.Path);
                 constraints.Add(exit.Trigger);
                 yield return new Candidate(ScenarioKinds.Success, ScenarioTechniques.DecisionTable,
-                    $"Encerra antes, sem erro, quando {exit.TriggerCode}", constraints, new ScenarioFocus { Expression = exit.TriggerCode, Value = true });
+                    exit.InEntry ? $"Encerra antes, sem erro, quando {exit.TriggerCode}" : $"{exit.Site.Method.Node.MethodName} retorna antes, sem erro, quando {exit.TriggerCode}", constraints, new ScenarioFocus { Expression = exit.TriggerCode, Value = true });
             }
         }
 
@@ -281,6 +286,28 @@ public partial class ScenarioGenerator : IScenarioGenerator
                     yield return new Candidate(ScenarioKinds.Validation, probe.Technique, probe.Label, constraints,
                         new ScenarioFocus { Expression = rule.ViolationCode, Value = true, Detail = probe.Label }, HidePreconditions: true);
                 }
+            }
+        }
+
+        /// <summary>
+        /// [Required] em int/Guid não anulável não falha: o campo ausente chega com o valor padrão (0, Guid.Empty) e o
+        /// fluxo segue com ele. Uma linha por campo, com o resultado da simulação.
+        /// </summary>
+        private IEnumerable<Candidate> DefaultValueCandidates(List<Pred> happy)
+        {
+            foreach (var field in ValidationRuleExtractor.RequiredWithoutEffect(_input))
+            {
+                var v = _vars.Input(field);
+                if (v.Kind is not (VarKind.Int or VarKind.Decimal or VarKind.Enum or VarKind.Guid)
+                    || SymbolicResolver.DefaultOf(field.Type) is not { Number: { } number } value) continue;
+                var shown = v.Kind == VarKind.Guid ? value.Display : number.ToString(CultureInfo.InvariantCulture);
+                var constraints = new List<Pred> { _validationsOk, new CmpPred(new VarTerm(v), "==", value, $"{field.Path} == {shown}") };
+                foreach (var constraint in happy) Extend(constraints, constraint);
+                var name = FieldName(field);
+                yield return new Candidate(ScenarioKinds.Validation, ScenarioTechniques.EquivalencePartitioning,
+                    $"{name} ausente ou {shown}: [Required] não tem efeito em {field.TypeDisplay} não anulável", constraints,
+                    new ScenarioFocus { Expression = $"{field.Path} == {shown}", Value = true, Detail = $"{name} = {shown}" },
+                    Note: $"Omitir {name} no JSON tem o mesmo efeito: o campo chega com {shown} e o [Required] não falha.");
             }
         }
 
@@ -333,7 +360,7 @@ public partial class ScenarioGenerator : IScenarioGenerator
                 {
                     // !ModelState.IsValid sem validações declaradas: só com payload malformado (cenário de tipo inválido).
                     if (!rule.IsModelStateCheck)
-                        _notes.Add($"Regra \"{rule.Message ?? rule.TriggerCode}\" ({rule.Site.Source}) não tem cenário: a condição não pode ser verdadeira nesse ponto do fluxo.");
+                        _notes.Add($"Regra \"{Label(rule)}\" ({rule.Site.Source}) não tem cenário: a condição não pode ser verdadeira nesse ponto do fluxo.");
                     continue;
                 }
                 var feasible = true;
@@ -349,14 +376,62 @@ public partial class ScenarioGenerator : IScenarioGenerator
                 }
                 if (!feasible)
                 {
-                    _notes.Add($"Regra \"{rule.Message ?? rule.TriggerCode}\" ({rule.Site.Source}) não tem cenário: não é alcançável sem disparar uma regra anterior.");
+                    _notes.Add($"Regra \"{Label(rule)}\" ({rule.Site.Source}) não tem cenário: não é alcançável sem disparar uma regra anterior.");
                     continue;
                 }
                 foreach (var branch in branches) Extend(constraints, branch);
 
-                yield return new Candidate(ScenarioKinds.Rule, ScenarioTechniques.DecisionTable,
-                    rule.Message is { } message ? $"Regra: {message}" : $"Regra: {rule.TriggerCode}",
+                yield return new Candidate(ScenarioKinds.Rule, ScenarioTechniques.DecisionTable, $"Regra: {Label(rule)}",
                     constraints, new ScenarioFocus { Expression = rule.TriggerCode, Value = true });
+            }
+        }
+
+        /// <summary>Mensagem da regra com os trechos constantes resolvidos ($"{pPropriedade} não existe" → "EnderecoId não existe"), ou o gatilho.</summary>
+        private string Label(CodeRule rule)
+        {
+            if (rule.MessageSyntax is not { } interpolated) return rule.Message ?? rule.TriggerCode;
+            var scope = _resolver.ScopeOf(rule.Site.Method);
+            return string.Concat(interpolated.Contents.Select(c => c switch
+            {
+                InterpolatedStringTextSyntax text => text.TextToken.ValueText,
+                InterpolationSyntax hole when _resolver.Term(hole.Expression, scope) is ConstTerm { Text: { } constant } => constant,
+                _ => c.ToString(),
+            }));
+        }
+
+        /// <summary>
+        /// Confere a matriz com as regras do relatório (if/throw/guarda dos métodos do fluxo): cada regra que encerra
+        /// o fluxo tem cenário ou uma nota com o motivo.
+        /// </summary>
+        private void Coverage(List<Scenario> scenarios, List<(DecisionCondition Condition, Func<Assignment, Outcome, bool?> Value)> conditions)
+        {
+            foreach (var condition in _context.Conditions.Where(c => c.Kind != ConditionKinds.Validation))
+            {
+                bool At(Site site) => site.Method.SourceFile == condition.SourceFile && site.DeclaredLine == condition.SourceLine;
+                var where = $"{condition.SourceFile}:{condition.SourceLine}";
+                if (_notes.Any(n => n.Contains(where, StringComparison.Ordinal))) continue;
+
+                if (_rules.FirstOrDefault(r => At(r.Site)) is { } rule)
+                {
+                    if (_notes.Any(n => n.Contains($"({rule.Site.Source})", StringComparison.Ordinal))) continue;
+                    if (!scenarios.Any(s => s.Expected.Rule == rule.TriggerCode && s.Expected.Source?.ToString() == rule.Site.Source.ToString()))
+                        _notes.Add($"Regra \"{Label(rule)}\" ({where}) sem cenário próprio: com os valores possíveis, o resultado é o mesmo de outro cenário.");
+                    continue;
+                }
+                if (_flow.Exits.FirstOrDefault(x => At(x.Site)) is { } exit)
+                {
+                    var ids = conditions.Where(c => c.Condition.Expression == exit.TriggerCode).Select(c => c.Condition.Id).ToHashSet();
+                    if (_exits.Contains(exit) && !scenarios.Any(s => s.Decisions.Any(d => d.Value == true && ids.Contains(d.Key))))
+                        _notes.Add(exit.Trigger is ConstPred { Value: false }
+                            ? $"Saída antecipada \"{exit.TriggerCode}\" ({where}) sem cenário: a condição é sempre falsa neste fluxo."
+                            : $"Saída antecipada \"{exit.TriggerCode}\" ({where}) sem cenário: a condição não pode ser verdadeira com as regras anteriores passando.");
+                    continue;
+                }
+                if (_flow.Delegated.Any(d => At(d.Site)) || _flow.Rules.Any(r => At(r.Site))) continue;
+
+                // Regra do relatório que encerra o fluxo e não foi traduzida em gatilho.
+                if (condition.Action.StartsWith("throw", StringComparison.Ordinal) || condition.Action.StartsWith("notifica", StringComparison.Ordinal))
+                    _notes.Add($"Regra \"{condition.Expression}\" ({where}) não foi traduzida em cenário: {condition.Action}.");
             }
         }
 
@@ -512,6 +587,8 @@ public partial class ScenarioGenerator : IScenarioGenerator
                     InterpolatedStringTextSyntax text => text.TextToken.ValueText,
                     InterpolationSyntax hole when _resolver.Term(hole.Expression, scope) is VarTerm { Var.Origin: VarOrigin.Input } v
                         => _payload.Raw(v.Var, a.Get(v.Var)) ?? "null",
+                    // $"{pPropriedade} não existe" com Existe(id, nameof(request.EnderecoId), ...): o texto da chamada.
+                    InterpolationSyntax hole when _resolver.Term(hole.Expression, scope) is ConstTerm { Text: { } text } => text,
                     _ => c.ToString(),
                 }));
             }
@@ -621,6 +698,8 @@ public partial class ScenarioGenerator : IScenarioGenerator
             foreach (var opaque in expanded.SelectMany(Evaluator.Atoms).OfType<OpaquePred>().DistinctBy(o => o.Key))
             {
                 if (!a.Assumptions.TryGetValue(opaque.Key, out var value)) continue;
+                // Sem exceção é o funcionamento normal: só o cenário da exceção precisa prepará-la.
+                if (!value && opaque.Text.StartsWith("exceção capturada", StringComparison.Ordinal)) continue;
                 result.Add(new ScenarioPrecondition
                 {
                     Kind = "suposicao",
@@ -682,7 +761,7 @@ public partial class ScenarioGenerator : IScenarioGenerator
             foreach (var rule in _rules)
                 list.Add((new DecisionCondition
                 {
-                    Id = NextId(), Kind = "regra", Expression = rule.TriggerCode, Label = rule.Message,
+                    Id = NextId(), Kind = "regra", Expression = rule.TriggerCode, Label = rule.Message is null ? null : Label(rule),
                     RegistryId = RegistryId(rule.TriggerCode), Source = rule.Site.Source,
                     Rule = new DecisionRule { Kind = rule.Kind, Exception = rule.Exception, HttpStatus = rule.Status },
                 }, (a, o) => Reached(rule.Site, a, o) ? Eval(rule.Trigger, a) : null));
@@ -696,7 +775,7 @@ public partial class ScenarioGenerator : IScenarioGenerator
             }
 
             foreach (var exit in _exits)
-                list.Add((new DecisionCondition { Id = NextId(), Kind = "ramo", Expression = exit.TriggerCode, Label = "encerra antes, sem erro", RegistryId = RegistryId(exit.TriggerCode), Source = exit.Site.Source },
+                list.Add((new DecisionCondition { Id = NextId(), Kind = "ramo", Expression = exit.TriggerCode, Label = exit.InEntry ? $"responde {exit.Status ?? _flow.SuccessStatus}" : "encerra antes, sem erro", RegistryId = RegistryId(exit.TriggerCode), Source = exit.Site.Source },
                     (a, o) => Reached(exit.Site, a, o) ? Eval(exit.Trigger, a) : null));
 
             return list;

@@ -72,6 +72,27 @@ public class AnalysisController(EndpointAnalysisService service, IConfiguration 
     [HttpGet("diff")]
     public ActionResult<AnalysisDiffResult> Diff(string analysisId, string? baseId = null) => Ok(service.Diff(analysisId, baseId));
 
+    /// <summary>Histórico de análises salvas do endpoint (sem as excluídas), da mais recente para a mais antiga.</summary>
+    [HttpGet("history")]
+    public ActionResult<IReadOnlyList<AnalysisHistoryItem>> History(string solutionPath, string method, string route, string project) =>
+        Ok(service.History(SolutionPath.Resolve(solutionPath, configuration, environment), method, route, project));
+
+    /// <summary>Exclusão lógica da análise.</summary>
+    [HttpDelete("{analysisId}")]
+    public IActionResult Delete(string analysisId)
+    {
+        service.DeleteAnalysis(analysisId);
+        return NoContent();
+    }
+
+    /// <summary>Análise com que a próxima análise do endpoint será comparada na diff.</summary>
+    [HttpPost("{analysisId}/diff-base")]
+    public IActionResult SetDiffBase(string analysisId)
+    {
+        service.SetDiffBase(analysisId);
+        return NoContent();
+    }
+
     [HttpPost("restore")]
     [RequestSizeLimit(20_971_520)]
     public async Task<ActionResult<AnalysisResponse>> Restore(RestoreAnalysisRequest request, CancellationToken cancellationToken)

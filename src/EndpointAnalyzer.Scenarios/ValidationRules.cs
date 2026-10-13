@@ -347,6 +347,12 @@ public static class ValidationRuleExtractor
         return rules;
     }
 
+    /// <summary>[Required] em value type não anulável do body (int, Guid...): o campo ausente chega com o valor padrão, sem erro.</summary>
+    public static List<InputField> RequiredWithoutEffect(InputModel input) =>
+        input.All.Where(f => f.Location == InputLocations.Body && f.Parent is not null && f.Type.IsValueType && !f.Nullable
+                && (f.Property?.GetAttributes() ?? f.Parameter?.GetAttributes() ?? []).Any(a => a.AttributeClass?.Name == "RequiredAttribute"))
+            .ToList();
+
     private static ValidationRule? FromAttribute(AttributeData attribute, InputField field, Var v, CallGraph graph, Func<string> nextId)
     {
         var name = attribute.AttributeClass?.Name.Replace("Attribute", "") ?? "";

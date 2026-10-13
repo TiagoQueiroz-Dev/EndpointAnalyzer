@@ -195,6 +195,16 @@
   .report-actions[hidden] { display: none; }
   .report-actions button { display: flex; align-items: center; gap: 6px; padding: 5px 10px; font-size: 12.5px; }
   .report-actions button svg { width: 14px; height: 14px; flex: none; }
+  .report-grid { display: grid; grid-template-columns: repeat(3, auto); }
+  .report-grid button { justify-content: center; }
+  .report-grid .report-col-2 { grid-column: 2; }
+  .history-dialog { padding: 0; width: min(1000px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow: auto; }
+  .history-dialog .history-body { padding: 16px 20px 20px; }
+  .history-dialog .endpoint-route { margin: 4px 0 8px; }
+  .history-dialog td { vertical-align: middle; }
+  .history-dialog .history-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+  .history-dialog .history-actions button { padding: 3px 9px; font-size: 12px; }
+  .history-dialog .badge.base { color: var(--text); background: var(--active); border: 1px solid var(--accent); }
   .muted { color: var(--muted); font-size: 13px; }
   .error { color: var(--danger); }
   .breadcrumb { font-size: 13px; color: var(--muted); margin-bottom: 4px; }
@@ -569,6 +579,18 @@
   <div id="scenDetail"></div>
 </dialog>
 
+<dialog id="historyDialog" class="history-dialog" aria-labelledby="historyTitle">
+  <div class="history-body">
+  <div class="scen-dialog-head">
+    <h2 id="historyTitle">Histórico de análises</h2>
+    <button id="historyClose" class="secondary scen-dialog-close" type="button" aria-label="Fechar">×</button>
+  </div>
+  <div id="historyEndpoint" class="endpoint-route"></div>
+  <p id="historyMessage" class="muted" role="status" aria-live="polite"></p>
+  <div id="historyGrid" class="table-wrap"></div>
+  </div>
+</dialog>
+
 <dialog id="revalidateDialog" aria-labelledby="manualTitle">
   <h2 id="manualTitle">Reanalisar cenário</h2>
   <div id="manualContext"></div>
@@ -880,6 +902,7 @@ function renderEndpointPanel() {
         <label class="check"><input type="checkbox" data-section="${id}"> ${label}</label>
         ${aiOptions[id] ? `<label class="check sub" title="${esc(aiOptions[id].title)}"><input type="checkbox" data-ai="${id}"> ${aiOptions[id].label}</label>` : ""}
       </div>`).join("")}
+      <div class="tab-option"><label class="check" title="Exibe a aba Diff (comparação com a análise considerada na diff)"><input type="checkbox" id="showDiff"> Diff</label></div>
       <div class="tab-option ai-source"><span id="aiProviderSlot"></span><span id="aiSource" class="muted"></span><span id="aiModeSlot"></span></div>
     </div>
     <div id="tokenRow" ${runtimeAvailable ? "" : "hidden"}>
@@ -898,12 +921,25 @@ function renderEndpointPanel() {
       <button id="cancelAnalysis" class="danger" type="button" disabled title="Interrompe a análise em andamento (IA e validação em runtime)">CANCELAR ANÁLISE</button>
       <span id="analyzeStatus" class="muted"></span>
       <span class="spacer"></span>
-      <span id="reportActions" class="report-actions" hidden>
-        <button class="secondary" type="button" id="copyMd" title="Copiar o relatório em Markdown">${copyIcon}<span>Copiar relatório</span></button>
-        <button class="secondary" type="button" id="downloadMd" title="Baixar o relatório em Markdown">${downloadIcon}<span>Baixar .md</span></button>
+      <span id="reportActions" class="report-actions report-grid">
+        <button class="secondary" type="button" id="loadLatest" title="Carregar e exibir a última análise salva deste endpoint">${loadIcon}<span>Carregar última análise</span></button>
+        <button class="secondary" type="button" id="openHistory" title="Análises salvas deste endpoint">${historyIcon}<span>Histórico de análises</span></button>
+        <button class="secondary" type="button" id="clearResult" title="Deixar de exibir a análise na tela (ela continua salva)">${clearIcon}<span>Limpar tela</span></button>
+        <button class="secondary report-col-2" type="button" id="copyMd" title="Copiar o relatório em Markdown" disabled>${copyIcon}<span>Copiar relatório</span></button>
+        <button class="secondary" type="button" id="downloadMd" title="Baixar o relatório em Markdown" disabled>${downloadIcon}<span>Baixar .md</span></button>
       </span>
     </div>`;
   $("analyze").addEventListener("click", analyze);
+  $("loadLatest").addEventListener("click", loadLatestAnalysis);
+  $("openHistory").addEventListener("click", openHistory);
+  $("clearResult").addEventListener("click", clearResult);
+  $("showDiff").checked = showDiff();
+  $("showDiff").addEventListener("change", (ev) => {
+    store.set("ea.showDiff", ev.target.checked);
+    if (!lastResponse) return;
+    const tab = document.querySelector("[data-tab].active")?.dataset.tab;
+    if (!tab || tab === "diff") showResponse(lastResponse); else render(tab);
+  });
   $("cancelAnalysis").addEventListener("click", () => running.get(key(e))?.controller.abort());
   showAnalysisState(e);
   const sections =store.get("ea.sections", resultTabs.map(([id]) => id));
@@ -929,6 +965,7 @@ function renderEndpointPanel() {
 const resultTabs = [["summary", "Resumo"], ["business", "Negócio"], ["complete", "Completo"], ["scenarios", "Cenários"]];
 const selectedSections = () => [...document.querySelectorAll("[data-section]")].filter(b => b.checked).map(b => b.dataset.section);
 const sectionsOf = (report) => report.sections ?? resultTabs.map(([id]) => id);
+const showDiff = () => store.get("ea.showDiff", true);
 
 /** Uso da IA em cada aba (Completo só mostra a análise estática e o que o runtime já produziu). */
 const aiOptions = {
@@ -1036,6 +1073,12 @@ const savedAnalyses = {
         delete index[oldest];
       }
     }
+  },
+  remove(endpoint, solution) {
+    const id = this.id(endpoint, solution), index = store.get(this.indexKey, {});
+    try { localStorage.removeItem(id); } catch { }
+    delete index[id];
+    store.set(this.indexKey, index);
   },
 };
 
@@ -1554,7 +1597,7 @@ function render(tab) {
       : `Cenários${ctx.scenarios?.scenarios?.length ? ` <span class="badge">${ctx.scenarios.scenarios.length}</span>` : ""}`]]
     .filter(([id]) => sectionsOf(report).includes(id));
   // Diff não é uma aba da análise (não roda nada): compara os relatórios já salvos.
-  if (report.analysisId) tabs.push(["diff", diffTabLabel(report)]);
+  if (report.analysisId && showDiff()) tabs.push(["diff", diffTabLabel(report)]);
   let body = "";
   if (tab === "summary") body = report.ai ? renderDoc(report.ai, ctx) : renderSummary(ctx);
   if (tab === "business") body = renderBusiness();
@@ -1583,7 +1626,7 @@ function render(tab) {
 /** Botões do card do endpoint: copiar / baixar o relatório em Markdown. */
 function wireReportActions(ctx, markdown) {
   if (!$("reportActions")) return;
-  $("reportActions").hidden = false;
+  $("copyMd").disabled = $("downloadMd").disabled = false;
   copyButton("copyMd", markdown);
   $("downloadMd").onclick = () => {
     const a = document.createElement("a");
@@ -1592,6 +1635,102 @@ function wireReportActions(ctx, markdown) {
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   };
+}
+
+// ---- Histórico de análises do endpoint ----
+
+const endpointQuery = (endpoint, solution) =>
+  `solutionPath=${encodeURIComponent(solution)}&method=${encodeURIComponent(endpoint.httpMethod)}&route=${encodeURIComponent(endpoint.route)}&project=${encodeURIComponent(endpoint.project)}`;
+
+/** Deixa de exibir a análise na tela; ela continua salva (banco local e navegador). */
+function clearResult() {
+  if (!selected) return;
+  lastResponse = null;
+  resetSource();
+  $("result").innerHTML = "";
+  if ($("reportActions")) $("copyMd").disabled = $("downloadMd").disabled = true;
+  if (!running.has(key(selected))) setAnalyzeStatus(selected, "", "muted");
+}
+
+/** Carrega a última análise (não excluída) do endpoint salva no banco local. */
+async function loadLatestAnalysis() {
+  const endpoint = selected, solution = solutionPath;
+  if (!endpoint || running.has(key(endpoint))) return;
+  setAnalyzeStatus(endpoint, "Carregando a última análise...", "muted");
+  try {
+    const response = await api(`/api/analysis/saved?${endpointQuery(endpoint, solution)}`);
+    if (selected !== endpoint || solutionPath !== solution || running.has(key(endpoint))) return;
+    savedAnalyses.set(endpoint, solution, response);
+    showResponse(response);
+    setAnalyzeStatus(endpoint, `${analysisStatus(response.report)} · última análise carregada do banco local`, "muted");
+  } catch (error) {
+    if (error.status === 404) setAnalyzeStatus(endpoint, "Nenhuma análise salva para este endpoint.", "muted");
+    else setAnalyzeStatus(endpoint, `Não foi possível carregar a última análise: ${error.message}`, "error");
+  }
+}
+
+/** Popup do histórico: { endpoint, solution, items, error, busy }. */
+let historyState = null;
+
+async function openHistory() {
+  if (!selected) return;
+  historyState = { endpoint: selected, solution: solutionPath, items: null, error: null, busy: false };
+  $("historyMessage").textContent = "";
+  renderHistory();
+  if (!$("historyDialog").open) $("historyDialog").showModal();
+  await loadHistory();
+}
+
+async function loadHistory() {
+  const state = historyState;
+  try { state.items = await api(`/api/analysis/history?${endpointQuery(state.endpoint, state.solution)}`); state.error = null; }
+  catch (error) { state.error = error.message; }
+  if (historyState === state) renderHistory();
+}
+
+function renderHistory() {
+  const state = historyState, e = state.endpoint;
+  $("historyEndpoint").innerHTML = `<span class="method ${esc(e.httpMethod)}">${esc(e.httpMethod)}</span><span class="route">${esc(e.route)}</span>`;
+  if (state.error) { $("historyGrid").innerHTML = `<p class="error">Não foi possível carregar o histórico: ${esc(state.error)}</p>`; return; }
+  if (!state.items) { $("historyGrid").innerHTML = `<p class="muted">Carregando o histórico...</p>`; return; }
+  if (!state.items.length) { $("historyGrid").innerHTML = `<p class="muted">Nenhuma análise salva para este endpoint.</p>`; return; }
+  const shownId = lastResponse?.report.analysisId;
+  const disabled = state.busy ? "disabled" : "";
+  $("historyGrid").innerHTML = `<table>
+    <thead><tr><th>Data</th><th>Commit</th><th>Abas</th><th>IA</th><th>Runtime</th><th>Diff</th><th></th></tr></thead>
+    <tbody>${state.items.map(item => `<tr>
+      <td>${esc(savedAtLabel(item.createdAt))}${item.id === shownId ? ` <span class="badge">exibida</span>` : ""}</td>
+      <td>${item.commit ? `<code>${esc(item.commit)}</code>` : "—"}${item.branch ? ` <span class="muted">(${esc(item.branch)})</span>` : ""}</td>
+      <td>${esc(item.sections.map(id => resultTabs.find(([t]) => t === id)?.[1] ?? id).join(", "))}</td>
+      <td>${item.aiProvider ? `${esc(providerName(item.aiProvider))}${item.aiModel ? ` <span class="muted">(${esc(item.aiModel)})</span>` : ""}` : `<span class="muted">sem IA</span>`}</td>
+      <td>${item.runtimeStatus ? esc(item.runtimeStatus) : "—"}</td>
+      <td>${item.diffBase ? `<span class="badge base" title="A próxima análise deste endpoint será comparada com esta">considerada na diff</span>` : ""}</td>
+      <td><div class="history-actions">
+        <button class="secondary" type="button" data-history-base="${esc(item.id)}" ${item.diffBase || state.busy ? "disabled" : ""}>Considerar na diff</button>
+        <button class="danger" type="button" data-history-delete="${esc(item.id)}" ${disabled}>Excluir</button>
+      </div></td></tr>`).join("")}</tbody></table>`;
+}
+
+async function historyAction(id, remove) {
+  const state = historyState;
+  if (!state || state.busy) return;
+  if (remove && !confirm("Excluir esta análise do histórico?")) return;
+  state.busy = true;
+  renderHistory();
+  try {
+    await api(`/api/analysis/${encodeURIComponent(id)}${remove ? "" : "/diff-base"}`, { method: remove ? "DELETE" : "POST" });
+    if (remove) {
+      if (savedAnalyses.get(state.endpoint)?.response?.report?.analysisId === id) savedAnalyses.remove(state.endpoint, state.solution);
+      if (lastResponse?.report.analysisId === id && selected === state.endpoint) clearResult();
+    }
+    $("historyMessage").textContent = remove ? "Análise excluída." : "A próxima análise deste endpoint será comparada com a análise escolhida.";
+    $("historyMessage").className = "muted";
+  } catch (error) {
+    $("historyMessage").textContent = error.message;
+    $("historyMessage").className = "error";
+  }
+  state.busy = false;
+  await loadHistory();
 }
 
 // ---- Regras e validações (aba Resumo): título, contexto, condição e mensagem de erro, com ou sem IA ----
@@ -1942,6 +2081,9 @@ function openStepTrace(flow, id) {
 const copyIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`;
 const eyeIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>`;
 const downloadIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>`;
+const loadIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3"/><path d="m16 17 2 2 4-4"/></svg>`;
+const historyIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>`;
+const clearIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`;
 
 // ---- Matriz de cenários (payload + pré-condições + resultado esperado) ----
 
@@ -3810,6 +3952,13 @@ $("scenDialog").addEventListener("click", (e) => {
   if (e.target === e.currentTarget || e.target.closest("[data-close]")) { $("scenDialog").close(); return; }
   const copy = e.target.closest("[data-copy]");
   if (copy) copyScenario(copy);
+});
+$("historyDialog").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget || e.target.closest("#historyClose")) { $("historyDialog").close(); return; }
+  const base = e.target.closest("[data-history-base]");
+  if (base) { historyAction(base.dataset.historyBase, false); return; }
+  const remove = e.target.closest("[data-history-delete]");
+  if (remove) historyAction(remove.dataset.historyDelete, true);
 });
 $("manualRun").addEventListener("click", revalidateScenario);
 $("manualClose").addEventListener("click", () => $("revalidateDialog").close());

@@ -17,7 +17,12 @@ public sealed class Site
 
     public required Pred Path { get; init; }
 
+    /// <summary>Estrutura que declara a condição (if, catch, switch): a linha das regras do relatório.</summary>
+    public SyntaxNode? Anchor { get; init; }
+
     public SourceReference Source => new() { File = Method.SourceFile, Method = Method.DisplayName, Line = Node.StartLine() };
+
+    public int DeclaredLine => (Anchor ?? Node).StartLine();
 }
 
 /// <summary>Regra que interrompe a operação com erro: throw, return de erro no controller, notificação de domínio, guarda.</summary>
@@ -42,11 +47,11 @@ public sealed class CodeRule
     /// <summary>Mensagem interpolada ($"Programação {id} não encontrada."): os trechos são preenchidos com os valores do cenário.</summary>
     public InterpolatedStringExpressionSyntax? MessageSyntax { get; init; }
 
-    public int? Status { get; init; }
+    public int? Status { get; set; }
 
-    public required string StatusSource { get; init; }
+    public required string StatusSource { get; set; }
 
-    public string? StatusNote { get; init; }
+    public string? StatusNote { get; set; }
 
     /// <summary>if (!ModelState.IsValid) return ...: coberta pelos cenários de validação.</summary>
     public bool IsModelStateCheck { get; init; }
@@ -65,6 +70,19 @@ public sealed class EarlyExit
     public bool InEntry { get; init; }
 
     public int? Status { get; init; }
+}
+
+/// <summary>
+/// if (!Existe(...)) return ...: o método chamado na condição já notifica o erro numa regra própria; o return não
+/// é regra nem saída antecipada (a regra do método chamado encerra o cenário).
+/// </summary>
+public sealed class DelegatedCheck
+{
+    public required Site Site { get; init; }
+
+    public required string TriggerCode { get; init; }
+
+    public required string Callee { get; init; }
 }
 
 /// <summary>Onde acontece um efeito: alteração de entidade, campo alterado, SaveChanges, evento, HTTP.</summary>
@@ -95,6 +113,11 @@ public sealed class FlowModel
 
     public List<EffectSite> Effects { get; } = [];
 
+    public List<DelegatedCheck> Delegated { get; } = [];
+
+    /// <summary>Status do controller quando há notificação de erro (ApiResponse: Ok sem notificação, BadRequest com).</summary>
+    public int? NotificationStatus { get; private set; }
+
     public int SuccessStatus { get; private set; } = 200;
 
     public string SuccessStatusSource { get; private set; } = "inferido";
@@ -121,12 +144,16 @@ public sealed class FlowModel
         var flow = new FlowModel(graph, resolver, exceptions);
         var business = context.CallGraph.ToHashSet();
         var methods = graph.Methods.Where(m => m == graph.EntryPoint || business.Contains(m.DisplayName)).ToList();
+        foreach (var method in methods) flow._analyzed.Add(method.Symbol.OriginalDefinition);
+        // Antes dos caminhos: if (!Existe(...)) return ... não é condição própria quando Existe já notifica numa regra.
+        foreach (var method in methods) flow.MarkDelegatedChecks(method);
 
         foreach (var method in methods) flow.CollectRules(method);
         flow.Rules.Sort((a, b) => Compare(a.Site.Order, b.Site.Order));
         flow.Exits.Sort((a, b) => Compare(a.Site.Order, b.Site.Order));
 
         flow.CollectSuccessStatus();
+        flow.ApplyNotificationStatus();
         flow.CollectEffects(context);
         flow.ApiController = HasApiController(graph.EntryPoint.Symbol.ContainingType);
         return flow;
@@ -134,9 +161,11 @@ public sealed class FlowModel
 
     // ---- Ordem ----
 
-    public IReadOnlyList<int> OrderOf(SyntaxNode node, AnalyzedMethod method)
+    public IReadOnlyList<int> OrderOf(SyntaxNode node, AnalyzedMethod method) => OrderOf(node.SpanStart, method);
+
+    private IReadOnlyList<int> OrderOf(int position, AnalyzedMethod method)
     {
-        var order = new List<int> { node.SpanStart };
+        var order = new List<int> { position };
         var current = method;
         for (var depth = 0; depth < 64 && _resolver.CallSiteOf(current) is { } site; depth++)
         {
@@ -165,12 +194,14 @@ public sealed class FlowModel
         return Compare(later, exitOrder) > 0;
     }
 
-    private Site SiteOf(SyntaxNode node, AnalyzedMethod method, SyntaxNode? pathFrom = null) => new()
+    /// <param name="orderAt">Posição de execução: o fim do return (as chamadas dentro dele executam antes de sair).</param>
+    private Site SiteOf(SyntaxNode node, AnalyzedMethod method, SyntaxNode? pathFrom = null, int? orderAt = null) => new()
     {
         Method = method,
         Node = node,
-        Order = OrderOf(node, method),
+        Order = orderAt is { } position ? OrderOf(position, method) : OrderOf(node, method),
         Path = _resolver.PathOf(pathFrom ?? node, method),
+        Anchor = pathFrom,
     };
 
     // ---- Regras ----
@@ -234,28 +265,70 @@ public sealed class FlowModel
                 case InvocationExpressionSyntax inv when Guard(inv, scope) is { } guard:
                     AddGuard(method, inv, guard.Trigger, guard.Code, guard.Exception);
                     break;
+
+                // catch (Exception e) { Bus.PublicarEvento(new DomainNotification("Commit", e.Message)); }: falha de infraestrutura notificada.
+                case CatchClauseSyntax cc when !isEntry && ExitOf(cc.Block.Statements, method) is { Kind: "notify" } caught:
+                {
+                    var type = cc.Declaration?.Type.Compact() ?? "Exception";
+                    var trigger = _resolver.Opaque($"exceção capturada: {type}", $"{method.DisplayName}@{cc.SpanStart}");
+                    Add(method, cc.Block, cc, trigger, $"exceção capturada em {method.DisplayName}: {type}", caught, isEntry);
+                    break;
+                }
             }
+        }
+    }
+
+    private void MarkDelegatedChecks(AnalyzedMethod method)
+    {
+        foreach (var ifs in method.Declaration.DescendantNodes().OfType<IfStatementSyntax>())
+        {
+            if (!method.IsReachable(ifs) || InsideLambda(ifs, method.Declaration)) continue;
+            var statements = ifs.Statement is BlockSyntax block ? (IEnumerable<StatementSyntax>)block.Statements : [ifs.Statement];
+            if (ExitOf(statements, method) is not { Kind: "return" } exit) continue;
+            var isEntry = method == _graph.EntryPoint;
+            var error = exit.Statuses.Any(s => s >= 400) && !exit.Statuses.Any(s => s < 400);
+            if ((!isEntry || !error) && ConditionNotifier(ifs.Condition, method) is { Delegated: true, Call: { } call })
+                _resolver.AssumedTrue.Add(call);
         }
     }
 
     private void Branch(AnalyzedMethod method, IfStatementSyntax ifs, StatementSyntax body, Pred trigger, string code, bool isEntry)
     {
         var statements = body is BlockSyntax block ? (IEnumerable<StatementSyntax>)block.Statements : [body];
-        if (ExitOf(statements, method) is { } exit) Add(method, body, ifs, trigger, code, exit, isEntry);
+        if (ExitOf(statements, method) is not { } exit) return;
+
+        // if (!ValidarAlgo()) return;: o método da condição registra o erro (notificação ou falha de validação).
+        var error = exit.Statuses.Any(s => s >= 400) && !exit.Statuses.Any(s => s < 400);
+        if (exit.Kind == "return" && (!isEntry || !error) && ConditionNotifier(ifs.Condition, method) is { } recorder)
+        {
+            if (recorder.Delegated)
+            {
+                _exitStatements.Add(exit.Statement);
+                Delegated.Add(new DelegatedCheck { Site = SiteOf(body, method, ifs), TriggerCode = code, Callee = recorder.Callee });
+                return;
+            }
+            exit = exit with { Kind = "notify", Message = recorder.Message, MessageSyntax = null };
+        }
+        Add(method, body, ifs, trigger, code, exit, isEntry);
     }
 
     private void Add(AnalyzedMethod method, SyntaxNode at, SyntaxNode pathFrom, Pred trigger, string code, Exit exit, bool isEntry)
     {
         _exitStatements.Add(exit.Statement);
-        var site = SiteOf(at, method, pathFrom);
+        // return: as chamadas dentro dele executam antes de sair; catch: a exceção acontece durante o try.
+        int? orderAt = exit.Statement is ReturnStatementSyntax returned ? returned.Span.End - 1
+            : pathFrom is CatchClauseSyntax { Parent: TryStatementSyntax tried } ? tried.SpanStart : null;
+        var site = SiteOf(at, method, pathFrom, orderAt);
 
         if (exit.Kind == "return")
         {
             var error = exit.Statuses.FirstOrDefault(s => s >= 400);
+            var ok = exit.Statuses.FirstOrDefault(s => s < 400);
+            // return ApiResponse(...): Ok sem notificação, BadRequest com notificação; os erros são as regras que notificam.
+            if (isEntry && error > 0 && ok > 0) NotificationStatus ??= error;
             // return no meio de um método interno, ou return de sucesso no controller: saída antecipada, não erro.
-            if (!isEntry || error == 0)
+            if (!isEntry || error == 0 || ok > 0)
             {
-                var ok = exit.Statuses.FirstOrDefault(s => s < 400);
                 Exits.Add(new EarlyExit { Site = site, Trigger = trigger, TriggerCode = code, InEntry = isEntry, Status = isEntry && ok > 0 ? ok : null });
                 return;
             }
@@ -365,22 +438,189 @@ public sealed class FlowModel
                     var (message, syntax) = MessageOf(thrown, method.Model);
                     return new Exit("throw", statement, type?.Name, type, message, syntax, []);
                 }
-                case ExpressionStatementSyntax es when Unwrap(es.Expression) is InvocationExpressionSyntax inv && IsNotification(inv):
+                case ExpressionStatementSyntax es when Unwrap(es.Expression) is InvocationExpressionSyntax inv && NotificationMessage(inv, method.Model) is { } notified:
                 {
-                    var (message, syntax) = MessageOf(inv.ArgumentList.Arguments.LastOrDefault()?.Expression ?? (SyntaxNode)inv, method.Model);
                     var ret = list.OfType<ReturnStatementSyntax>().FirstOrDefault();
                     var statuses = ret?.Expression is { } e && method == _graph.EntryPoint ? StatusOf(e, method.Model, 0) : [];
-                    return new Exit("notify", statement, null, null, message, syntax, statuses);
+                    return new Exit("notify", statement, null, null, notified.Message, notified.Syntax, statuses);
                 }
                 case ReturnStatementSyntax ret:
                 {
                     var statuses = ret.Expression is { } e && method == _graph.EntryPoint ? StatusOf(e, method.Model, 0) : [];
+                    // return await Falha("chave", "mensagem"): o método chamado sempre notifica o erro.
+                    if (method != _graph.EntryPoint && ret.Expression is { } failed
+                        && failed.DescendantNodesAndSelf().OfType<InvocationExpressionSyntax>()
+                            .FirstOrDefault(i => NotifierOf(method.Model.GetSymbolInfo(i).Symbol as IMethodSymbol) is { Conditional: false }) is { } failure)
+                        return new Exit("notify", statement, null, null, NotifierMessage(failure, method.Model, null), null, statuses);
                     var (message, syntax) = ret.Expression is { } value ? MessageOf(value, method.Model) : (null, null);
                     return new Exit("return", statement, null, null, message, syntax, statuses);
                 }
             }
         }
         return null;
+    }
+
+    // ---- Notificações de erro ----
+
+    /// <summary>Tipos que registram erro sem exceção: notificação de domínio, falha de validação da entidade.</summary>
+    private static readonly string[] ErrorTypeNames = ["DomainNotification", "Notification", "Notificacao", "ValidationFailure", "Error", "Erro"];
+
+    private sealed record Notifier(bool Conditional);
+
+    private sealed record Recorder(string Callee, bool Delegated, string? Message, InvocationExpressionSyntax Call);
+
+    private sealed record Notified(string? Message, InterpolatedStringExpressionSyntax? Syntax);
+
+    private readonly HashSet<ISymbol> _analyzed = new(SymbolEqualityComparer.Default);
+    private readonly Dictionary<ISymbol, Notifier?> _notifiers = new(SymbolEqualityComparer.Default);
+    private readonly Dictionary<SyntaxTree, SemanticModel?> _models = [];
+
+    private SemanticModel? ModelOf(SyntaxNode node)
+    {
+        if (_models.TryGetValue(node.SyntaxTree, out var cached)) return cached;
+        var document = _graph.Solution.Solution.GetDocument(node.SyntaxTree);
+        return _models[node.SyntaxTree] = document is null ? null
+            : document.TryGetSemanticModel(out var model) ? model : document.GetSemanticModelAsync().GetAwaiter().GetResult();
+    }
+
+    private static bool IsErrorType(ITypeSymbol? type)
+    {
+        if (type is null) return false;
+        for (var t = type; t is not null; t = t.BaseType)
+            if (t.Name == "Exception") return false;
+        return ErrorTypeNames.Any(n => type.Name.Contains(n, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Método (com fonte) que registra erro: cria a notificação/falha de validação ou chama outro método que registra.
+    /// Conditional: só registra dentro de um if/switch/catch (Existe notifica só quando não encontra).
+    /// </summary>
+    private Notifier? NotifierOf(IMethodSymbol? method, int depth = 0)
+    {
+        if (method is null || depth > 4) return null;
+        var key = (method.ReducedFrom ?? method).OriginalDefinition;
+        if (_notifiers.TryGetValue(key, out var cached)) return cached;
+        _notifiers[key] = null;
+
+        Notifier? result = null;
+        foreach (var reference in key.DeclaringSyntaxReferences)
+        {
+            var declaration = reference.GetSyntax();
+            if (ModelOf(declaration) is not { } model) continue;
+            foreach (var node in declaration.DescendantNodes())
+            {
+                if (node is not (BaseObjectCreationExpressionSyntax or InvocationExpressionSyntax) || InsideLambda(node, declaration)) continue;
+                var records = node switch
+                {
+                    BaseObjectCreationExpressionSyntax creation => IsErrorType(model.GetTypeInfo(creation).Type),
+                    InvocationExpressionSyntax invocation => NotifierOf(model.GetSymbolInfo(invocation).Symbol as IMethodSymbol, depth + 1) is not null,
+                    _ => false,
+                };
+                if (!records) continue;
+                var conditional = node.Ancestors().TakeWhile(a => a != declaration)
+                    .Any(a => a is IfStatementSyntax or SwitchSectionSyntax or ConditionalExpressionSyntax or CatchClauseSyntax or SwitchExpressionArmSyntax);
+                result = new Notifier(conditional);
+                if (!conditional) break;
+            }
+            if (result is not null) break;
+        }
+        return _notifiers[key] = result;
+    }
+
+    /// <summary>Mensagem registrada pelo método chamado: último argumento da notificação, com os parâmetros ligados aos argumentos da chamada.</summary>
+    private string? NotifierMessage(InvocationExpressionSyntax call, SemanticModel model, Func<IParameterSymbol, string?>? bound, int depth = 0)
+    {
+        if (depth > 4 || model.GetSymbolInfo(call).Symbol is not IMethodSymbol callee) return null;
+        string? Bound(IParameterSymbol p) => SymbolicResolver.Argument(call, callee, p) is { } argument ? Text(argument, model, bound) : null;
+
+        foreach (var reference in (callee.ReducedFrom ?? callee).OriginalDefinition.DeclaringSyntaxReferences)
+        {
+            var declaration = reference.GetSyntax();
+            if (ModelOf(declaration) is not { } calleeModel) continue;
+            var nodes = declaration.DescendantNodes().Where(n => !InsideLambda(n, declaration)).ToList();
+            if (nodes.OfType<BaseObjectCreationExpressionSyntax>().FirstOrDefault(c => IsErrorType(calleeModel.GetTypeInfo(c).Type)) is { } creation)
+                return creation.ArgumentList?.Arguments.LastOrDefault() is { } last ? Text(last.Expression, calleeModel, Bound) : null;
+            if (nodes.OfType<InvocationExpressionSyntax>().FirstOrDefault(i => NotifierOf(calleeModel.GetSymbolInfo(i).Symbol as IMethodSymbol) is not null) is { } inner)
+                return NotifierMessage(inner, calleeModel, Bound, depth + 1);
+        }
+        return null;
+    }
+
+    /// <summary>Texto de uma expressão: constante, interpolação com constantes ou parâmetros ligados à chamada.</summary>
+    private static string? Text(ExpressionSyntax expression, SemanticModel model, Func<IParameterSymbol, string?>? bound)
+    {
+        if (model.GetConstantValue(expression) is { HasValue: true, Value: string constant }) return constant;
+        var e = SymbolicResolver.Unwrap(expression);
+        switch (e)
+        {
+            case LiteralExpressionSyntax literal when literal.IsKind(SyntaxKind.StringLiteralExpression):
+                return literal.Token.ValueText;
+            case InterpolatedStringExpressionSyntax interpolated:
+                return string.Concat(interpolated.Contents.Select(c => c switch
+                {
+                    InterpolatedStringTextSyntax t => t.TextToken.ValueText,
+                    InterpolationSyntax hole => Text(hole.Expression, model, bound) ?? $"{{{hole.Expression.Compact()}}}",
+                    _ => c.ToString(),
+                }));
+            case IdentifierNameSyntax when bound is not null && model.GetSymbolInfo(e).Symbol is IParameterSymbol parameter:
+                return bound(parameter);
+            case BinaryExpressionSyntax b when b.IsKind(SyntaxKind.AddExpression) && Text(b.Left, model, bound) is { } left && Text(b.Right, model, bound) is { } right:
+                return left + right;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Chamada que registra erro: NotifyError(...) pelo nome, Bus.PublicarEvento(new DomainNotification(...)) ou um
+    /// método que notifica. Null quando a chamada não registra erro.
+    /// </summary>
+    private Notified? NotificationMessage(InvocationExpressionSyntax invocation, SemanticModel model)
+    {
+        if (IsNotification(invocation))
+        {
+            var (message, syntax) = MessageOf(invocation.ArgumentList.Arguments.LastOrDefault()?.Expression ?? (SyntaxNode)invocation, model);
+            return new Notified(message, syntax);
+        }
+        if (invocation.ArgumentList.Arguments.Select(a => SymbolicResolver.Unwrap(a.Expression)).OfType<BaseObjectCreationExpressionSyntax>()
+                .FirstOrDefault(c => IsErrorType(model.GetTypeInfo(c).Type)) is { } created)
+        {
+            var (message, syntax) = created.ArgumentList?.Arguments.LastOrDefault() is { } last ? MessageOf(last.Expression, model) : (null, null);
+            return new Notified(message, syntax);
+        }
+        // Só o método que sempre notifica: programacao.AdicionarOrigem(...) notifica dentro de um if próprio (regra dele).
+        return NotifierOf(model.GetSymbolInfo(invocation).Symbol as IMethodSymbol) is { Conditional: false }
+            ? new Notified(NotifierMessage(invocation, model, null), null)
+            : null;
+    }
+
+    /// <summary>
+    /// Método chamado na condição que registra o erro (if (!Existe(...)) return ...). Delegated: o método está no
+    /// fluxo analisado e registra o erro dentro de um if, que já é uma regra.
+    /// </summary>
+    private Recorder? ConditionNotifier(ExpressionSyntax condition, AnalyzedMethod method)
+    {
+        foreach (var invocation in condition.DescendantNodesAndSelf().OfType<InvocationExpressionSyntax>())
+        {
+            if (method.Model.GetSymbolInfo(invocation).Symbol is not IMethodSymbol callee || NotifierOf(callee) is not { } notifier) continue;
+            var original = (callee.ReducedFrom ?? callee).OriginalDefinition;
+            var name = $"{callee.ContainingType.Name}.{callee.Name}";
+            return notifier.Conditional && _analyzed.Contains(original)
+                ? new Recorder(name, true, null, invocation)
+                : new Recorder(name, false, NotifierMessage(invocation, method.Model, null), invocation);
+        }
+        return null;
+    }
+
+    /// <summary>Regras que notificam: o status é o que o controller devolve com notificação (BadRequest do ApiResponse).</summary>
+    private void ApplyNotificationStatus()
+    {
+        if (NotificationStatus is not { } status) return;
+        foreach (var rule in Rules.Where(r => r.Kind == "notify" && r.StatusSource == "inferido"))
+        {
+            rule.Status = status;
+            rule.StatusSource = "código";
+            rule.StatusNote = null;
+        }
     }
 
     private static bool IsNotification(InvocationExpressionSyntax invocation)
@@ -524,6 +764,9 @@ public sealed class FlowModel
             statuses.AddRange(StatusOf(arrow.Expression, entry.Model, 0));
 
         var success = statuses.LastOrDefault(s => s is >= 200 and < 300);
+        // return ApiResponse(...) que devolve Ok ou BadRequest: o BadRequest é a resposta das notificações.
+        if (success > 0 && returns.Any(r => r.Expression is { } e && StatusOf(e, entry.Model, 0) is var both && both.Any(s => s < 400) && both.Any(s => s >= 400)))
+            NotificationStatus ??= statuses.First(s => s >= 400);
         if (success > 0)
         {
             SuccessStatus = success;
@@ -653,6 +896,10 @@ public sealed class FlowModel
             {
                 case LiteralExpressionSyntax literal when literal.IsKind(SyntaxKind.StringLiteralExpression):
                     return (literal.Token.ValueText, null);
+                // $"{nameof(Programacao)} não existe" é constante.
+                case InterpolatedStringExpressionSyntax interpolated when model.SyntaxTree == interpolated.SyntaxTree
+                    && model.GetConstantValue(interpolated).Value is string constantText:
+                    return (constantText, null);
                 case InterpolatedStringExpressionSyntax interpolated:
                     return (string.Concat(interpolated.Contents.Select(c => c is InterpolatedStringTextSyntax t ? t.TextToken.ValueText : c.ToString())), interpolated);
                 case MemberAccessExpressionSyntax member when model.GetConstantValue(member).Value is string constant:

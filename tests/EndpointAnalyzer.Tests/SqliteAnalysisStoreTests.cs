@@ -200,6 +200,35 @@ public class SqliteAnalysisStoreTests : IDisposable
     }
 
     [Fact]
+    public void Exclusao_logica_e_base_da_diff_definem_a_versao_comparada_com_a_proxima_analise()
+    {
+        using var workspace = new AdhocWorkspace();
+        using var services = Services();
+        var store = services.GetRequiredService<AnalysisSessionStore>();
+        var database = services.GetRequiredService<SqliteAnalysisStore>();
+        var path = Solution(workspace).Path;
+        var (first, second, third) = (Report(), Report(), Report());
+        store.Add(Solution(workspace), null, first, "v1", null);
+        store.Add(Solution(workspace), null, second, "v2", null);
+        Assert.Equal(second.AnalysisId, Assert.Single(database.History(path, "POST", "/veiculo/v1", "SampleApi"), h => h.DiffBase).Id);
+
+        Assert.True(database.SetDiffBase(first.AnalysisId!));
+        Assert.Equal(first.AnalysisId, Assert.Single(database.History(path, "POST", "/veiculo/v1", "SampleApi"), h => h.DiffBase).Id);
+        store.Add(Solution(workspace), null, third, "v3", null);
+        Assert.Equal(first.AnalysisId, database.LoadStored(third.AnalysisId!)!.PreviousId);
+
+        Assert.True(database.SetDiffBase(third.AnalysisId!));
+        Assert.True(database.Delete(third.AnalysisId!));
+        Assert.False(database.Delete(third.AnalysisId!));
+        Assert.False(database.SetDiffBase(third.AnalysisId!));
+        var history = database.History(path, "POST", "/veiculo/v1", "SampleApi");
+        Assert.Equal([second.AnalysisId, first.AnalysisId], history.Select(h => h.Id));
+        Assert.Equal(second.AnalysisId, Assert.Single(history, h => h.DiffBase).Id);
+        Assert.Equal(second.AnalysisId, database.LatestId(path, "POST", "/veiculo/v1", "SampleApi"));
+        Assert.NotNull(database.LoadStored(third.AnalysisId!));
+    }
+
+    [Fact]
     public async Task Analises_simultaneas_de_dois_processos_formam_uma_unica_cadeia()
     {
         using var workspace = new AdhocWorkspace();

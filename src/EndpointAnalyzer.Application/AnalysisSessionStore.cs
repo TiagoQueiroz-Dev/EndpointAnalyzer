@@ -80,6 +80,13 @@ public sealed class AnalysisSessionStore : IDisposable
     /// <summary>Versão salva (relatório e ligação com a anterior) para comparação, sem carregar a sessão nem o token.</summary>
     public StoredAnalysis? Stored(string id) => _database.LoadStored(id);
 
+    public IReadOnlyList<AnalysisHistoryItem> History(string path, string method, string route, string project) =>
+        _database.History(path, method, route, project);
+
+    public bool Delete(string id) => _database.Delete(id);
+
+    public bool SetDiffBase(string id) => _database.SetDiffBase(id);
+
     private DateTimeOffset MemoryExpiration() => _time.GetUtcNow().AddMinutes(Math.Max(1, options.AnalysisSessionMinutes));
 
     private void Cache(AnalysisSession session)

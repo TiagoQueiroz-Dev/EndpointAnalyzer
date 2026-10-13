@@ -270,6 +270,27 @@ public class EndpointAnalysisService(
         finally { session.Gate.Release(); }
     }
 
+    /// <summary>Análises salvas do endpoint (sem as excluídas), da mais recente para a mais antiga.</summary>
+    public IReadOnlyList<AnalysisHistoryItem> History(string solutionPath, string method, string route, string project) =>
+        (sessions ?? throw new AnalysisSessionException(503, "Persistência de análises indisponível."))
+            .History(solutionPath, method, route, project);
+
+    /// <summary>Exclusão lógica da análise salva.</summary>
+    /// <exception cref="AnalysisSessionException">404: análise não encontrada ou já excluída.</exception>
+    public void DeleteAnalysis(string analysisId)
+    {
+        if (sessions is null) throw new AnalysisSessionException(503, "Persistência de análises indisponível.");
+        if (!sessions.Delete(analysisId)) throw new AnalysisSessionException(404, "Análise não encontrada no banco local.");
+    }
+
+    /// <summary>Define a análise com que a próxima análise do endpoint será comparada na diff.</summary>
+    /// <exception cref="AnalysisSessionException">404: análise não encontrada ou excluída.</exception>
+    public void SetDiffBase(string analysisId)
+    {
+        if (sessions is null) throw new AnalysisSessionException(503, "Persistência de análises indisponível.");
+        if (!sessions.SetDiffBase(analysisId)) throw new AnalysisSessionException(404, "Análise não encontrada no banco local.");
+    }
+
     /// <summary>
     /// Compara a análise com a versão anterior do mesmo endpoint (ou com <paramref name="baseId"/>) a partir dos relatórios
     /// salvos no SQLite: não chama a IA nem executa o endpoint, e o resultado não é persistido.

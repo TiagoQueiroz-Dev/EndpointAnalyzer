@@ -39,6 +39,11 @@ builder.Services.AddAutoMapper(typeof(Program));
 builder.Services.AddScoped<IPedidoRepository, PedidoRepository>();
 builder.Services.AddScoped<IPedidoBus, PedidoBus>();
 
+// Origens (notificações de domínio)
+builder.Services.AddScoped<SampleApi.Origens.DomainNotificationHandler>();
+builder.Services.AddScoped<SampleApi.Origens.IProgramacaoTransporteRepository, SampleApi.Origens.ProgramacaoTransporteRepository>();
+builder.Services.AddScoped<SampleApi.Origens.IOrigemAppService, SampleApi.Origens.OrigemAppService>();
+
 var app = builder.Build();
 
 app.UseMiddleware<ExceptionMiddleware>();
