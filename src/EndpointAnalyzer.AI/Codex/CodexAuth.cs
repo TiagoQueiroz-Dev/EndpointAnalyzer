@@ -2,12 +2,6 @@ using System.Text.Json;
 
 namespace EndpointAnalyzer.AI.Codex;
 
-/// <summary>Uso de uma janela do limite do plano (ex.: 5 horas, semanal).</summary>
-public sealed record CodexUsageWindow(int UsedPercent, long? WindowMinutes, DateTimeOffset? ResetsAt);
-
-/// <param name="LimitReached">O Codex informou que o limite foi atingido (ou que o uso do plano não está liberado).</param>
-public sealed record CodexUsage(CodexUsageWindow? Primary, CodexUsageWindow? Secondary, bool LimitReached);
-
 /// <param name="AuthMethod">"chatgpt" (conta do ChatGPT) ou "apiKey".</param>
 /// <param name="LoginError">Motivo da última tentativa de login que falhou (para a interface).</param>
 public sealed record CodexAuthStatus(
@@ -16,7 +10,7 @@ public sealed record CodexAuthStatus(
     string? AuthMethod = null,
     string? Email = null,
     string? PlanType = null,
-    CodexUsage? Usage = null,
+    AiUsage? Usage = null,
     string? LoginError = null)
 {
     /// <summary>Logado com a conta do ChatGPT (limite do plano), e não com uma chave da API.</summary>
@@ -80,7 +74,7 @@ public class CodexAuth(CodexOptions options)
         var method = Text(account, "type");
         if (method != "chatgpt") return new CodexAuthStatus(true, true, method);
 
-        CodexUsage? usage = null;
+        AiUsage? usage = null;
         try
         {
             usage = ParseUsage(await server.RequestAsync("account/rateLimits/read", null, cancellationToken));
@@ -92,7 +86,7 @@ public class CodexAuth(CodexOptions options)
         return new CodexAuthStatus(true, true, method, Text(account, "email"), Text(account, "planType"), usage);
     }
 
-    internal static CodexUsage? ParseUsage(JsonElement response)
+    internal static AiUsage? ParseUsage(JsonElement response)
     {
         if (response.ValueKind != JsonValueKind.Object) return null;
         // "codex" é o limite do plano; rateLimits é a visão de um balde só (versões anteriores).
@@ -104,17 +98,17 @@ public class CodexAuth(CodexOptions options)
 
         var reached = snapshot.TryGetProperty("rateLimitReachedType", out var type) && type.ValueKind == JsonValueKind.String
             || response.TryGetProperty("ordinaryUsageAllowed", out var allowed) && allowed.ValueKind == JsonValueKind.False;
-        return new CodexUsage(Window(snapshot, "primary"), Window(snapshot, "secondary"), reached);
+        return new AiUsage(Window(snapshot, "primary"), Window(snapshot, "secondary"), reached);
     }
 
-    private static CodexUsageWindow? Window(JsonElement snapshot, string name)
+    private static AiUsageWindow? Window(JsonElement snapshot, string name)
     {
         if (!snapshot.TryGetProperty(name, out var window) || window.ValueKind != JsonValueKind.Object
             || !window.TryGetProperty("usedPercent", out var used) || !used.TryGetInt32(out var percent)) return null;
         long? minutes = window.TryGetProperty("windowDurationMins", out var m) && m.TryGetInt64(out var mins) ? mins : null;
         DateTimeOffset? resetsAt = window.TryGetProperty("resetsAt", out var r) && r.TryGetInt64(out var seconds)
             ? DateTimeOffset.FromUnixTimeSeconds(seconds) : null;
-        return new CodexUsageWindow(percent, minutes, resetsAt);
+        return new AiUsageWindow(percent, minutes, resetsAt);
     }
 
     /// <summary>`codex login status`: "Logged in using ChatGPT", "Logged in using an API key - sk-***" ou "Not logged in".</summary>

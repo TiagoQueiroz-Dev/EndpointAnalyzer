@@ -79,6 +79,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ClaudeCodeAuth>();
         services.AddSingleton<ClaudeCodeProvider>();
         services.AddSingleton<ClaudeModelCatalog>();
+        services.AddSingleton<ClaudeCodeUsage>();
 
         // Conta do Codex (limite do plano do ChatGPT): Codex CLI da máquina, com login próprio do projeto.
         services.AddSingleton(codexOptions);

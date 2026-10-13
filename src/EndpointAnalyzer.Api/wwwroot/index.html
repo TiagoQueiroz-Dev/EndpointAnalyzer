@@ -118,11 +118,12 @@
   .claude-footer .provider-label svg { color: var(--claude); }
   .codex-footer .provider-label svg, .codex-footer .claude-btn svg { color: var(--codex); }
   .codex-footer .claude-btn:hover { border-color: var(--codex); }
-  .usage { display: flex; flex-direction: column; gap: 4px; }
+  .usage { display: flex; flex-direction: column; gap: 4px; --usage-color: var(--codex); }
+  .usage.claude { --usage-color: var(--claude); }
   .usage-row { display: grid; grid-template-columns: 52px 1fr 36px; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); }
   .usage-row span:last-child { text-align: right; }
   .usage-bar { height: 6px; border-radius: 3px; background: var(--hover); overflow: hidden; }
-  .usage-bar > span { display: block; height: 100%; background: var(--codex); }
+  .usage-bar > span { display: block; height: 100%; background: var(--usage-color); }
   .usage-bar.high > span { background: var(--put); }
   .usage-bar.full > span { background: var(--danger); }
 
@@ -469,6 +470,7 @@ let selected = null;
 let lastResponse = null;
 let authState = null;           // conta do Claude (/api/auth/status)
 let codexState = null;          // conta do Codex (/api/auth/codex/status)
+let claudeUsage = null;         // uso do plano do Claude (/api/auth/usage)
 let runtimeAvailable = false;   // Runtime:Enabled no servidor
 let openGroups = new Set(store.get("ea.openGroups", []));
 let openProjects = new Set(store.get("ea.openProjects", []));
@@ -839,12 +841,15 @@ function updateAiControls(initial) {
   }
 
   const codex = codexState ?? {};
-  $("aiSource").textContent = provider === "codex"
+  // Limite atingido na conta escolhida: o aviso aparece antes de o usuário clicar em ANALISAR.
+  const limitReached = provider === "codex" ? codex.usage?.limitReached
+    : provider === "claude" && s.activeSource === "subscription" && claudeUsage?.limitReached;
+  $("aiSource").textContent = (provider === "codex"
     ? `IA: Codex · ${codex.authMethod === "apiKey" ? "chave da API (por uso)" : codex.planType ? `plano ${planName(codex.planType)}` : "conta do ChatGPT"}`
-      + (codex.usage?.limitReached ? " · limite de uso atingido" : "")
     : provider === "claude" ? (s.activeSource === "api" ? "IA: Claude · API" : "IA: Claude · plano mensal")
-    : "IA indisponível: entre com Claude ou Codex para habilitar";
-  $("aiSource").className = provider === "codex" && codex.usage?.limitReached ? "error" : "muted";
+    : "IA indisponível: entre com Claude ou Codex para habilitar")
+    + (limitReached ? " · limite de uso atingido" : "");
+  $("aiSource").className = limitReached ? "error" : "muted";
 
   $("aiModeSlot").innerHTML = provider === "claude" && s.apiConfigured && s.cliInstalled ? `<select id="aiMode" title="Origem da IA do Claude">
       <option value="auto">Claude: automático</option>
@@ -1012,11 +1017,13 @@ async function analyze() {
   } catch (err) {
     if (controller.signal.aborted) setAnalyzeStatus(endpoint, "Análise cancelada.", "muted");
     else setAnalyzeStatus(endpoint, err.message, "error");
-    // Sessão expirada ou limite atingido: o rodapé passa a mostrar o estado real da conta.
-    if (err.code === "authentication" || err.code === "usage_limit") (err.provider === "codex" ? refreshCodex : refreshAuth)(true);
+    // Sessão expirada: o rodapé passa a mostrar o estado real da conta (o limite atingido aparece no uso, abaixo).
+    if (err.code === "authentication") (err.provider === "codex" ? refreshCodex : refreshAuth)(true);
   } finally {
     running.delete(key(endpoint));
     showAnalysisState(endpoint);
+    // A análise consumiu o limite do plano: atualiza as barras de uso da conta usada.
+    if (provider && !controller.signal.aborted) refreshUsage(provider);
   }
 }
 
@@ -2784,7 +2791,8 @@ function renderAuth(s) {
         <span class="dot"></span><span class="email">${esc(s.email ?? "conectado")}</span>
         <button class="secondary" id="logoutBtn">Sair</button>
       </div>
-      ${modelSelects("claude")}`;
+      ${modelSelects("claude")}
+      <div id="claudeUsage"></div>`;
   } else {
     const note = s.loggedIn ? `<span class="footer-note"><span class="dot warn" style="display:inline-block"></span> Claude Code logado com conta do Console (API).</span>` : "";
     html = `${note}<button class="claude-btn" id="loginBtn">${claudeIcon} Entrar com Claude</button>`;
@@ -2793,7 +2801,8 @@ function renderAuth(s) {
 
   $("loginBtn")?.addEventListener("click", openLogin);
   $("logoutBtn")?.addEventListener("click", logout);
-  if (s.usesSubscription) bindModels("claude");
+  if (s.usesSubscription) { bindModels("claude"); loadClaudeUsage(false); }
+  else claudeUsage = null;
   updateAiControls(false);
 }
 
@@ -2820,7 +2829,7 @@ function renderCodex(s) {
         <button class="secondary" id="codexLogoutBtn">Sair</button>
       </div>
       ${modelSelects("codex")}
-      ${usageHtml(s.usage)}`;
+      <div id="codexUsage">${usageHtml(s.usage, "codex")}</div>`;
   } else {
     const error = s.loginError ? `<span class="footer-note error">${esc(s.loginError)}</span>` : "";
     html = `${error}<button class="claude-btn" id="codexLoginBtn">${codexIcon} Entrar com Codex</button>`;
@@ -2833,28 +2842,65 @@ function renderCodex(s) {
   updateAiControls(false);
 }
 
-/** Uso das janelas do limite do plano do Codex (ex.: 5 horas e semanal), com o horário de renovação. */
-function usageHtml(usage) {
+/** Uso das janelas do limite do plano (sessão de 5 horas e semana) da conta, com o horário de renovação. */
+function usageHtml(usage, provider) {
   const windows = [usage?.primary, usage?.secondary].filter(Boolean);
   if (!windows.length) return "";
-  const label = (minutes) => minutes === 300 ? "5 horas" : minutes === 10080 ? "semana"
+  const label = (minutes) => minutes === 300 ? "sessão" : minutes === 10080 ? "semana"
     : minutes >= 1440 ? `${Math.round(minutes / 1440)} dias` : minutes ? `${Math.round(minutes / 60)} h` : "uso";
+  const span = (minutes) => minutes === 300 ? "da sessão (5 horas)" : minutes === 10080 ? "semanal" : `de ${label(minutes)}`;
   const resets = (at) => {
     if (!at) return "";
     const date = new Date(at), today = new Date().toDateString() === date.toDateString();
     return ` · renova ${today ? "às " + date.toLocaleTimeString("pt-BR", { timeStyle: "short" })
       : "em " + date.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}`;
   };
-  return `<div class="usage" aria-label="Uso do limite do plano do Codex">
+  const other = provider === "codex" ? "o Claude" : "o Codex";
+  return `<div class="usage ${provider}" aria-label="Uso do limite do plano do ${providerName(provider)}">
     ${windows.map(w => {
       const used = Math.max(0, Math.min(100, w.usedPercent));
-      return `<div class="usage-row" title="${esc(`${used}% do limite de ${label(w.windowMinutes)} usado${resets(w.resetsAt)}`)}">
+      return `<div class="usage-row" title="${esc(`${used}% do limite ${span(w.windowMinutes)} usado${resets(w.resetsAt)}`)}">
         <span>${esc(label(w.windowMinutes))}</span>
         <span class="usage-bar ${used >= 100 ? "full" : used >= 80 ? "high" : ""}"><span style="width:${used}%"></span></span>
         <span>${used}%</span></div>`;
     }).join("")}
-    ${usage.limitReached ? `<span class="footer-note error">Limite de uso atingido: aguarde a renovação ou use o Claude.</span>` : ""}
+    ${usage.limitReached ? `<span class="footer-note error">Limite de uso atingido: aguarde a renovação ou use ${other}.</span>` : ""}
   </div>`;
+}
+
+/** Uso do plano do Claude: consulta à parte (o Claude Code leva ~2 s), sem atrasar o status da conta. */
+async function loadClaudeUsage(refresh) {
+  try {
+    const { usage } = await api(`/api/auth/usage?refresh=${refresh}`);
+    claudeUsage = usage ?? null;
+  } catch {
+    claudeUsage = null;   // Sem o uso, a conta continua utilizável; só as barras somem.
+  }
+  const slot = $("claudeUsage");
+  if (slot) slot.innerHTML = usageHtml(claudeUsage, "claude");
+  updateAiControls(false);
+}
+
+/** Atualiza só o uso do Codex (sem refazer os seletores); se a conta mudou, redesenha o bloco inteiro. */
+async function refreshCodexUsage() {
+  try {
+    const s = await api("/api/auth/codex/status?refresh=true");
+    if (!s.loggedIn || !codexState?.loggedIn || s.email !== codexState.email || !$("codexUsage")) { renderCodex(s); return; }
+    codexState = s;
+    $("codexUsage").innerHTML = usageHtml(s.usage, "codex");
+    updateAiControls(false);
+  } catch (err) {
+    codexState = null;
+    accountError("codex", err, () => refreshCodex(true));
+  }
+}
+
+/** Depois de uma análise (e ao voltar para a aba) o uso muda: atualiza a conta usada, ou as duas. */
+let usageRefreshedAt = Date.now();
+function refreshUsage(provider) {
+  usageRefreshedAt = Date.now();
+  if (provider !== "codex" && authState?.usesSubscription) loadClaudeUsage(true);
+  if (provider !== "claude" && codexState?.loggedIn) refreshCodexUsage();
 }
 
 // ---- Modelo e effort (um seletor por conta) ----
@@ -3123,6 +3169,10 @@ $("loginDialog").addEventListener("close", () => {
 });
 $("codexLoginClose").addEventListener("click", () => $("codexDialog").close());
 // Fechar sem concluir cancela o login pendente (libera o retorno local do Codex); a conta do Claude não é tocada.
+// Ao voltar para a aba, o uso pode ter mudado (ex.: Claude Code ou Codex usados no terminal com a mesma conta).
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && Date.now() - usageRefreshedAt > 2 * 60_000) refreshUsage(null);
+});
 $("codexDialog").addEventListener("close", async () => {
   clearTimeout(codexLoginTimer);
   $("codexLoginClose").textContent = "Cancelar";

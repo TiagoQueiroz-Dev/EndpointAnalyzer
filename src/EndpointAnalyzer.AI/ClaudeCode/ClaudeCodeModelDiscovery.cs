@@ -7,57 +7,14 @@ namespace EndpointAnalyzer.AI.ClaudeCode;
 /// <summary>Consulta os metadados do protocolo usado pelo Agent SDK, sem enviar prompts ao modelo.</summary>
 internal static class ClaudeCodeModelDiscovery
 {
-    private const string RequestId = "endpoint-analyzer-models";
-
     public static async Task<IReadOnlyList<ClaudeModelInfo>> GetAsync(ClaudeCodeOptions options,
         CancellationToken cancellationToken)
     {
-        var workingDirectory = Path.Combine(Path.GetTempPath(), "EndpointAnalyzer", "claude-code");
-        Directory.CreateDirectory(workingDirectory);
-        var info = ProcessRunner.StartInfo(options,
-            ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-             "--tools", "", "--setting-sources", "", "--no-session-persistence"], workingDirectory);
-        using var process = ProcessRunner.Start(info);
-        var error = process.StandardError.ReadToEndAsync();
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromSeconds(60));
-        try
-        {
-            var request = JsonSerializer.Serialize(new
-            {
-                type = "control_request", request_id = RequestId, request = new { subtype = "initialize" },
-            });
-            // O stdin permanece aberto até a resposta initialize: EOF antecipado pode encerrar a sessão.
-            await process.StandardInput.WriteLineAsync(request.AsMemory(), timeout.Token);
-            await process.StandardInput.FlushAsync(timeout.Token);
-            while (await process.StandardOutput.ReadLineAsync(timeout.Token) is { } line)
-            {
-                if (string.IsNullOrWhiteSpace(line)) continue;
-                using var document = JsonDocument.Parse(line);
-                var root = document.RootElement;
-                if (Text(root, "type") != "control_response" || !root.TryGetProperty("response", out var response)
-                    || Text(response, "request_id") != RequestId) continue;
-                if (Text(response, "subtype") == "error")
-                    throw new InvalidOperationException("Não foi possível consultar os modelos do Claude Code: " + Text(response, "error"));
-                if (!response.TryGetProperty("response", out var payload)) break;
-                return ParseModels(payload);
-            }
+        await using var control = ClaudeCodeControl.Start(options);
+        var payload = await control.RequestAsync("initialize", null, "os modelos", cancellationToken);
+        if (payload.ValueKind != JsonValueKind.Object)
             throw new InvalidOperationException("O Claude Code encerrou a consulta sem informar os modelos. Atualize o Claude Code e tente novamente.");
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            throw new TimeoutException("O Claude Code não informou os modelos em 60 segundos.");
-        }
-        catch (JsonException e)
-        {
-            throw new InvalidOperationException("O Claude Code retornou metadados de modelos inválidos. Atualize o Claude Code e tente novamente.", e);
-        }
-        finally
-        {
-            ProcessRunner.TryKill(process);
-            await process.WaitForExitAsync(CancellationToken.None);
-            await error;
-        }
+        return ParseModels(payload);
     }
 
     internal static IReadOnlyList<ClaudeModelInfo> ParseModels(JsonElement payload)

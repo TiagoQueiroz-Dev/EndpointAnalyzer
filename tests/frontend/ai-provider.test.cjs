@@ -93,8 +93,35 @@ test('rodape do Codex mostra a conta e o uso do limite sem afetar o do Claude', 
 
   const footer = h.element('codexFooter').innerHTML;
   assert.match(footer, /Plus/);
-  assert.match(footer, /5 horas/);
+  assert.match(footer, /sessão/);
   assert.match(footer, /23%/);
   assert.match(footer, /semana/);
   assert.match(h.element('claudeFooter').innerHTML, /Sair/);
+});
+
+test('rodape do Claude mostra o uso da sessao e da semana e avisa o limite atingido', async () => {
+  const usage = { primary: { usedPercent: 30, windowMinutes: 300, resetsAt: '2026-10-13T13:50:00Z' },
+    secondary: { usedPercent: 100, windowMinutes: 10080, resetsAt: '2026-10-13T21:00:00Z' }, limitReached: true };
+  const h = harness((url) => url.startsWith('/api/auth/usage') ? { body: { usage } } : { body: { models: [], model: '', effort: '' } });
+  h.run(`codexState = { cliInstalled: true, loggedIn: false }; renderAuth(${JSON.stringify(claude)});`);
+  await new Promise(r => setTimeout(r, 0));
+
+  const bars = h.element('claudeUsage').innerHTML;
+  assert.match(bars, /usage claude/);
+  assert.match(bars, /sessão/);
+  assert.match(bars, /30%/);
+  assert.match(bars, /semana/);
+  assert.match(bars, /use o Codex/);
+  assert.match(h.element('aiSource').textContent, /IA: Claude · plano mensal · limite de uso atingido/);
+});
+
+test('depois da analise atualiza so o uso da conta usada', async () => {
+  const h = harness((url) => url === '/api/analysis' ? { body: { report: { ...report, version: { ...report.version, aiProvider: 'claude' } }, markdown: '' } }
+    : url.startsWith('/api/auth/usage') ? { body: { usage: null } } : { body: {} });
+  h.run(`authState = ${JSON.stringify(claude)}; codexState = ${JSON.stringify(codex)}; store.set("ea.provider", "claude");`);
+
+  await h.run('analyze()');
+
+  assert.ok(h.calls.some(c => c.url === '/api/auth/usage?refresh=true'));
+  assert.ok(!h.calls.some(c => c.url.startsWith('/api/auth/codex/status')));
 });

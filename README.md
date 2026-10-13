@@ -78,7 +78,7 @@ dotnet run --project src/EndpointAnalyzer.Api
 
 Abra `http://localhost:5168`: informe a `.sln`, selecione o endpoint na barra lateral e clique em **ANALISAR**.
 
-A barra lateral segue o Scalar. Os endpoints aparecem agrupados pela tag do OpenAPI (`[Tags("...")]` no método ou controller, `[SwaggerOperation(Tags = ...)]`; sem tag, o nome do controller). Cada item mostra o resumo (`[EndpointSummary]`, `[SwaggerOperation(Summary = ...)]` ou o `<summary>` do comentário XML). A busca (Ctrl+K) filtra por resumo, rota, método ou grupo. No rodapé ficam as contas do Claude e do Codex, cada uma com os seletores de modelo e effort; no Codex, também o uso das janelas do limite do plano (5 horas e semanal).
+A barra lateral segue o Scalar. Os endpoints aparecem agrupados pela tag do OpenAPI (`[Tags("...")]` no método ou controller, `[SwaggerOperation(Tags = ...)]`; sem tag, o nome do controller). Cada item mostra o resumo (`[EndpointSummary]`, `[SwaggerOperation(Summary = ...)]` ou o `<summary>` do comentário XML). A busca (Ctrl+K) filtra por resumo, rota, método ou grupo. No rodapé ficam as contas do Claude e do Codex, cada uma com os seletores de modelo e effort e o uso do limite do plano (sessão de 5 horas e semana, com o horário de renovação). O uso é atualizado depois de cada análise e ao voltar para a aba; no Claude, vem do mesmo `/usage` do Claude Code (consulta do protocolo de controle, sem prompt ao modelo e sem consumir o limite).
 
 | Método | Rota | Descrição |
 |---|---|---|
@@ -94,6 +94,7 @@ A barra lateral segue o Scalar. Os endpoints aparecem agrupados pela tag do Open
 | POST | `/api/auth/code` | `{ "code": "..." }` → conclui o login com o código exibido após autorizar |
 | POST | `/api/auth/logout` | desconecta a conta do Claude do projeto |
 | POST | `/api/auth/mode` | `{ "mode": "auto" \| "subscription" \| "api" }` (origem do Claude) |
+| GET | `/api/auth/usage` | uso do limite do plano do Claude (`usage.primary`: sessão, `usage.secondary`: semana; percentual e renovação), cache de 1 minuto (`refresh=true` força) |
 | GET | `/api/auth/codex/status` | conta do Codex (e-mail, plano, método de login), uso do limite (`usage.primary`/`secondary`: percentual, janela, renovação), login em andamento |
 | POST | `/api/auth/codex/login` | → URL de autorização da conta do ChatGPT (o retorno do navegador vai direto para o Codex) |
 | POST | `/api/auth/codex/cancel` | cancela o login em andamento |
