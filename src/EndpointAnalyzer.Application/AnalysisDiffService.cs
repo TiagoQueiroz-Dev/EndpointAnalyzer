@@ -191,8 +191,10 @@ public sealed partial class AnalysisDiffService
         return (Set(expressions.Select(Code)), Set(expressions));
     }
 
+    /// <summary>Sem THROW/RETURN (regras) e INSERT/UPDATE/DELETE (já comparados em "Entidades alteradas").</summary>
     private static List<DiffProjection> Effects(EndpointAnalysisContext context) =>
-        context.Effects.Where(e => e.Kind is not (SinkKinds.Throw or SinkKinds.Return)).Select((e, i) =>
+        context.Effects.Where(e => e.Kind is not (SinkKinds.Throw or SinkKinds.Return or SinkKinds.Insert or SinkKinds.Update or SinkKinds.Delete))
+            .Select((e, i) =>
         {
             var (conditions, display) = ConditionSet(e.ConditionIds, context.ConditionRegistry);
             return new DiffProjection(e.Description, null, i, DiffImpacts.Behavior) { Source = e }
