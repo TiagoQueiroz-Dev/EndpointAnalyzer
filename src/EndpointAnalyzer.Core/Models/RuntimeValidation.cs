@@ -61,6 +61,13 @@ public class RuntimeValidation
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Error { get; set; }
 
+    /// <summary>
+    /// A validação parou porque nenhuma conta da IA tinha uso disponível (todas atingiram o limite): o que foi executado até
+    /// ali está na matriz e nas execuções.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Interruption { get; set; }
+
     /// <summary>Endereço local em que o serviço foi executado.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? BaseUrl { get; set; }

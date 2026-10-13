@@ -230,9 +230,15 @@ public class CodexTests
             HomeDirectory = Path.Combine(Path.GetTempPath(), "codex-home-" + Guid.NewGuid().ToString("N")),
         };
         var auth = new CodexAuth(options);
-        var claude = new ClaudeCodeOptions { Executable = "claude-inexistente-" + Guid.NewGuid().ToString("N") };
-        var router = new AiProviderRouter(new ClaudeCodeProvider(claude), new ClaudeCodeAuth(claude),
-            codex: new CodexProvider(options), codexAuth: auth, codexModels: new CodexModelCatalog(options));
+        var claude = new ClaudeCodeOptions
+        {
+            Executable = "claude-inexistente-" + Guid.NewGuid().ToString("N"),
+            AccountsDirectory = Path.Combine(Path.GetTempPath(), "claude-accounts-" + Guid.NewGuid().ToString("N")),
+        };
+        var availability = new AiAvailability();
+        options.AccountsDirectory = Path.Combine(Path.GetTempPath(), "codex-accounts-" + Guid.NewGuid().ToString("N"));
+        var router = new AiProviderRouter(new ClaudeAccounts(claude, availability), availability,
+            codex: new CodexAccounts(options, availability, auth, new CodexModelCatalog(options)));
 
         var status = await auth.GetStatusAsync();
 

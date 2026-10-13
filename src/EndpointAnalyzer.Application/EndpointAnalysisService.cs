@@ -53,8 +53,23 @@ public class EndpointAnalysisService(
     public Task<bool> IsAiAvailableAsync(CancellationToken cancellationToken = default) => IsAiAvailableAsync(null, cancellationToken);
 
     /// <param name="provider"><see cref="AiProviders.Claude"/>, <see cref="AiProviders.Codex"/> ou nulo (qualquer um).</param>
-    public async Task<bool> IsAiAvailableAsync(string? provider, CancellationToken cancellationToken = default) =>
-        aiSelector is not null && await aiSelector.SelectAsync(provider, cancellationToken) is not null;
+    public async Task<bool> IsAiAvailableAsync(string? provider, CancellationToken cancellationToken = default)
+    {
+        if (aiSelector is null) return false;
+        try
+        {
+            var ai = await aiSelector.SelectAsync(provider, cancellationToken);
+            // Só a consulta: a conta não fica marcada como em uso.
+            (ai as IDisposable)?.Dispose();
+            return ai is not null;
+        }
+        // Contas conectadas, mas sem uso agora: a análise com IA é a pedida (e informa o limite).
+        catch (AiProviderUnavailableException) { return true; }
+    }
+
+    /// <summary>Conta da IA em uso e trocas de conta da análise em andamento do endpoint; nulo quando nenhuma está rodando.</summary>
+    public AnalysisProgressSnapshot? Progress(string solutionPath, string project, string endpointId) =>
+        _running.Find(solutionPath, project, endpointId)?.Snapshot();
 
     /// <summary>A análise com IA valida os cenários em runtime quando a requisição não diz o contrário (Runtime:Enabled).</summary>
     public bool RuntimeValidationEnabled => runtime?.Options.Enabled == true;
@@ -118,12 +133,14 @@ public class EndpointAnalysisService(
         string? apiToken = null, CancellationToken cancellationToken = default, AnalysisSections sections = AnalysisSections.All,
         AnalysisSections? aiSections = null, string? aiProvider = null)
     {
-        using var _ = _running.Start(solutionPath, endpoint.Project, endpoint.Id);
-        return await AnalyzeCoreAsync(solutionPath, endpoint, useAi, validateRuntime, apiToken, cancellationToken, sections, aiSections, aiProvider);
+        using var running = _running.Start(solutionPath, endpoint.Project, endpoint.Id);
+        return await AnalyzeCoreAsync(solutionPath, endpoint, useAi, validateRuntime, apiToken, cancellationToken, sections, aiSections, aiProvider,
+            running.Progress);
     }
 
     private async Task<EndpointAnalysisReport> AnalyzeCoreAsync(string solutionPath, EndpointInfo endpoint, bool useAi, bool? validateRuntime,
-        string? apiToken, CancellationToken cancellationToken, AnalysisSections sections, AnalysisSections? aiSections, string? aiProvider)
+        string? apiToken, CancellationToken cancellationToken, AnalysisSections sections, AnalysisSections? aiSections, string? aiProvider,
+        AnalysisProgress progress)
     {
         var scenarioTabs = (sections & (AnalysisSections.Scenarios | AnalysisSections.Complete)) != 0;
         var runtimeAllowed = runtime is not null && (validateRuntime ?? runtime.Options.Enabled);
@@ -166,13 +183,18 @@ public class EndpointAnalysisService(
             sessions?.Add(analysis.Solution, analysis.Scenarios, report, analysis.Fingerprint, apiToken);
             return report;
         }
-        var ai = (aiSelector is null ? null : await aiSelector.SelectAsync(aiProvider, cancellationToken))
+        var selected = (aiSelector is null ? null : await aiSelector.SelectAsync(aiProvider, cancellationToken))
             ?? throw new InvalidOperationException(UnavailableMessage(aiProvider));
-
+        // Toda a IA da análise passa pela ordem de contas: no limite de uso, a chamada continua na próxima conta.
+        using var ai = selected as FailoverAiProvider ?? FailoverAiProvider.Single(selected);
+        progress.Track(ai);
+        ai.Changed += () => _logger.LogWarning("IA de {Endpoint}: {Handoff}", endpoint.Id, ai.HandoffsSnapshot().LastOrDefault()?.Message);
+        report.AiRun = ai.Run;
         report.Version.AiProvider = ai.Provider;
         report.Version.AiModel = ai.Model;
 
         // Documentação, fluxo de negócio e validação em runtime são independentes: rodam em paralelo.
+        var pending = new List<string>();
         var runtimeTask = runRuntime
             ? runtime!.ValidateAsync(analysis.Solution, analysisContext, analysis.Scenarios!, ai, apiToken, cancellationToken)
             : null;
@@ -180,16 +202,42 @@ public class EndpointAnalysisService(
         try
         {
             await Task.WhenAll(
-                documentation != AnalysisSections.None ? DocumentAsync(report, endpoint, ai, documentation, cancellationToken) : Task.CompletedTask,
-                runBusinessFlow ? BusinessFlowAsync(report, endpoint, ai, cancellationToken) : Task.CompletedTask);
+                documentation != AnalysisSections.None ? DocumentAsync(report, endpoint, ai, documentation, pending, cancellationToken) : Task.CompletedTask,
+                runBusinessFlow ? BusinessFlowAsync(report, endpoint, ai, pending, cancellationToken) : Task.CompletedTask);
         }
         finally
         {
             // A API iniciada pela validação é encerrada mesmo se a documentação falhar.
             if (runtimeTask is not null) report.Runtime = await runtimeTask;
         }
+        if (report.Runtime?.Interruption is not null)
+        {
+            var open = report.Runtime.Matrix?.Scenarios.Count(s => s.Status == ScenarioValidationStatuses.Inconclusive) ?? 0;
+            pending.Add($"Cenários: validação em runtime{(open > 0 ? $" ({open} cenário(s) sem conclusão)" : "")}");
+        }
+
+        // Ao trocar de conta (ou de provedor), o relatório registra quem terminou a análise.
+        report.Version.AiProvider = ai.Provider;
+        report.Version.AiModel = ai.Model;
+        if (pending.Count > 0) Interrupt(report, ai, pending);
         sessions?.Add(analysis.Solution, analysis.Scenarios, report, analysis.Fingerprint, apiToken);
         return report;
+    }
+
+    /// <summary>
+    /// Nenhuma conta com uso disponível no meio da análise: o que já foi feito (análise estática, respostas da IA, execuções
+    /// em runtime) é salvo e as etapas pendentes ficam registradas. Sem nenhuma resposta da IA, não há o que preservar e a
+    /// falha sobe (429), como quando nenhuma conta tem uso no início.
+    /// </summary>
+    private static void Interrupt(EndpointAnalysisReport report, FailoverAiProvider ai, List<string> pending)
+    {
+        var exhausted = ai.Exhaustion();
+        var progress = ai.SuccessfulCalls > 0 || report.FromCache || report.BusinessFlow?.FromCache == true;
+        if (!progress) throw exhausted;
+        report.AiRun!.Interruption = new AiInterruption
+        {
+            Reason = FailoverAiProvider.ReasonOf(exhausted.Reason), Message = exhausted.Message, Pending = pending,
+        };
     }
 
     private static string UnavailableMessage(string? provider) => provider?.Trim().ToLowerInvariant() switch
@@ -361,9 +409,11 @@ public class EndpointAnalysisService(
 
     /// <summary>
     /// Fluxo de negócio por IA: evidências da análise estática → IA (structured outputs) → validação contra as
-    /// evidências → Mermaid. Uma falha aqui não derruba a análise: fica registrada e a aba mostra o fluxo técnico.
+    /// evidências → Mermaid. Uma falha aqui não derruba a análise: fica registrada e a aba mostra o fluxo técnico. Sem
+    /// conta da IA com uso disponível, a etapa fica pendente.
     /// </summary>
-    private async Task BusinessFlowAsync(EndpointAnalysisReport report, EndpointInfo endpoint, IAiProvider ai, CancellationToken cancellationToken)
+    private async Task BusinessFlowAsync(EndpointAnalysisReport report, EndpointInfo endpoint, IAiProvider ai, List<string> pending,
+        CancellationToken cancellationToken)
     {
         var analysisContext = report.Context;
         var (graph, evidence) = BusinessFlowEvidenceBuilder.Build(analysisContext);
@@ -372,15 +422,15 @@ public class EndpointAnalysisService(
         try
         {
             var prompt = BusinessFlowAiAnalyzer.BuildUserPrompt(analysisContext, graph, evidence);
-            var key = AnalysisCache.Key($"{BusinessFlowAiAnalyzer.SystemPrompt}\n{prompt}", ai.Model, AnalyzerInfo.Version);
-            var result = await cache.GetAsync<BusinessFlowResult>(key, cancellationToken);
+            string Key() => AnalysisCache.Key($"{BusinessFlowAiAnalyzer.SystemPrompt}\n{prompt}", ai.Model, AnalyzerInfo.Version);
+            var result = await cache.GetAsync<BusinessFlowResult>(Key(), cancellationToken);
             flow.FromCache = result is not null;
             if (result is null)
             {
                 _logger.LogInformation("Enviando o fluxo de negócio de {Endpoint} para {Model}", endpoint.Id, ai.Model);
                 result = await _businessFlow.AnalyzeAsync(analysisContext, graph, evidence, ai, cancellationToken);
-                // O cache guarda a resposta da IA como veio; a validação roda sempre (e altera o objeto).
-                await cache.SetAsync(key, result, cancellationToken);
+                // O cache guarda a resposta da IA como veio (no modelo que respondeu); a validação roda sempre (e altera o objeto).
+                await cache.SetAsync(Key(), result, cancellationToken);
             }
 
             flow.Issues = BusinessFlowValidator.Validate(result, graph, evidence);
@@ -391,16 +441,19 @@ public class EndpointAnalysisService(
         {
             _logger.LogWarning(e, "Fluxo de negócio por IA de {Endpoint} falhou", endpoint.Id);
             flow.Error = e.Message;
+            if (e is AiProviderUnavailableException) lock (pending) pending.Add("Negócio: fluxo de negócio pela IA");
         }
     }
 
-    private async Task DocumentAsync(EndpointAnalysisReport report, EndpointInfo endpoint, IAiProvider ai, AnalysisSections sections, CancellationToken cancellationToken)
+    private async Task DocumentAsync(EndpointAnalysisReport report, EndpointInfo endpoint, IAiProvider ai, AnalysisSections sections,
+        List<string> pending, CancellationToken cancellationToken)
     {
         var analysisContext = report.Context;
 
         // A chave é o que a IA recebe: o payload dos cenários (com datas relativas a hoje) não entra no prompt nem no cache.
         // Com parte das abas, uma análise completa do mesmo código também serve (tem todas as partes).
-        var key = AnalysisCache.Key(PromptBuilder.BuildUserPrompt(analysisContext, sections), ai.Model, AnalyzerInfo.Version);
+        var prompt = PromptBuilder.BuildUserPrompt(analysisContext, sections);
+        var key = AnalysisCache.Key(prompt, ai.Model, AnalyzerInfo.Version);
         var cached = await cache.GetAsync(key, cancellationToken);
         if (cached is null && sections != PromptBuilder.AiSections)
             cached = await cache.GetAsync(AnalysisCache.Key(PromptBuilder.BuildUserPrompt(analysisContext), ai.Model, AnalyzerInfo.Version), cancellationToken);
@@ -413,7 +466,21 @@ public class EndpointAnalysisService(
         }
 
         _logger.LogInformation("Enviando {Endpoint} para {Model}", endpoint.Id, ai.Model);
-        report.Ai = await ai.AnalyzeAsync(analysisContext, sections, cancellationToken);
-        await cache.SetAsync(key, report.Ai, cancellationToken);
+        try
+        {
+            report.Ai = await ai.AnalyzeAsync(analysisContext, sections, cancellationToken);
+        }
+        catch (AiProviderUnavailableException)
+        {
+            // Sem conta disponível: o Resumo mostra a análise estática e a documentação fica pendente.
+            lock (pending)
+            {
+                if (sections.HasFlag(AnalysisSections.Summary)) pending.Add("Resumo: documentação da IA (objetivo, regras, validações e entidades)");
+                if (sections.HasFlag(AnalysisSections.Scenarios)) pending.Add("Cenários: títulos e descrições da IA");
+            }
+            return;
+        }
+        // Depois de uma troca de conta (ou de provedor), a resposta fica no cache do modelo que respondeu.
+        await cache.SetAsync(AnalysisCache.Key(prompt, ai.Model, AnalyzerInfo.Version), report.Ai, cancellationToken);
     }
 }

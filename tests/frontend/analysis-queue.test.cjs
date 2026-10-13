@@ -11,7 +11,8 @@ const endpointList = ['POST /api/a', 'PUT /api/b', 'DELETE /api/c'].map(id => {
   const [httpMethod, route] = id.split(' ');
   return { httpMethod, route, project: 'Api', group: 'G', summary: id, controller: 'C', action: 'A' };
 });
-const claude = { cliInstalled: true, loggedIn: true, usesSubscription: true, activeSource: 'subscription', mode: 'auto' };
+const claude = { cliInstalled: true, loggedIn: true, usesSubscription: true, activeSource: 'subscription', mode: 'auto',
+  accounts: [{ id: 'principal', display: 'eu@empresa.com', loggedIn: true, usesSubscription: true, state: 'disponivel' }] };
 const codex = { cliInstalled: true, loggedIn: true, authMethod: 'chatgpt' };
 const reportOf = (provider) => ({ report: { version: { analyzerVersion: '1', aiProvider: provider }, sections: ['summary'], context: {} }, markdown: '' });
 
@@ -36,6 +37,7 @@ function harness(storage = new Map()) {
     sessionStorage: { getItem: () => null, setItem() {} },
     fetch: (url, options) => new Promise((resolve, reject) => {
       const reply = (status, body) => resolve({ ok: status < 400, status, statusText: '', headers: { get: () => 'application/json' }, json: async () => body });
+      if (url.startsWith('/api/auth/status')) { reply(200, claude); return; }
       if (url !== '/api/analysis') { reply(200, {}); return; }
       const request = JSON.parse(options.body);
       const call = { request, answer: reply, aborted: false };
@@ -45,7 +47,7 @@ function harness(storage = new Map()) {
     URL, AbortController, console, setTimeout, clearTimeout, alert() {}, confirm: () => true,
   });
   vm.runInContext(script, context);
-  vm.runInContext(`endpoints = ${JSON.stringify(endpointList)}; solutionPath = 'Api.sln'; render = () => {};
+  vm.runInContext(`endpoints = ${JSON.stringify(endpointList)}; solutionPath = 'Api.sln'; render = () => {}; progressPollMs = 0;
     authState = ${JSON.stringify(claude)}; codexState = ${JSON.stringify(codex)};`, context);
   return { context, element, analyses, storage, run: code => vm.runInContext(code, context) };
 }

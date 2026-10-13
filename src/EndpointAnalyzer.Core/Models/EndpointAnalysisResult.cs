@@ -118,6 +118,10 @@ public class EndpointAnalysisReport
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public BusinessFlowAnalysis? BusinessFlow { get; set; }
 
+    /// <summary>Contas da IA usadas, trocas de conta (limite de uso) e etapas pendentes; nulo na análise sem IA.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public AiRunInfo? AiRun { get; set; }
+
     /// <summary>Abas produzidas por esta análise (summary, business, complete, scenarios).</summary>
     public List<string> Sections { get; set; } = AnalysisSectionNames.ToNames(AnalysisSections.All);
 }

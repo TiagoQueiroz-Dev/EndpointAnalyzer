@@ -157,6 +157,39 @@
   .account-row button { padding: 4px 10px; font-size: 12.5px; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--post); flex: none; }
   .dot.warn { background: var(--put); }
+  .dot.fail { background: var(--danger); } .dot.active { background: var(--claude); }
+  .dot.off { background: transparent; border: 1px solid var(--muted); }
+  /* Várias contas do Claude, na ordem de uso: estado de cada uma, uso do plano e ações (entrar, ordem, sair, remover). */
+  .accounts { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .account { display: flex; flex-direction: column; gap: 5px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
+  .account.acc-active { border-color: var(--claude); }
+  .codex-footer .account.acc-active { border-color: var(--codex); }
+  .codex-footer .dot.active { background: var(--codex); } .codex-footer .acc-state.acc-active { color: var(--codex); }
+  .account .account-row { padding: 0; border: 0; background: none; }
+  .acc-pos { flex: none; font: 600 11px ui-monospace, Consolas, monospace; color: var(--muted); }
+  .acc-state { flex: none; font-size: 11px; color: var(--post); white-space: nowrap; }
+  .acc-state.acc-warn { color: var(--put); } .acc-state.acc-fail { color: var(--danger); } .acc-state.acc-active { color: var(--claude); }
+  .acc-state.acc-off { color: var(--muted); }
+  .account-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+  .account-actions button { padding: 2px 8px; font-size: 11.5px; font-weight: 500; }
+  .add-account { padding: 6px 10px; font-size: 12.5px; }
+  /* Cabeçalho do bloco da conta: nome do provedor e, à direita, a engrenagem das configurações (menu flutuante). */
+  .footer-head { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 22px; }
+  .footer-settings > summary { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; color: var(--muted);
+                               cursor: pointer; list-style: none; }
+  .footer-settings > summary::-webkit-details-marker { display: none; }
+  .footer-settings > summary:hover, .footer-settings[open] > summary { background: var(--hover); color: var(--text); }
+  .footer-settings > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .footer-settings > summary svg { width: 15px; height: 15px; }
+  .footer-menu { position: absolute; top: calc(100% + 4px); right: 0; left: 0; z-index: 5; display: flex; flex-direction: column; gap: 6px;
+                 padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
+                 box-shadow: 0 6px 18px rgba(0, 0, 0, .18); }
+  .footer-menu .check { align-items: flex-start; font-size: 13px; }
+  .footer-menu .check input { margin-top: 3px; }
+  .footer-menu p { margin: 0; font-size: 12px; }
+  .ai-run { margin: 0 0 10px; font-size: 13px; }
+  .ai-run > summary { cursor: pointer; color: var(--muted); }
+  .ai-run ul { margin: 6px 0 0; padding-left: 18px; }
   .selects { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
   .selects select { width: 100%; min-width: 0; padding: 6px 6px; font-size: 12.5px; }
   .footer-note { font-size: 12px; color: var(--muted); }
@@ -524,6 +557,7 @@
   <form method="dialog" id="loginStep1">
     <h2>Entrar com Claude</h2>
     <p class="muted">Usa o seu plano mensal (Pro, Max ou Team) pelo Claude Code instalado nesta máquina, sem cobrança por uso da API.</p>
+    <p id="loginAccountNote" class="muted"></p>
     <label for="loginEmail">E-mail da conta do Claude</label>
     <input id="loginEmail" type="text" inputmode="email" autocomplete="email" placeholder="voce@empresa.com.br">
     <div class="row">
@@ -595,7 +629,7 @@ let selected = null;
 let lastResponse = null;
 let authState = null;           // conta do Claude (/api/auth/status)
 let codexState = null;          // conta do Codex (/api/auth/codex/status)
-let claudeUsage = null;         // uso do plano do Claude (/api/auth/usage)
+const claudeUsages = {};         // uso do plano de cada conta do Claude (/api/auth/usage?account=)
 let runtimeAvailable = false;   // Runtime:Enabled no servidor
 let openGroups = new Set(store.get("ea.openGroups", []));
 let openProjects = new Set(store.get("ea.openProjects", []));
@@ -982,12 +1016,15 @@ function updateAiControls(initial) {
   }
 
   const codex = codexState ?? {};
-  // Limite atingido na conta escolhida: o aviso aparece antes de o usuário clicar em ANALISAR.
-  const limitReached = provider === "codex" ? codex.usage?.limitReached
-    : provider === "claude" && s.activeSource === "subscription" && claudeUsage?.limitReached;
+  const subscriptions = (s.accounts ?? []).filter(a => a.usesSubscription).length;
+  const codexAccounts = (codex.accounts ?? []).filter(a => a.loggedIn).length;
+  // Limite atingido em todas as contas do provedor escolhido: o aviso aparece antes de o usuário clicar em ANALISAR.
+  const limitReached = provider === "codex" ? accountsExhausted("codex")
+    : provider === "claude" && s.activeSource === "subscription" && accountsExhausted("claude");
   $("aiSource").textContent = (provider === "codex"
     ? `IA: Codex · ${codex.authMethod === "apiKey" ? "chave da API (por uso)" : codex.planType ? `plano ${planName(codex.planType)}` : "conta do ChatGPT"}`
-    : provider === "claude" ? (s.activeSource === "api" ? "IA: Claude · API" : "IA: Claude · plano mensal")
+      + (codexAccounts > 1 ? ` · ${codexAccounts} contas` : "")
+    : provider === "claude" ? (s.activeSource === "api" ? "IA: Claude · API" : `IA: Claude · plano mensal${subscriptions > 1 ? ` · ${subscriptions} contas` : ""}`)
     : "IA indisponível: entre com Claude ou Codex para habilitar")
     + (limitReached ? " · limite de uso atingido" : "");
   $("aiSource").className = limitReached ? "error" : "muted";
@@ -1040,13 +1077,29 @@ const savedAnalyses = {
 };
 
 const analysisStatus = (report) => {
-  const rt = report.runtime, flow = report.businessFlow;
-  return (report.fromCache ? "Concluído (cache)" : "Concluído")
+  const rt = report.runtime, flow = report.businessFlow, run = report.aiRun, interruption = run?.interruption;
+  return (interruption ? "Concluído parcialmente" : report.fromCache ? "Concluído (cache)" : "Concluído")
     + (Object.hasOwn(providerNames, report.version?.aiProvider ?? "") ? ` com o ${providerName(report.version.aiProvider)}` : "")
-    + (!rt ? "" : rt.status === "falhou" ? " · a validação em runtime falhou (veja a aba Cenários)"
-      : ` · ${rt.matrix?.counts?.confirmado ?? 0} de ${rt.matrix?.scenarios?.length ?? 0} cenário(s) confirmado(s) em runtime`)
-    + (flow?.error ? " · o fluxo de negócio por IA falhou (veja a aba Negócio)" : "");
+    + (run?.handoffs?.length ? ` · contas: ${run.accounts.map(a => a.label).join(" → ")}` : "")
+    + (interruption ? ` · nenhuma conta com uso disponível; pendente: ${interruption.pending.join("; ")}`
+      : (!rt ? "" : rt.status === "falhou" ? " · a validação em runtime falhou (veja a aba Cenários)"
+        : ` · ${rt.matrix?.counts?.confirmado ?? 0} de ${rt.matrix?.scenarios?.length ?? 0} cenário(s) confirmado(s) em runtime`)
+      + (flow?.error ? " · o fluxo de negócio por IA falhou (veja a aba Negócio)" : ""));
 };
+
+const handoffReason = (h) => h.reason === "autenticacao" ? "perdeu a sessão" : "atingiu o limite de uso";
+
+/** Status da análise em andamento: provedor e conta da IA em uso e a última troca de conta. */
+function progressText(p, note) {
+  const name = providerName(p.provider);
+  const who = p.account && p.account !== name ? `${name} (${p.account})` : name;
+  const last = p.handoffs?.[p.handoffs.length - 1];
+  if (p.exhausted) return `Nenhuma conta da IA com uso disponível: salvando o progresso da análise...${note}`;
+  return `Analisando com o ${who}${last ? ` · ${last.fromAccount} ${handoffReason(last)}: a análise continuou em ${last.toAccount}` : ""}...${note}`;
+}
+
+/** Intervalo da consulta ao acompanhamento da análise em andamento (0 desliga). */
+let progressPollMs = 2000;
 
 const savedAtLabel = (time) => new Date(time).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
 
@@ -1163,9 +1216,32 @@ function startAnalysis(endpoint, solution, { sections, ai, provider, token }, no
       return controller.signal.aborted ? { cancelled: true } : { error };
     } finally {
       running.delete(key(endpoint));
+      clearTimeout(entry.timer);
     }
   })();
   running.set(key(endpoint), entry);
+  // Enquanto roda: qual conta da IA está em uso e quando a análise passou para a próxima (limite de uso).
+  const poll = async () => {
+    if (running.get(key(endpoint)) !== entry) return;
+    try {
+      const p = await api(`/api/analysis/progress?solutionPath=${encodeURIComponent(solution)}&method=${encodeURIComponent(endpoint.httpMethod)}`
+        + `&route=${encodeURIComponent(endpoint.route)}&project=${encodeURIComponent(endpoint.project)}`);
+      if (p?.running && p.provider && running.get(key(endpoint)) === entry) {
+        const changed = (p.handoffs?.length ?? 0) !== (entry.progress?.handoffs?.length ?? 0);
+        entry.progress = p;
+        entry.status = progressText(p, note);
+        showAnalysisState(endpoint);
+        if (queue.active?.key === key(endpoint)) renderQueue();
+        // A troca muda o estado das contas no rodapé (uma ficou sem uso, outra passou a ser usada).
+        if (changed) {
+          if (providerAvailable.claude()) refreshAuth(false);
+          if (providerAvailable.codex()) refreshCodex(false);
+        }
+      }
+    } catch { /* o acompanhamento é opcional: a análise segue */ }
+    if (running.get(key(endpoint)) === entry) entry.timer = setTimeout(poll, progressPollMs);
+  };
+  if (progressPollMs > 0) entry.timer = setTimeout(poll, progressPollMs);
   return entry;
 }
 
@@ -1174,7 +1250,7 @@ function finishAnalysis(endpoint, outcome, provider) {
   if (outcome.response) {
     if (selected && key(selected) === key(endpoint)) {
       showResponse(outcome.response);
-      setAnalyzeStatus(endpoint, analysisStatus(outcome.response.report), "muted");
+      setAnalyzeStatus(endpoint, analysisStatus(outcome.response.report), outcome.response.report.aiRun?.interruption ? "warn" : "muted");
     }
   } else if (outcome.cancelled) {
     setAnalyzeStatus(endpoint, "Análise cancelada.", "muted");
@@ -1185,7 +1261,9 @@ function finishAnalysis(endpoint, outcome, provider) {
   }
   showAnalysisState(endpoint);
   // A análise consumiu o limite do plano: atualiza as barras de uso da conta usada.
-  if (provider && !outcome.cancelled) refreshUsage(provider);
+  // Com troca de provedor no meio (contas esgotadas), os dois são atualizados.
+  const used = new Set(outcome.response?.report.aiRun?.accounts?.map(a => a.provider) ?? []);
+  if (provider && !outcome.cancelled) refreshUsage(used.size > 1 ? null : [...used][0] ?? provider);
 }
 
 async function analyze() {
@@ -1382,8 +1460,16 @@ async function runQueueItem(item) {
   queue.active = null;
   item.finishedAt = Date.now();
   if (outcome.response) {
-    const report = outcome.response.report;
-    Object.assign(item, { status: "concluido", provider: report.version?.aiProvider ?? item.provider, note: analysisStatus(report) });
+    const report = outcome.response.report, interruption = report.aiRun?.interruption;
+    if (interruption) {
+      // Nenhuma conta (nem o outro provedor) com uso: o parcial já está salvo. O item volta para a fila (o que ficou pronto
+      // vem do cache) e ela pausa, preservando os restantes até o uso renovar.
+      Object.assign(item, { status: "pendente", finishedAt: null, provider: report.version?.aiProvider ?? item.provider,
+        note: `Parcial salvo; pendente: ${interruption.pending.join("; ")}` });
+      queue.paused = { reason: interruption.message, provider: report.version?.aiProvider ?? item.provider };
+    } else {
+      Object.assign(item, { status: "concluido", provider: report.version?.aiProvider ?? item.provider, note: analysisStatus(report) });
+    }
   } else if (outcome.cancelled) {
     Object.assign(item, { status: "cancelado", note: "Cancelado durante a análise." });
   } else if (outcome.error.code === "usage_limit" || outcome.error.code === "authentication") {
@@ -1563,7 +1649,8 @@ function render(tab) {
   if (tab === "diff") body = renderDiff(report);
 
   $("result").innerHTML = `<section>
-    <p class="muted" style="margin-top:0">analisador ${esc(report.version.analyzerVersion)}${report.version.commit ? ` · commit ${esc(report.version.commit)}` : ""}${Object.hasOwn(providerNames, report.version.aiProvider ?? "") ? ` · IA ${esc(providerName(report.version.aiProvider))}` : ""}${report.version.aiModel ? ` · ${esc(report.version.aiModel)}` : ""}</p>
+    <p class="muted" style="margin-top:0">analisador ${esc(report.version.analyzerVersion)}${report.version.commit ? ` · commit ${esc(report.version.commit)}` : ""}${Object.hasOwn(providerNames, report.version.aiProvider ?? "") ? ` · IA ${esc(providerName(report.version.aiProvider))}` : ""}${report.version.aiModel ? ` · ${esc(report.version.aiModel)}` : ""}${singleAccount(report.aiRun)}</p>
+    ${aiRunHtml(report.aiRun)}
     <div class="tabs">${tabs.map(([id, label]) => `<button data-tab="${id}" class="${id === tab ? "active" : ""}">${label}</button>`).join("")}</div>
     <div class="result-body">${body}</div></section>`;
   document.querySelectorAll("[data-tab]").forEach(b => b.addEventListener("click", () => render(b.dataset.tab)));
@@ -1578,6 +1665,27 @@ function render(tab) {
   document.querySelectorAll("[data-jump]").forEach(b => b.addEventListener("click", () =>
     $(b.dataset.jump)?.scrollIntoView({ behavior: "smooth", block: "start" })));
   wireReportActions(ctx, markdown);
+}
+
+/** Conta que fez a análise inteira (com troca, as contas aparecem em aiRunHtml). */
+const singleAccount = (run) => run?.accounts?.length === 1 && !run.handoffs?.length
+  && run.accounts[0].label !== providerName(run.accounts[0].provider) ? ` · conta ${esc(run.accounts[0].label)}` : "";
+
+/** Trocas de conta da IA durante a análise e, se faltou uso em todas as contas, o que ficou pendente. */
+function aiRunHtml(run) {
+  if (!run) return "";
+  const handoffs = run.handoffs ?? [], interruption = run.interruption;
+  const items = [
+    ...handoffs.map(h => `<li>${esc(h.fromAccount)} ${handoffReason(h)} em "${esc(h.step)}"`
+      + `${h.toAccount ? `: a mesma etapa continuou em ${esc(h.toAccount)}` : ""} <span class="muted">(${esc(shortTime(h.at))})</span></li>`),
+    ...(run.notes ?? []).map(n => `<li>${esc(n)}</li>`),
+  ];
+  return (interruption ? `<div class="rt-summary partial"><b>Análise parcial: nenhuma conta da IA com uso disponível</b>
+      <span class="muted">${esc(interruption.message)}</span>
+      <span class="muted">Pendente: ${esc(interruption.pending.join("; "))}. O que já foi feito está salvo; analise de novo quando o uso
+        renovar (as respostas já obtidas vêm do cache).</span></div>` : "")
+    + (items.length ? `<details class="ai-run" ${interruption ? "open" : ""}><summary>IA: ${run.accounts.map(a => esc(a.label)).join(" → ")}`
+      + `${handoffs.length ? ` · ${handoffs.length} troca(s) de conta` : ""}</summary><ul>${items.join("")}</ul></details>` : "");
 }
 
 /** Botões do card do endpoint: copiar / baixar o relatório em Markdown. */
@@ -3408,6 +3516,7 @@ function expandCode(direction, panel) {
 // ---- Contas da IA (rodapé da barra lateral): Claude e Codex, independentes e conectadas ao mesmo tempo ----
 
 const claudeIcon = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2l1.8 6.6L20 6l-4.2 5.2L22 12l-6.4 1.6L19 19l-5.6-3.4L12 22l-1.4-6.4L5 19l3.4-5.4L2 12l6.2-.8L4 6l6.2 2.6z"/></svg>`;
+const gearIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`;
 const codexIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 9-3 3 3 3"/><path d="M13 15h5"/><rect x="2.5" y="3.5" width="19" height="17" rx="3"/></svg>`;
 const plans = { pro: "Pro", max: "Max", team: "Team", enterprise: "Enterprise" };
 const codexPlans = { free: "Free", go: "Go", plus: "Plus", pro: "Pro", prolite: "Pro Lite", promax: "Pro Max", team: "Team",
@@ -3415,9 +3524,10 @@ const codexPlans = { free: "Free", go: "Go", plus: "Plus", pro: "Pro", prolite: 
 const planName = (plan) => codexPlans[plan] ?? plans[plan] ?? String(plan ?? "").replace(/_/g, " ");
 const providerLabel = (id) => `<span class="provider-label">${id === "codex" ? codexIcon : claudeIcon} ${providerName(id)}</span>`;
 
-async function refreshAuth(refresh) {
+/** refreshUsage: relê também o uso do plano de cada conta (depois de uma análise, que consome o limite). */
+async function refreshAuth(refresh, refreshUsage = false) {
   try {
-    renderAuth(await api(`/api/auth/status?refresh=${refresh}`));
+    renderAuth(await api(`/api/auth/status?refresh=${refresh}`), refreshUsage);
   } catch (err) {
     accountError("claude", err, () => refreshAuth(true));
   }
@@ -3436,31 +3546,147 @@ function accountError(provider, err, retry) {
   updateAiControls(false);
 }
 
-function renderAuth(s) {
-  authState = s;
-  let html;
-  if (!s.cliInstalled) {
-    html = `<span class="footer-note">Claude Code não encontrado —
-      <a href="https://claude.com/claude-code" target="_blank" rel="noopener">instale</a> para usar o plano mensal.</span>`;
-  } else if (s.usesSubscription) {
-    const plan = plans[s.subscriptionType] ?? s.subscriptionType ?? "";
-    html = `<div class="account-row" title="${esc([s.email, plan && `plano ${plan}`, s.orgName].filter(Boolean).join(" · "))}">
-        <span class="dot"></span><span class="email">${esc(s.email ?? "conectado")}</span>
-        <button class="secondary" id="logoutBtn">Sair</button>
-      </div>
-      ${modelSelects("claude")}
-      <div id="claudeUsage"></div>`;
-  } else {
-    const note = s.loggedIn ? `<span class="footer-note"><span class="dot warn" style="display:inline-block"></span> Claude Code logado com conta do Console (API).</span>` : "";
-    html = `${note}<button class="claude-btn" id="loginBtn">${claudeIcon} Entrar com Claude</button>`;
-  }
-  $("claudeFooter").innerHTML = providerLabel("claude") + html;
+/** Estado de cada conta do Claude: texto e classe (cor do ponto). */
+const accountStates = {
+  disponivel: ["disponível", ""], "em-uso": ["em uso", "active"], "sem-uso": ["sem uso", "warn"],
+  autenticar: ["entre de novo", "fail"], desconectado: ["desconectada", "off"], console: ["conta do Console (API)", "warn"],
+};
+const shortTime = (at) => {
+  const date = new Date(at);
+  return new Date().toDateString() === date.toDateString() ? date.toLocaleTimeString("pt-BR", { timeStyle: "short" })
+    : date.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
+};
 
-  $("loginBtn")?.addEventListener("click", openLogin);
-  $("logoutBtn")?.addEventListener("click", logout);
-  if (s.usesSubscription) { bindModels("claude"); loadClaudeUsage(false); }
-  else claudeUsage = null;
+/**
+ * Contas do Claude na ordem de uso: quando a conta em uso atinge o limite, a análise continua na próxima disponível. Cada
+ * conta tem o próprio login, então entrar ou sair de uma não afeta as outras.
+ */
+function renderAuth(s, refreshUsage = false) {
+  authState = s;
+  const accounts = s.accounts ?? [];
+  const html = !s.cliInstalled
+    ? `<span class="footer-note">Claude Code não encontrado —
+      <a href="https://claude.com/claude-code" target="_blank" rel="noopener">instale</a> para usar o plano mensal.</span>`
+    : accountListHtml("claude", accounts) + (s.usesSubscription ? modelSelects("claude") : "");
+  $("claudeFooter").innerHTML = footerHeadHtml("claude", s) + html;
+
+  if (s.usesSubscription) bindModels("claude");
+  for (const id of Object.keys(claudeUsages)) if (!accounts.some(a => a.id === id && a.usesSubscription)) delete claudeUsages[id];
+  for (const a of accounts) if (a.usesSubscription) loadClaudeUsage(a.id, refreshUsage);
   updateAiControls(false);
+}
+
+/** Contas do Codex na ordem de uso, como as do Claude: cada uma com o próprio login (CODEX_HOME) e o uso do plano. */
+function renderCodex(s) {
+  codexState = s;
+  const html = !s.cliInstalled
+    ? `<span class="footer-note">Codex não encontrado —
+      <a href="https://developers.openai.com/codex" target="_blank" rel="noopener">instale</a> (CLI ou app) para usar a conta do ChatGPT.</span>`
+    : accountListHtml("codex", s.accounts ?? []) + (s.loggedIn ? modelSelects("codex") : "");
+  $("codexFooter").innerHTML = footerHeadHtml("codex", s) + html;
+
+  if (s.loggedIn) bindModels("codex");
+  updateAiControls(false);
+}
+
+const accountApis = { claude: "/api/auth", codex: "/api/auth/codex" };
+const accountStateOf = (provider) => provider === "codex" ? codexState : authState;
+const renderAccounts = (provider, status, refreshUsage) => provider === "codex" ? renderCodex(status) : renderAuth(status, refreshUsage);
+
+/**
+ * Cabeçalho do bloco da conta: nome do provedor e, atrás da engrenagem, a opção que vale para os dois provedores.
+ * Redesenhar o rodapé mantém o menu como estava.
+ */
+function footerHeadHtml(provider, s) {
+  const name = providerName(provider), other = providerName(provider === "codex" ? "claude" : "codex");
+  const settings = s.cliInstalled ? `<details class="footer-settings" id="${provider}Settings" ${$(`${provider}Settings`)?.open ? "open" : ""}>
+      <summary title="Configurações das contas do ${name}" aria-label="Configurações das contas do ${name}">${gearIcon}</summary>
+      <div class="footer-menu">
+        <label class="check"><input type="checkbox" id="${provider}ContinueOther" data-continue-other ${s.continueWithOtherProvider ? "checked" : ""}> Ao esgotar as contas, continuar no outro provedor</label>
+        <p class="muted">Quando todas as contas do ${name} estiverem sem uso disponível, a análise continua nas contas do ${other} (e vice-versa), aproveitando o que já foi feito.</p>
+      </div>
+    </details>` : "";
+  return `<div class="footer-head">${providerLabel(provider)}${settings}</div>`;
+}
+
+/** Lista das contas na ordem de uso e o botão para adicionar (sem contas, o botão de entrar). */
+function accountListHtml(provider, accounts) {
+  const name = providerName(provider), icon = provider === "codex" ? codexIcon : claudeIcon;
+  return `${accounts.length ? `<ol class="accounts" aria-label="Contas do ${name}, na ordem de uso">${accounts.map((a, i) => accountHtml(provider, a, i, accounts)).join("")}</ol>` : ""}
+    <button class="${accounts.length ? "secondary add-account" : "claude-btn"}" type="button" data-account-action="add" data-provider="${provider}">${accounts.length ? `+ Adicionar conta ${name}` : `${icon} Entrar com ${name}`}</button>`;
+}
+
+function accountHtml(provider, a, i, list) {
+  const [stateText, cls] = accountStates[a.state] ?? [a.state, ""];
+  const plan = a.authMethod === "apiKey" ? "chave da API" : a.plan && (provider === "codex" || a.usesSubscription) ? planName(a.plan) : "";
+  const until = a.until && (a.state === "sem-uso" || a.state === "autenticar") ? ` até ${shortTime(a.until)}` : "";
+  const title = [a.email, plan && `plano ${plan}`, a.orgName, a.authMethod === "apiKey" && "login com chave da API (cobrança por uso)", a.message]
+    .filter(Boolean).join(" · ");
+  const usage = provider === "codex" ? a.usage : claudeUsages[a.id];
+  const button = (action, label, tip, disabled) => `<button type="button" class="secondary" data-account-action="${action}" data-provider="${provider}"
+    data-account="${esc(a.id)}" title="${esc(tip)}" aria-label="${esc(`${tip}: ${a.display}`)}" ${disabled ? "disabled" : ""}>${label}</button>`;
+  return `<li class="account acc-${cls}">
+    <div class="account-row" title="${esc(title)}">
+      <span class="acc-pos">${i + 1}</span><span class="dot ${cls}"></span>
+      <span class="email">${esc(a.display)}${plan ? ` · ${esc(plan)}` : ""}</span>
+      <span class="acc-state acc-${cls}" id="${provider}State-${esc(a.id)}">${esc(stateText + until)}</span>
+    </div>
+    ${a.loginError ? `<span class="footer-note error">${esc(a.loginError)}</span>` : ""}
+    <div class="account-actions">
+      ${!a.loggedIn || a.state === "autenticar" ? button("login", "Entrar", `Entrar com esta conta do ${providerName(provider)}`) : ""}
+      ${a.state === "sem-uso" || a.state === "autenticar" ? button("check", "Verificar", "Verificar de novo o login e o uso desta conta") : ""}
+      ${list.length > 1 ? button("up", "↑", "Usar antes", i === 0) + button("down", "↓", "Usar depois", i === list.length - 1) : ""}
+      ${a.loggedIn ? button("logout", "Sair", "Desconectar esta conta (as outras continuam conectadas)") : ""}
+      ${button("remove", "×", "Remover a conta")}
+    </div>
+    <div id="${provider}Usage-${esc(a.id)}">${usageHtml(usage, provider)}</div>
+  </li>`;
+}
+
+/** Ações das contas (um listener por rodapé, que é redesenhado a cada mudança). */
+async function accountAction(provider, action, id) {
+  const base = accountApis[provider], name = providerName(provider);
+  const account = accountStateOf(provider)?.accounts?.find(a => a.id === id);
+  const login = (account) => provider === "codex" ? startCodexLogin(account) : openLogin(account);
+  const json = (method, body) => ({ method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  try {
+    if (action === "add") {
+      const { id: added, status } = await api(`${base}/accounts`, json("POST", { label: null }));
+      renderAccounts(provider, status);
+      await login(added);
+    } else if (action === "login") {
+      await login(id);
+    } else if (action === "check") {
+      renderAccounts(provider, await api(`${base}/accounts/${encodeURIComponent(id)}/check`, { method: "POST" }), true);
+    } else if (action === "up" || action === "down") {
+      const ids = accountStateOf(provider).accounts.map(a => a.id), i = ids.indexOf(id), j = action === "up" ? i - 1 : i + 1;
+      if (i < 0 || j < 0 || j >= ids.length) return;
+      [ids[i], ids[j]] = [ids[j], ids[i]];
+      renderAccounts(provider, await api(`${base}/accounts/order`, json("PUT", { ids })));
+    } else if (action === "logout") {
+      if (!confirm(`Sair da conta ${account?.display ?? ""} do ${name}?\n\nAs outras contas continuam conectadas, e o ${name} do terminal não é afetado.`)) return;
+      renderAccounts(provider, await api(`${base}/logout?account=${encodeURIComponent(id)}`, { method: "POST" }));
+    } else if (action === "remove") {
+      if (!confirm(`Remover a conta ${account?.display ?? ""} do ${name} da lista?\n\nEla é desconectada deste projeto; as outras contas não são afetadas.`)) return;
+      renderAccounts(provider, await api(`${base}/accounts/${encodeURIComponent(id)}`, { method: "DELETE" }));
+    }
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+/** A opção vale para os dois provedores: as duas engrenagens mostram o mesmo valor. */
+async function saveContinueOther(enabled) {
+  try {
+    const { continueWithOtherProvider } = await api("/api/auth/settings", { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ continueWithOtherProvider: enabled }) });
+    for (const state of [authState, codexState]) if (state) state.continueWithOtherProvider = continueWithOtherProvider;
+    for (const box of [$("claudeContinueOther"), $("codexContinueOther")]) if (box) box.checked = continueWithOtherProvider;
+  } catch (err) {
+    alert(err.message);
+    refreshAuth(false);
+    refreshCodex(false);
+  }
 }
 
 async function refreshCodex(refresh) {
@@ -3470,33 +3696,6 @@ async function refreshCodex(refresh) {
     codexState = null;
     accountError("codex", err, () => refreshCodex(true));
   }
-}
-
-function renderCodex(s) {
-  codexState = s;
-  let html;
-  if (!s.cliInstalled) {
-    html = `<span class="footer-note">Codex não encontrado —
-      <a href="https://developers.openai.com/codex" target="_blank" rel="noopener">instale</a> (CLI ou app) para usar a conta do ChatGPT.</span>`;
-  } else if (s.loggedIn) {
-    const plan = s.planType ? planName(s.planType) : "";
-    const who = s.email ?? (s.authMethod === "apiKey" ? "chave da API" : "conectado");
-    html = `<div class="account-row" title="${esc([s.email, plan && `plano ${plan}`, s.authMethod === "apiKey" && "login com chave da API (cobrança por uso)"].filter(Boolean).join(" · "))}">
-        <span class="dot ${s.usage?.limitReached ? "warn" : ""}"></span><span class="email">${esc(who)}${plan ? ` · ${esc(plan)}` : ""}</span>
-        <button class="secondary" id="codexLogoutBtn">Sair</button>
-      </div>
-      ${modelSelects("codex")}
-      <div id="codexUsage">${usageHtml(s.usage, "codex")}</div>`;
-  } else {
-    const error = s.loginError ? `<span class="footer-note error">${esc(s.loginError)}</span>` : "";
-    html = `${error}<button class="claude-btn" id="codexLoginBtn">${codexIcon} Entrar com Codex</button>`;
-  }
-  $("codexFooter").innerHTML = providerLabel("codex") + html;
-
-  $("codexLoginBtn")?.addEventListener("click", startCodexLogin);
-  $("codexLogoutBtn")?.addEventListener("click", codexLogout);
-  if (s.loggedIn) bindModels("codex");
-  updateAiControls(false);
 }
 
 /** Uso das janelas do limite do plano (sessão de 5 horas e semana) da conta, com o horário de renovação. */
@@ -3512,7 +3711,6 @@ function usageHtml(usage, provider) {
     return ` · renova ${today ? "às " + date.toLocaleTimeString("pt-BR", { timeStyle: "short" })
       : "em " + date.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}`;
   };
-  const other = provider === "codex" ? "o Claude" : "o Codex";
   return `<div class="usage ${provider}" aria-label="Uso do limite do plano do ${providerName(provider)}">
     ${windows.map(w => {
       const used = Math.max(0, Math.min(100, w.usedPercent));
@@ -3521,43 +3719,43 @@ function usageHtml(usage, provider) {
         <span class="usage-bar ${used >= 100 ? "full" : used >= 80 ? "high" : ""}"><span style="width:${used}%"></span></span>
         <span>${used}%</span></div>`;
     }).join("")}
-    ${usage.limitReached ? `<span class="footer-note error">Limite de uso atingido: aguarde a renovação ou use ${other}.</span>` : ""}
+    ${usage.limitReached ? `<span class="footer-note error">Limite de uso atingido nesta conta: até a renovação, as análises usam a próxima conta com uso disponível.</span>` : ""}
   </div>`;
 }
 
-/** Uso do plano do Claude: consulta à parte (o Claude Code leva ~2 s), sem atrasar o status da conta. */
-async function loadClaudeUsage(refresh) {
+/** Uso do plano de uma conta do Claude: consulta à parte (o Claude Code leva ~2 s), sem atrasar o status das contas. */
+async function loadClaudeUsage(id, refresh) {
   try {
-    const { usage } = await api(`/api/auth/usage?refresh=${refresh}`);
-    claudeUsage = usage ?? null;
+    const { usage } = await api(`/api/auth/usage?account=${encodeURIComponent(id)}&refresh=${refresh}`);
+    claudeUsages[id] = usage ?? null;
   } catch {
-    claudeUsage = null;   // Sem o uso, a conta continua utilizável; só as barras somem.
+    claudeUsages[id] = null;   // Sem o uso, a conta continua utilizável; só as barras somem.
   }
-  const slot = $("claudeUsage");
-  if (slot) slot.innerHTML = usageHtml(claudeUsage, "claude");
+  const slot = $(`claudeUsage-${id}`);
+  if (slot) slot.innerHTML = usageHtml(claudeUsages[id], "claude");
+  // O servidor deixa de usar a conta com o limite atingido até a renovação: o estado acompanha sem redesenhar a lista.
+  const account = authState?.accounts?.find(a => a.id === id), state = $(`claudeState-${id}`);
+  if (claudeUsages[id]?.limitReached && account && (account.state === "disponivel" || account.state === "em-uso")) {
+    account.state = "sem-uso";
+    if (state) { state.textContent = accountStates["sem-uso"][0]; state.className = "acc-state acc-warn"; }
+  }
   updateAiControls(false);
 }
 
-/** Atualiza só o uso do Codex (sem refazer os seletores); se a conta mudou, redesenha o bloco inteiro. */
-async function refreshCodexUsage() {
-  try {
-    const s = await api("/api/auth/codex/status?refresh=true");
-    if (!s.loggedIn || !codexState?.loggedIn || s.email !== codexState.email || !$("codexUsage")) { renderCodex(s); return; }
-    codexState = s;
-    $("codexUsage").innerHTML = usageHtml(s.usage, "codex");
-    updateAiControls(false);
-  } catch (err) {
-    codexState = null;
-    accountError("codex", err, () => refreshCodex(true));
-  }
+/** Todas as contas conectadas do provedor estão sem uso (a próxima análise iria para o outro provedor). */
+function accountsExhausted(provider) {
+  const connected = (accountStateOf(provider)?.accounts ?? []).filter(a => provider === "codex" ? a.loggedIn : a.usesSubscription);
+  const usage = (a) => provider === "codex" ? a.usage : claudeUsages[a.id];
+  return connected.length > 0 && connected.every(a => a.state === "sem-uso" || a.state === "autenticar" || usage(a)?.limitReached);
 }
 
-/** Depois de uma análise (e ao voltar para a aba) o uso muda: atualiza a conta usada, ou as duas. */
+/** Depois de uma análise (e ao voltar para a aba) o uso e o estado das contas mudam: atualiza o provedor usado, ou os dois. */
 let usageRefreshedAt = Date.now();
 function refreshUsage(provider) {
   usageRefreshedAt = Date.now();
-  if (provider !== "codex" && authState?.usesSubscription) loadClaudeUsage(true);
-  if (provider !== "claude" && codexState?.loggedIn) refreshCodexUsage();
+  // Uma conta pode ter atingido o limite e a análise seguido em outra.
+  if (provider !== "codex" && authState?.usesSubscription) refreshAuth(false, true);
+  if (provider !== "claude" && codexState?.loggedIn) refreshCodex(true);
 }
 
 // ---- Modelo e effort (um seletor por conta) ----
@@ -3647,8 +3845,16 @@ function showStep(step) {
   $("loginError1").textContent = $("loginError2").textContent = "";
 }
 
-function openLogin() {
+/** Conta do login em andamento (null = a primeira da ordem). */
+let loginAccount = null;
+
+function openLogin(account = null) {
+  loginAccount = typeof account === "string" ? account : null;
+  const accounts = authState?.accounts ?? [], index = accounts.findIndex(a => a.id === loginAccount);
+  $("loginAccountNote").textContent = index >= 0 && accounts.length > 1
+    ? `Conta ${index + 1} na ordem de uso (${accounts[index].display}). As outras contas continuam conectadas.` : "";
   showStep(1);
+  $("loginEmail").value = "";
   $("loginCode").value = "";
   $("loginDialog").showModal();
   $("loginEmail").focus();
@@ -3661,7 +3867,7 @@ async function startLogin() {
   try {
     const { loginUrl } = await api("/api/auth/login", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: $("loginEmail").value.trim() || null }),
+      body: JSON.stringify({ email: $("loginEmail").value.trim() || null, account: loginAccount }),
     });
     $("loginLink").href = loginUrl;
     if (tab) tab.location.href = loginUrl;
@@ -3681,10 +3887,10 @@ async function confirmLogin() {
   try {
     const status = await api("/api/auth/code", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code: $("loginCode").value.trim() }),
+      body: JSON.stringify({ code: $("loginCode").value.trim(), account: loginAccount }),
     });
     $("loginDialog").close();
-    renderAuth(status);
+    renderAuth(status, true);
   } catch (err) {
     $("loginError2").textContent = err.message;
   } finally {
@@ -3692,25 +3898,21 @@ async function confirmLogin() {
   }
 }
 
-async function logout() {
-  if (!confirm("Sair da conta do Claude?\n\nIsso desconecta só este projeto; o Claude Code do terminal continua logado.")) return;
-  try {
-    renderAuth(await api("/api/auth/logout", { method: "POST" }));
-  } catch (err) {
-    alert(err.message);
-  }
-}
 
 // ---- Login do Codex: o próprio Codex recebe o retorno do navegador, a interface só acompanha ----
 
 let codexLoginTimer = null;
+/** Conta do login do Codex em andamento (null = a primeira da ordem). */
+let codexLoginAccount = null;
 
-async function startCodexLogin() {
+async function startCodexLogin(account = null) {
+  codexLoginAccount = typeof account === "string" ? account : null;
   // Abre a aba já no clique, para o navegador não bloquear o pop-up.
-  const tab = window.open("about:blank", "_blank"), button = $("codexLoginBtn");
-  if (button) button.disabled = true;
+  const tab = window.open("about:blank", "_blank");
   try {
-    const { loginUrl } = await api("/api/auth/codex/login", { method: "POST" });
+    const { loginUrl } = await api("/api/auth/codex/login", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ account: codexLoginAccount }),
+    });
     $("codexLoginLink").href = loginUrl;
     if (tab) tab.location.href = loginUrl;
     $("codexLoginState").textContent = "Aguardando a autorização no navegador...";
@@ -3721,10 +3923,11 @@ async function startCodexLogin() {
     tab?.close();
     refreshCodex(false);
     alert(err.message);
-  } finally {
-    if (button) button.disabled = false;
   }
 }
+
+/** A conta do login em andamento no status (sem conta escolhida, a primeira da ordem). */
+const codexLoginTarget = (s) => (codexLoginAccount ? s.accounts?.find(a => a.id === codexLoginAccount) : s.accounts?.[0]) ?? s;
 
 /** Consulta o login até a conta aparecer conectada, o login falhar ou o diálogo ser fechado. */
 async function watchCodexLogin() {
@@ -3733,9 +3936,10 @@ async function watchCodexLogin() {
   try {
     const s = await api("/api/auth/codex/status");
     if (!$("codexDialog").open) return;
-    if (s.loggedIn) { renderCodex(s); $("codexDialog").close(); return; }
-    if (!s.loginPending) {
-      $("codexLoginState").textContent = s.loginError ?? "O login não foi concluído. Feche e clique em 'Entrar com Codex' novamente.";
+    const target = codexLoginTarget(s);
+    if (target.loggedIn) { renderCodex(s); $("codexDialog").close(); return; }
+    if (!target.loginPending) {
+      $("codexLoginState").textContent = target.loginError ?? "O login não foi concluído. Feche e clique em 'Entrar' novamente.";
       $("codexLoginState").className = "error";
       $("codexLoginClose").textContent = "Fechar";
       renderCodex(s);
@@ -3748,15 +3952,6 @@ async function watchCodexLogin() {
   codexLoginTimer = setTimeout(watchCodexLogin, 2000);
 }
 
-async function codexLogout() {
-  if (!confirm("Sair da conta do Codex?\n\nIsso desconecta só este projeto; o Codex do terminal e o app continuam logados, e a conta do Claude não é afetada.")) return;
-  try {
-    renderCodex(await api("/api/auth/codex/logout", { method: "POST" }));
-  } catch (err) {
-    alert(err.message);
-  }
-}
-
 // ---- Eventos ----
 
 $("load").addEventListener("click", () => loadEndpoints(true));
@@ -3765,7 +3960,14 @@ $("browse").addEventListener("click", browse);
 $("fileName").addEventListener("click", browse);
 $("search").addEventListener("input", renderGroups);
 $("search").addEventListener("keydown", (e) => { if (e.key === "Escape") { $("search").value = ""; renderGroups(); $("search").blur(); } });
+// Menus da engrenagem das contas: fecham ao clicar fora deles ou com Esc (o foco volta para a engrenagem).
+const settingsMenus = () => [$("claudeSettings"), $("codexSettings")].filter(menu => menu?.open);
+document.addEventListener("click", (e) => {
+  for (const menu of settingsMenus()) if (!menu.contains(e.target)) menu.open = false;
+});
 document.addEventListener("keydown", (e) => {
+  const open = settingsMenus();
+  if (e.key === "Escape" && open.length) { for (const menu of open) menu.open = false; open[0].querySelector("summary")?.focus(); return; }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); $("search").focus(); $("search").select(); }
   if (e.key === "Escape" && picked && document.activeElement !== $("search") && !$("loginDialog").open && !$("codexDialog").open
       && !$("codeDialog").open && !$("scenDialog").open) pick(null);
@@ -3827,8 +4029,16 @@ $("loginConfirm").addEventListener("click", confirmLogin);
 $("loginEmail").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); startLogin(); } });
 $("loginCode").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); confirmLogin(); } });
 document.querySelectorAll("[data-close]").forEach(b => b.addEventListener("click", () => $("loginDialog").close()));
+for (const footer of [$("claudeFooter"), $("codexFooter")]) {
+  footer.addEventListener("click", (e) => {
+    const button = e.target.closest("[data-account-action]");
+    if (button && !button.disabled) accountAction(button.dataset.provider, button.dataset.accountAction, button.dataset.account);
+  });
+  footer.addEventListener("change", (e) => { if (e.target.matches?.("[data-continue-other]")) saveContinueOther(e.target.checked); });
+}
 $("loginDialog").addEventListener("close", () => {
-  if (!$("loginStep2").hidden) api("/api/auth/cancel", { method: "POST" }).catch(() => {});
+  if (!$("loginStep2").hidden)
+    api(`/api/auth/cancel${loginAccount ? `?account=${encodeURIComponent(loginAccount)}` : ""}`, { method: "POST" }).catch(() => {});
   refreshAuth(true);
 });
 $("codexLoginClose").addEventListener("click", () => $("codexDialog").close());
@@ -3840,7 +4050,8 @@ document.addEventListener("visibilitychange", () => {
 $("codexDialog").addEventListener("close", async () => {
   clearTimeout(codexLoginTimer);
   $("codexLoginClose").textContent = "Cancelar";
-  if (!codexState?.loggedIn) await api("/api/auth/codex/cancel", { method: "POST" }).catch(() => {});
+  if (codexState && !codexLoginTarget(codexState).loggedIn)
+    await api(`/api/auth/codex/cancel${codexLoginAccount ? `?account=${encodeURIComponent(codexLoginAccount)}` : ""}`, { method: "POST" }).catch(() => {});
   refreshCodex(false);
 });
 

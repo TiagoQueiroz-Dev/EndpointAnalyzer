@@ -78,15 +78,23 @@ public static class ServiceCollectionExtensions
         // Plano mensal: Claude Code da máquina.
         services.AddSingleton(claudeCodeOptions);
         services.AddSingleton<ClaudeCodeAuth>();
-        services.AddSingleton<ClaudeCodeProvider>();
         services.AddSingleton<ClaudeModelCatalog>();
         services.AddSingleton<ClaudeCodeUsage>();
+        // Várias contas Claude, cada uma com o próprio login; a primeira reaproveita o login acima.
+        services.AddSingleton<AiAvailability>();
+        services.AddSingleton(sp => new ClaudeAccounts(claudeCodeOptions, sp.GetRequiredService<AiAvailability>(),
+            sp.GetRequiredService<ClaudeCodeAuth>(), sp.GetRequiredService<ClaudeCodeUsage>(), sp.GetRequiredService<ClaudeModelCatalog>()));
 
-        // Conta do Codex (limite do plano do ChatGPT): Codex CLI da máquina, com login próprio do projeto.
+        // Contas do Codex (limite do plano do ChatGPT): Codex CLI da máquina, cada conta com o próprio login; a primeira
+        // reaproveita o login do projeto (Codex:HomeDirectory).
         services.AddSingleton(codexOptions);
         services.AddSingleton<CodexAuth>();
-        services.AddSingleton<CodexProvider>();
         services.AddSingleton<CodexModelCatalog>();
+        services.AddSingleton(sp => new CodexAccounts(codexOptions, sp.GetRequiredService<AiAvailability>(),
+            sp.GetRequiredService<CodexAuth>(), sp.GetRequiredService<CodexModelCatalog>()));
+        // Continuar no outro provedor ao esgotar as contas: ao lado das contas do Claude (padrão: a pasta de dados do analisador).
+        services.AddSingleton(new AiProviderSettings(Path.Combine(
+            Path.GetDirectoryName(Path.GetFullPath(claudeCodeOptions.AccountsDirectory))!, "ai-settings.json")));
 
         // API: cobrança por uso.
         var hasCredential = !string.IsNullOrWhiteSpace(claudeOptions.ApiKey)

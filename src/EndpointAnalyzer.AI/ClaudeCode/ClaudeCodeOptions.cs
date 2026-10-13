@@ -23,6 +23,20 @@ public class ClaudeCodeOptions
 
     public int TimeoutMinutes { get; set; } = 20;
 
+    /// <summary>Contas Claude adicionais: cada uma com o próprio CLAUDE_CONFIG_DIR (login separado) e a lista ordenada.</summary>
+    public string AccountsDirectory { get; set; } = Path.Combine(ClaudeModelCatalog.DataDirectory, "claude-accounts");
+
+    /// <summary>As mesmas opções (executável, modelo e effort) com o login de outra conta.</summary>
+    public ClaudeCodeOptions WithConfigDirectory(string configDirectory) => new()
+    {
+        Executable = Executable,
+        ConfigDirectory = configDirectory,
+        Model = Model,
+        Effort = Effort,
+        TimeoutMinutes = TimeoutMinutes,
+        AccountsDirectory = AccountsDirectory,
+    };
+
     private static string SelectionFile => Path.Combine(ClaudeModelCatalog.DataDirectory, "claude-code-selection.json");
 
     /// <summary>Aplica o modelo/effort escolhidos na interface (salvos em disco), se houver.</summary>

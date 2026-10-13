@@ -25,6 +25,20 @@ public class CodexOptions
 
     public int TimeoutMinutes { get; set; } = 20;
 
+    /// <summary>Contas do Codex adicionais: cada uma com o próprio CODEX_HOME (login separado) e a lista ordenada.</summary>
+    public string AccountsDirectory { get; set; } = Path.Combine(ClaudeModelCatalog.DataDirectory, "codex-accounts");
+
+    /// <summary>As mesmas opções (executável, modelo e effort) com o login de outra conta.</summary>
+    public CodexOptions WithHomeDirectory(string homeDirectory) => new()
+    {
+        Executable = Executable,
+        HomeDirectory = homeDirectory,
+        Model = Model,
+        Effort = Effort,
+        TimeoutMinutes = TimeoutMinutes,
+        AccountsDirectory = AccountsDirectory,
+    };
+
     private static string SelectionFile => Path.Combine(ClaudeModelCatalog.DataDirectory, "codex-selection.json");
 
     /// <summary>Aplica o modelo/effort escolhidos na interface (salvos em disco), se houver.</summary>

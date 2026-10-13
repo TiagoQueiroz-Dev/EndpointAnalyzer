@@ -83,8 +83,15 @@ public partial class RuntimeValidationService(RuntimeOptions options, IAppRunner
 
             if (app.HasExited) report.Notes.Add($"A API encerrou durante a validação:\n{app.OutputTail}");
         }
-        catch (Exception e) when (e is RuntimeStartException or HttpRequestException or IOException or InvalidOperationException
-                                      or AiProviderUnavailableException)
+        catch (AiProviderUnavailableException e)
+        {
+            // Nenhuma conta da IA com uso: o que já foi executado é reconciliado abaixo e a validação fica parcial.
+            report.Status = explorer is null ? RuntimeValidationStatuses.Failed : RuntimeValidationStatuses.Partial;
+            report.Error = e.Message;
+            report.Interruption = e.Message;
+            Log($"Interrompida: {e.Message}");
+        }
+        catch (Exception e) when (e is RuntimeStartException or HttpRequestException or IOException or InvalidOperationException)
         {
             report.Status = RuntimeValidationStatuses.Failed;
             report.Error = e.Message;

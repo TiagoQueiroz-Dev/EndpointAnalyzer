@@ -38,13 +38,16 @@ function harness(handler) {
     URL, AbortController, console, setTimeout, clearTimeout, alert() {}, confirm: () => true,
   });
   vm.runInContext(script, context);
-  vm.runInContext(`selected = { httpMethod: 'POST', route: '/api/test', project: 'Api' }; solutionPath = 'Api.sln'; render = () => {};`, context);
+  vm.runInContext(`selected = { httpMethod: 'POST', route: '/api/test', project: 'Api' }; solutionPath = 'Api.sln'; render = () => {}; progressPollMs = 0;`, context);
   return { context, element, calls, run: code => vm.runInContext(code, context), storage };
 }
 
-const claude = { cliInstalled: true, loggedIn: true, usesSubscription: true, activeSource: 'subscription', mode: 'auto' };
+const claude = { cliInstalled: true, loggedIn: true, usesSubscription: true, activeSource: 'subscription', mode: 'auto',
+  accounts: [{ id: 'principal', display: 'eu@empresa.com', email: 'eu@empresa.com', loggedIn: true, usesSubscription: true, subscriptionType: 'max', state: 'disponivel' }] };
 const codex = { cliInstalled: true, loggedIn: true, usesSubscription: true, authMethod: 'chatgpt', planType: 'plus',
   usage: { primary: { usedPercent: 23, windowMinutes: 300, resetsAt: '2026-10-13T18:00:00Z' }, secondary: { usedPercent: 40, windowMinutes: 10080 }, limitReached: false } };
+codex.accounts = [{ id: 'principal', display: 'eu@chatgpt.com', email: 'eu@chatgpt.com', loggedIn: true, usesSubscription: true, authMethod: 'chatgpt',
+  plan: 'plus', state: 'disponivel', usage: codex.usage }];
 const report = { version: { analyzerVersion: '1', aiProvider: 'codex', aiModel: 'gpt-x (Codex, effort high)' }, sections: ['summary'], context: {} };
 
 test('analise com o Codex escolhido envia o provedor e informa qual IA esta rodando', async () => {
@@ -106,22 +109,24 @@ test('rodape do Claude mostra o uso da sessao e da semana e avisa o limite ating
   h.run(`codexState = { cliInstalled: true, loggedIn: false }; renderAuth(${JSON.stringify(claude)});`);
   await new Promise(r => setTimeout(r, 0));
 
-  const bars = h.element('claudeUsage').innerHTML;
+  const bars = h.element('claudeUsage-principal').innerHTML;
   assert.match(bars, /usage claude/);
   assert.match(bars, /sessão/);
   assert.match(bars, /30%/);
   assert.match(bars, /semana/);
-  assert.match(bars, /use o Codex/);
+  assert.match(bars, /as análises usam a próxima conta com uso disponível/);
   assert.match(h.element('aiSource').textContent, /IA: Claude · plano mensal · limite de uso atingido/);
 });
 
 test('depois da analise atualiza so o uso da conta usada', async () => {
   const h = harness((url) => url === '/api/analysis' ? { body: { report: { ...report, version: { ...report.version, aiProvider: 'claude' } }, markdown: '' } }
-    : url.startsWith('/api/auth/usage') ? { body: { usage: null } } : { body: {} });
+    : url.startsWith('/api/auth/usage') ? { body: { usage: null } } : url.startsWith('/api/auth/status') ? { body: claude } : { body: {} });
   h.run(`authState = ${JSON.stringify(claude)}; codexState = ${JSON.stringify(codex)}; store.set("ea.provider", "claude");`);
 
   await h.run('analyze()');
 
-  assert.ok(h.calls.some(c => c.url === '/api/auth/usage?refresh=true'));
+  await new Promise(r => setTimeout(r, 0));
+  // Relê as contas do Claude (o estado de cada uma pode ter mudado) e o uso do plano, sem consultar o Codex.
+  assert.ok(h.calls.some(c => c.url === '/api/auth/usage?account=principal&refresh=true'));
   assert.ok(!h.calls.some(c => c.url.startsWith('/api/auth/codex/status')));
 });

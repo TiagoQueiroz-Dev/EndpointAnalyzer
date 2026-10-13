@@ -59,16 +59,20 @@ public class CodexModelCatalog
     /// Sem modelo escolhido, usa o padrão da conta; com effort que o modelo não aceita, o padrão do modelo. Só altera a
     /// seleção em memória (a escolha salva pela interface continua valendo).
     /// </summary>
-    public async Task ResolveSelectionAsync(CodexAuthStatus account, CancellationToken cancellationToken = default)
+    public Task ResolveSelectionAsync(CodexAuthStatus account, CancellationToken cancellationToken = default) =>
+        ResolveSelectionAsync(account, _options, cancellationToken);
+
+    /// <summary>Resolve com os modelos desta conta, gravando em <paramref name="target"/> (a seleção que vale para todas as contas).</summary>
+    public async Task ResolveSelectionAsync(CodexAuthStatus account, CodexOptions target, CancellationToken cancellationToken = default)
     {
         var models = await GetAsync(account, cancellationToken: cancellationToken);
-        var model = string.IsNullOrWhiteSpace(_options.Model)
+        var model = string.IsNullOrWhiteSpace(target.Model)
             ? models.FirstOrDefault(m => m.IsDefault) ?? models.FirstOrDefault(m => m.Available)
-            : models.FirstOrDefault(m => m.Id == _options.Model);
+            : models.FirstOrDefault(m => m.Id == target.Model);
         if (model is null) return;
-        _options.Model = model.Id;
-        if (model.Efforts.Count == 0) _options.Effort = "";
-        else if (!model.Efforts.Contains(_options.Effort)) _options.Effort = model.DefaultEffort ?? "";
+        target.Model = model.Id;
+        if (model.Efforts.Count == 0) target.Effort = "";
+        else if (!model.Efforts.Contains(target.Effort)) target.Effort = model.DefaultEffort ?? "";
     }
 
     private static async Task<IReadOnlyList<CodexModelInfo>> DiscoverAsync(CodexOptions options, CancellationToken cancellationToken)

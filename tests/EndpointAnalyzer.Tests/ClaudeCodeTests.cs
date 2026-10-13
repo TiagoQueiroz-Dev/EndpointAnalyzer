@@ -59,9 +59,14 @@ public class ClaudeCodeTests
     [Fact]
     public async Task Sem_Claude_Code_instalado_status_indica_e_nao_ha_ia()
     {
-        var options = new ClaudeCodeOptions { Executable = "claude-inexistente-" + Guid.NewGuid().ToString("N") };
+        var options = new ClaudeCodeOptions
+        {
+            Executable = "claude-inexistente-" + Guid.NewGuid().ToString("N"),
+            AccountsDirectory = Path.Combine(Path.GetTempPath(), "claude-accounts-" + Guid.NewGuid().ToString("N")),
+        };
         var auth = new ClaudeCodeAuth(options);
-        var router = new AiProviderRouter(new ClaudeCodeProvider(options), auth) { Mode = AiMode.Subscription };
+        var availability = new AiAvailability();
+        var router = new AiProviderRouter(new ClaudeAccounts(options, availability, auth), availability) { Mode = AiMode.Subscription };
 
         var status = await auth.GetStatusAsync();
 

@@ -72,6 +72,15 @@ public class AnalysisController(EndpointAnalysisService service, IConfiguration 
     [HttpGet("diff")]
     public ActionResult<AnalysisDiffResult> Diff(string analysisId, string? baseId = null) => Ok(service.Diff(analysisId, baseId));
 
+    /// <summary>
+    /// Acompanhamento da análise em andamento do endpoint: provedor, conta da IA em uso e trocas de conta até agora.
+    /// { "running": false } quando nenhuma análise dele está rodando.
+    /// </summary>
+    [HttpGet("progress")]
+    public IActionResult Progress(string? solutionPath, string method, string route, string project) =>
+        Ok(service.Progress(SolutionPath.Resolve(solutionPath, configuration, environment), project, $"{method.ToUpperInvariant()} {route}")
+            ?? (object)new { running = false });
+
     [HttpPost("restore")]
     [RequestSizeLimit(20_971_520)]
     public async Task<ActionResult<AnalysisResponse>> Restore(RestoreAnalysisRequest request, CancellationToken cancellationToken)

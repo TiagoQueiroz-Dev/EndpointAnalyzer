@@ -79,6 +79,24 @@ public static class ReportRenderer
     private static string Ids(List<string>? ids) => ids is { Count: > 0 } ? $"   [{string.Join(", ", ids)}]" : "";
 
     /// <summary>Documentação final do endpoint em Markdown (usa a resposta da IA quando existir).</summary>
+    /// <summary>Análise parcial (nenhuma conta com uso) e trocas de conta da IA; nada quando uma conta fez tudo.</summary>
+    private static void AppendAiRun(StringBuilder sb, AiRunInfo? run)
+    {
+        if (run?.Interruption is { } interruption)
+        {
+            sb.AppendLine($"> **Análise parcial:** {interruption.Message}");
+            sb.AppendLine($"> Pendente: {string.Join("; ", interruption.Pending)}.");
+            sb.AppendLine();
+        }
+        if (run is not { Handoffs.Count: > 0 }) return;
+        sb.AppendLine($"IA: {string.Join(" → ", run.Accounts.Select(a => $"{AiProviders.DisplayName(a.Provider)} ({a.Label})"))}");
+        sb.AppendLine();
+        foreach (var handoff in run.Handoffs)
+            sb.AppendLine($"- {handoff.FromAccount} {(handoff.Reason == AiHandoffReasons.Authentication ? "perdeu a sessão" : "atingiu o limite de uso")} em \"{handoff.Step}\""
+                + (handoff.ToAccount is null ? "" : $": a mesma etapa continuou em {handoff.ToAccount}"));
+        sb.AppendLine();
+    }
+
     public static string Markdown(EndpointAnalysisReport report)
     {
         var context = report.Context;
@@ -91,6 +109,7 @@ public static class ReportRenderer
         sb.AppendLine();
         sb.AppendLine($"`{context.Endpoint.Controller}.{context.Endpoint.Action}` — `{context.Endpoint.SourceFile}:{context.Endpoint.SourceLine}`");
         sb.AppendLine();
+        AppendAiRun(sb, report.AiRun);
 
         if (Has("summary") && ai is not null)
         {
