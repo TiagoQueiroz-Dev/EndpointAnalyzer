@@ -9,6 +9,8 @@ namespace EndpointAnalyzer.Runtime;
 /// <summary>
 /// Chamadas à IA da validação em runtime (via IAiProvider, com structured outputs). Uma falha da IA não interrompe a
 /// validação: a etapa segue sem a resposta (ex.: materializa só com os valores do gerador) e o motivo vai para as notas.
+/// A exceção é o provedor indisponível (conta sem autenticação ou limite de uso): as próximas etapas falhariam do mesmo
+/// jeito, então a validação para (<see cref="AiProviderUnavailableException"/>).
 /// </summary>
 internal sealed class RuntimeAi(IAiProvider provider, RuntimeValidation report, Action<string> log)
 {
@@ -48,7 +50,8 @@ internal sealed class RuntimeAi(IAiProvider provider, RuntimeValidation report, 
         {
             return await provider.CompleteJsonAsync(new AiJsonRequest(purpose, SystemPrompt, prompt, schema), cancellationToken);
         }
-        catch (Exception e) when (e is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        catch (Exception e) when (e is not AiProviderUnavailableException
+                                  && (e is not OperationCanceledException || !cancellationToken.IsCancellationRequested))
         {
             log($"IA falhou em \"{purpose}\": {e.Message}");
             report.Notes.Add($"A IA não respondeu em \"{purpose}\" ({e.Message}); a etapa seguiu sem ela.");

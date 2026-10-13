@@ -132,6 +132,7 @@ public class EndpointAnalysisTests(SampleSolutionFixture fixture)
         Assert.True(second.FromCache);
         Assert.Equal(before + 1, fixture.Ai.Calls);
         Assert.Equal("fake-model", second.Version.AiModel);
+        Assert.Equal("fake", second.Version.AiProvider);
         Assert.Equal(first.Ai!.Summary, second.Ai!.Summary);
     }
 

@@ -32,6 +32,8 @@ public class ClaudeProvider(ClaudeOptions options) : IAiProvider
         ? new AnthropicClient()
         : new AnthropicClient { ApiKey = options.ApiKey };
 
+    public string Provider => AiProviders.Claude;
+
     public string Model => options.Model;
 
     public Task<EndpointAnalysisResult> AnalyzeAsync(EndpointAnalysisContext context, CancellationToken cancellationToken = default) =>

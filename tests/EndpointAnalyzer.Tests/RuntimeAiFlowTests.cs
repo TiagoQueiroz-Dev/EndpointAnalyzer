@@ -95,6 +95,8 @@ public class RuntimeAiFlowTests(SampleSolutionFixture fixture)
 /// <summary>IA roteirizada: responde às etapas da validação em runtime lendo os prompts, como uma IA faria.</summary>
 internal sealed partial class ScriptedRuntimeAi : IAiProvider
 {
+    public string Provider => "scripted";
+
     public string Model => "scripted";
 
     public List<string> Purposes { get; } = [];

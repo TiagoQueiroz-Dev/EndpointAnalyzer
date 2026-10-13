@@ -15,7 +15,7 @@ src/
                                     InterfaceResolver, DependencyInjectionMap, MessageHandlerMap, SyntaxConditions
   EndpointAnalyzer.ChangeDetection  ConditionAnalyzer, EntityChangeAnalyzer, EntityCatalog
   EndpointAnalyzer.Context          AnalysisContextBuilder, SecretSanitizer
-  EndpointAnalyzer.AI               ClaudeProvider, PromptBuilder, AnalysisResultSchema
+  EndpointAnalyzer.AI               ClaudeProvider, ClaudeCode (assinatura), Codex (CodexProvider, CodexAuth), PromptBuilder, AnalysisResultSchema
   EndpointAnalyzer.Runtime          validação da matriz com a API em execução (AppRunner, catálogo, IA, execução, reconciliação)
   EndpointAnalyzer.Application      EndpointAnalysisService (orquestra), cache, versionamento, ReportRenderer
   EndpointAnalyzer.Api              API REST + interface web (wwwroot/index.html)
@@ -29,9 +29,12 @@ tests/EndpointAnalyzer.Tests        testes unitários e de integração
 - .NET SDK 10
 - Para usar a IA, uma das opções abaixo. Sem nenhuma delas, a análise estática funciona normalmente.
   - **Plano mensal do Claude (Pro/Max/Team):** [Claude Code](https://claude.com/claude-code) instalado na máquina (instalador nativo, npm ou no PATH). Faça o login pelo botão **Entrar com Claude** da interface. O login do projeto é separado do Claude Code do terminal (fica em `%LOCALAPPDATA%\EndpointAnalyzer\claude`, configurável em `ClaudeCode:ConfigDirectory`), então a conta logada no projeto pode ser outra. A análise roda via `claude -p` e consome o limite do plano da conta logada no projeto, sem cobrança por uso.
+  - **Conta do Codex (plano do ChatGPT: Plus, Pro, Business...):** Codex CLI instalado na máquina (`npm install -g @openai/codex`, no PATH ou o CLI que acompanha o app desktop do Codex). Faça o login pelo botão **Entrar com Codex** da interface: a autorização abre no navegador e o próprio Codex recebe o retorno (porta local 1455), sem código para colar. O login do projeto é separado do Codex do terminal e do app (fica em `%LOCALAPPDATA%\EndpointAnalyzer\codex`, configurável em `Codex:HomeDirectory`). A análise roda via `codex exec` (sandbox somente leitura, diretório vazio, sessão não gravada) e consome o limite do plano da conta logada no projeto.
   - **API:** a variável `ANTHROPIC_API_KEY` (cobrança por uso).
 
-No modo automático (padrão), o plano mensal tem prioridade quando o Claude Code está logado com a conta do Claude.
+As contas do Claude e do Codex são independentes: as duas podem ficar conectadas ao mesmo tempo, e conectar ou desconectar uma não afeta a outra. A interface escolhe o provedor de cada análise (seletor ao lado da origem da IA); toda a IA da análise (documentação, fluxo de negócio e validação em runtime) roda no provedor escolhido, com o mesmo contexto e o mesmo JSON Schema, então o resultado aparece nos mesmos relatórios. O relatório registra o provedor e o modelo (`version.aiProvider`, `version.aiModel`). Sem provedor na requisição, vale o Claude e, sem ele, o Codex. No Claude, o modo automático (padrão) dá prioridade ao plano mensal quando o Claude Code está logado com a conta do Claude.
+
+Falha de autenticação (sessão expirada, conta desconectada) ou limite de uso atingido volta como erro tipado (`AiProviderUnavailableException`: HTTP 502 com `code: "authentication"` ou HTTP 429 com `code: "usage_limit"`, e `provider`), a validação em runtime para em vez de seguir sem IA, e a interface atualiza o estado da conta. É a base para continuar automaticamente uma análise no outro provedor. Mensagens de erro passam por remoção de tokens antes de chegar aos logs e relatórios.
 
 ## Linha de comando
 
@@ -75,7 +78,7 @@ dotnet run --project src/EndpointAnalyzer.Api
 
 Abra `http://localhost:5168`: informe a `.sln`, selecione o endpoint na barra lateral e clique em **ANALISAR**.
 
-A barra lateral segue o Scalar. Os endpoints aparecem agrupados pela tag do OpenAPI (`[Tags("...")]` no método ou controller, `[SwaggerOperation(Tags = ...)]`; sem tag, o nome do controller). Cada item mostra o resumo (`[EndpointSummary]`, `[SwaggerOperation(Summary = ...)]` ou o `<summary>` do comentário XML). A busca (Ctrl+K) filtra por resumo, rota, método ou grupo. No rodapé ficam a conta do Claude e os seletores de modelo e effort.
+A barra lateral segue o Scalar. Os endpoints aparecem agrupados pela tag do OpenAPI (`[Tags("...")]` no método ou controller, `[SwaggerOperation(Tags = ...)]`; sem tag, o nome do controller). Cada item mostra o resumo (`[EndpointSummary]`, `[SwaggerOperation(Summary = ...)]` ou o `<summary>` do comentário XML). A busca (Ctrl+K) filtra por resumo, rota, método ou grupo. No rodapé ficam as contas do Claude e do Codex, cada uma com os seletores de modelo e effort; no Codex, também o uso das janelas do limite do plano (5 horas e semanal).
 
 | Método | Rota | Descrição |
 |---|---|---|
@@ -83,20 +86,26 @@ A barra lateral segue o Scalar. Os endpoints aparecem agrupados pela tag do Open
 | GET | `/api/projects/info` | solução padrão e se a IA está configurada |
 | GET | `/api/projects/source?path=...&file=...&line=...` | código do arquivo (só documentos da solução) com o trecho que começa em `line` em destaque (`endLine` opcional) |
 | POST | `/api/projects/source/condition` | `{ "condition": "x != null", "methods": [{ "file", "line" }] }` → código de onde vem a condição do registro |
-| POST | `/api/analysis` | `{ "endpoint": { "method": "POST", "route": "/api/programacoes" }, "useAi": true }` → relatório + Markdown |
+| POST | `/api/analysis` | `{ "endpoint": { "method": "POST", "route": "/api/programacoes" }, "useAi": true, "provider": "codex" }` → relatório + Markdown (`provider`: `claude` ou `codex`, opcional) |
 | POST | `/api/analysis/markdown` | mesmo corpo, devolve `text/markdown` |
 | POST | `/api/analysis/token` | `{ "endpoint": { "method": "POST", "route": "/api/x" }, "token": "eyJ..." }` → sobe o serviço do endpoint (como na análise) e confere se o token é aceito: `{ valid, message }` |
 | GET | `/api/auth/status` | conta do Claude Code (e-mail, plano) e origem da IA ativa |
 | POST | `/api/auth/login` | `{ "email": "..." }` → URL de login da conta do Claude |
 | POST | `/api/auth/code` | `{ "code": "..." }` → conclui o login com o código exibido após autorizar |
 | POST | `/api/auth/logout` | desconecta a conta do Claude do projeto |
-| POST | `/api/auth/mode` | `{ "mode": "auto" \| "subscription" \| "api" }` |
+| POST | `/api/auth/mode` | `{ "mode": "auto" \| "subscription" \| "api" }` (origem do Claude) |
+| GET | `/api/auth/codex/status` | conta do Codex (e-mail, plano, método de login), uso do limite (`usage.primary`/`secondary`: percentual, janela, renovação), login em andamento |
+| POST | `/api/auth/codex/login` | → URL de autorização da conta do ChatGPT (o retorno do navegador vai direto para o Codex) |
+| POST | `/api/auth/codex/cancel` | cancela o login em andamento |
+| POST | `/api/auth/codex/logout` | desconecta a conta do Codex do projeto |
+| GET | `/api/auth/codex/models` | modelos da conta, efforts de cada um e a seleção atual |
+| POST | `/api/auth/codex/model` | `{ "model": "...", "effort": "high" }` |
 
-As rotas `/api/auth/*` só aceitam chamadas da própria máquina. O login vale só para o projeto: **Sair** não desconecta o Claude Code do terminal, e entrar no terminal não muda a conta do projeto.
+As rotas `/api/auth/*` só aceitam chamadas da própria máquina. O login vale só para o projeto: **Sair** não desconecta o Claude Code nem o Codex do terminal (ou o app do Codex), e entrar neles não muda a conta do projeto. Nenhuma rota devolve tokens: só e-mail, plano e percentuais de uso.
 
-Na CLI, use `--ai-mode subscription` ou `--ai-mode api` para escolher a origem da IA.
+Na CLI, use `--provider claude` ou `--provider codex` para escolher a IA, e `--ai-mode subscription` ou `--ai-mode api` para a origem do Claude.
 
-Configuração em `appsettings.json` (`Analyzer`, `Claude`). A chave da API **não** deve ir para o appsettings; use `ANTHROPIC_API_KEY` ou `dotnet user-secrets set Claude:ApiKey ...`.
+Configuração em `appsettings.json` (`Analyzer`, `Claude`, `ClaudeCode`, `Codex`). Em `Codex`: `Executable`, `HomeDirectory`, `Model` (vazio = padrão da conta), `Effort` e `TimeoutMinutes`. A chave da API **não** deve ir para o appsettings; use `ANTHROPIC_API_KEY` ou `dotnet user-secrets set Claude:ApiKey ...`.
 
 ## O que o MVP detecta
 
@@ -213,11 +222,12 @@ Configurações em `Runtime`: `AnalysisDatabasePath`, `AnalysisSessionMinutes` (
 
 ## Fica para depois (seção 42 da especificação)
 
-Minimal APIs (`MapPost`), mensageria entre serviços (filas e consumidores em outros processos), `CodexProvider`, persistência em PostgreSQL e captura das alterações em runtime (`SaveChangesInterceptor`).
+Minimal APIs (`MapPost`), mensageria entre serviços (filas e consumidores em outros processos), continuidade automática de uma análise entre Claude e Codex, persistência em PostgreSQL e captura das alterações em runtime (`SaveChangesInterceptor`).
 
 ## Testes
 
 ```powershell
 dotnet test
 node --test tests/frontend/manual-revalidation.test.cjs
+node --test tests/frontend/ai-provider.test.cjs
 ```

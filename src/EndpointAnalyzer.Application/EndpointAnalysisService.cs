@@ -45,8 +45,11 @@ public class EndpointAnalysisService(
 
     private sealed record StaticAnalysis(LoadedSolution Solution, EndpointAnalysisContext Context, ScenarioModel? Scenarios, string Fingerprint);
 
-    public async Task<bool> IsAiAvailableAsync(CancellationToken cancellationToken = default) =>
-        aiSelector is not null && await aiSelector.SelectAsync(cancellationToken) is not null;
+    public Task<bool> IsAiAvailableAsync(CancellationToken cancellationToken = default) => IsAiAvailableAsync(null, cancellationToken);
+
+    /// <param name="provider"><see cref="AiProviders.Claude"/>, <see cref="AiProviders.Codex"/> ou nulo (qualquer um).</param>
+    public async Task<bool> IsAiAvailableAsync(string? provider, CancellationToken cancellationToken = default) =>
+        aiSelector is not null && await aiSelector.SelectAsync(provider, cancellationToken) is not null;
 
     /// <summary>A análise com IA valida os cenários em runtime quando a requisição não diz o contrário (Runtime:Enabled).</summary>
     public bool RuntimeValidationEnabled => runtime?.Options.Enabled == true;
@@ -101,9 +104,13 @@ public class EndpointAnalysisService(
     /// Abas que usam IA (ignora <paramref name="useAi"/>): Resumo → documentação; Negócio → fluxo de negócio polido
     /// (BusinessFlowAiAnalyzer); Cenários → títulos dos cenários e validação em runtime. Completo não usa IA.
     /// </param>
+    /// <param name="aiProvider">
+    /// Provedor de toda a IA da análise (documentação, fluxo de negócio e validação em runtime): <see cref="AiProviders.Claude"/>,
+    /// <see cref="AiProviders.Codex"/> ou nulo (automático).
+    /// </param>
     public async Task<EndpointAnalysisReport> AnalyzeAsync(string solutionPath, EndpointInfo endpoint, bool useAi = true, bool? validateRuntime = null,
         string? apiToken = null, CancellationToken cancellationToken = default, AnalysisSections sections = AnalysisSections.All,
-        AnalysisSections? aiSections = null)
+        AnalysisSections? aiSections = null, string? aiProvider = null)
     {
         var scenarioTabs = (sections & (AnalysisSections.Scenarios | AnalysisSections.Complete)) != 0;
         var runtimeAllowed = runtime is not null && (validateRuntime ?? runtime.Options.Enabled);
@@ -146,10 +153,10 @@ public class EndpointAnalysisService(
             sessions?.Add(analysis.Solution, analysis.Scenarios, report, analysis.Fingerprint, apiToken);
             return report;
         }
-        var ai = aiSelector is null ? null : await aiSelector.SelectAsync(cancellationToken);
-        if (ai is null)
-            throw new InvalidOperationException("Nenhuma IA disponível. Entre com sua conta do Claude (plano mensal) ou defina ANTHROPIC_API_KEY.");
+        var ai = (aiSelector is null ? null : await aiSelector.SelectAsync(aiProvider, cancellationToken))
+            ?? throw new InvalidOperationException(UnavailableMessage(aiProvider));
 
+        report.Version.AiProvider = ai.Provider;
         report.Version.AiModel = ai.Model;
 
         // Documentação, fluxo de negócio e validação em runtime são independentes: rodam em paralelo.
@@ -171,6 +178,13 @@ public class EndpointAnalysisService(
         sessions?.Add(analysis.Solution, analysis.Scenarios, report, analysis.Fingerprint, apiToken);
         return report;
     }
+
+    private static string UnavailableMessage(string? provider) => provider?.Trim().ToLowerInvariant() switch
+    {
+        AiProviders.Codex => "Codex indisponível: entre com a conta do Codex (ChatGPT) pelo botão 'Entrar com Codex'.",
+        AiProviders.Claude => "Claude indisponível: entre com sua conta do Claude (plano mensal) ou defina ANTHROPIC_API_KEY.",
+        _ => "Nenhuma IA disponível. Entre com sua conta do Claude (plano mensal) ou do Codex, ou defina ANTHROPIC_API_KEY.",
+    };
 
     public async Task<ScenarioRevalidationResult> RevalidateScenarioAsync(string analysisId, string scenarioId, JsonElement body,
         CancellationToken cancellationToken = default, string? apiToken = null)

@@ -85,8 +85,8 @@ public class AuthController(ClaudeCodeAuth auth, AiProviderRouter router, Claude
 
     private async Task<object> DescribeAsync(ClaudeAuthStatus status, CancellationToken cancellationToken) => new
     {
-        // De onde a próxima análise vai usar a IA: "subscription", "api" ou null.
-        ActiveSource = await router.SelectAsync(cancellationToken) switch
+        // De onde a próxima análise com o Claude vai usar a IA: "subscription", "api" ou null (o Codex tem /api/auth/codex).
+        ActiveSource = await router.SelectClaudeAsync(cancellationToken) switch
         {
             ClaudeCodeProvider => "subscription",
             null => null,
