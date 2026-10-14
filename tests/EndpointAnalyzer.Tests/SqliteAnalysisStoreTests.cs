@@ -170,6 +170,36 @@ public class SqliteAnalysisStoreTests : IDisposable
     }
 
     [Fact]
+    public void Identidade_estrutural_e_linhas_sem_payload_sobrevivem_ao_historico_e_matrizes_antigas_continuam_legiveis()
+    {
+        using var workspace = new AdhocWorkspace();
+        using var services = Services();
+        var store = services.GetRequiredService<AnalysisSessionStore>();
+        var database = services.GetRequiredService<SqliteAnalysisStore>();
+        var (old, current) = (Report(), Report());
+        var scenario = current.Context.Scenarios!.Scenarios[0];
+        (scenario.Key, scenario.Terminal, scenario.Feasibility) = ("a1b2c3d4e5f60718", "validacao|request.Placa|required", PathFeasibilities.Sat);
+        var unsat = new Scenario
+        {
+            Id = "CEN-09", Kind = ScenarioKinds.Rule, Title = "Regra: inalcançável", Key = "0f1e2d3c4b5a6978", Terminal = "regra|X|throw|false|",
+            Feasibility = PathFeasibilities.Unsat, NoPayload = "caminho contraditório", EquivalentTo = "CEN-01",
+        };
+        current.Context.Scenarios.Scenarios.Add(unsat);
+        store.Add(Solution(workspace), null, old, "v1", null);
+        store.Add(Solution(workspace), null, current, "v2", null);
+
+        var reloaded = database.LoadStored(current.AnalysisId!)!.Report.Context.Scenarios!;
+        Assert.Equal("a1b2c3d4e5f60718", reloaded.Scenarios[0].Key);
+        Assert.Equal("validacao|request.Placa|required", reloaded.Scenarios[0].Terminal);
+        var row = Assert.Single(reloaded.Scenarios, s => s.Id == "CEN-09");
+        Assert.Equal((PathFeasibilities.Unsat, "caminho contraditório", "CEN-01"), (row.Feasibility, row.NoPayload, row.EquivalentTo));
+        // Análise salva antes da geração por árvore: sem chave, e a diff com a nova continua funcionando.
+        var previous = database.LoadStored(old.AnalysisId!)!;
+        Assert.Null(previous.Report.Context.Scenarios!.Scenarios[0].Key);
+        Assert.True(new AnalysisDiffService().Compare(previous, database.LoadStored(current.AnalysisId!)!).HasBase);
+    }
+
+    [Fact]
     public void Nova_analise_liga_a_anterior_e_revalidar_a_antiga_nao_muda_o_historico()
     {
         using var workspace = new AdhocWorkspace();

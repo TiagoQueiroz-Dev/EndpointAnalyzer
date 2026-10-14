@@ -162,9 +162,14 @@ public class AnalysisDiffTests(SampleSolutionFixture fixture)
         Assert.Equal(("500", "600"), (max.Before!.GetValue<string>(), max.After!.GetValue<string>()));
         Assert.Contains(validation.Fields, f => f.Path == "mensagem");
 
+        // Mesma obrigação (identidade estrutural): o limite novo aparece no foco (documentação do cenário); o comportamento
+        // é o resultado esperado do cenário inválido (mensagem e regra que interrompe).
         var scenarios = Group(result, "matriz-estatica");
         Assert.Equal((0, 0, 2), (scenarios.Counts.Added, scenarios.Counts.Removed, scenarios.Counts.Changed));
-        Assert.All(scenarios.Items, i => Assert.Contains(i.Fields, f => f.Path == "foco.expressao" && f.Impact == DiffImpacts.Behavior));
+        Assert.All(scenarios.Items, i => Assert.Contains(i.Fields, f => f.Path == "foco.expressao" && f.Impact == DiffImpacts.Documentation));
+        var invalid = Assert.Single(scenarios.Items, i => i.Impact == DiffImpacts.Behavior);
+        Assert.Contains(invalid.Fields, f => f.Path == "esperado.mensagens");
+        Assert.Contains(invalid.Fields, f => f.Path == "esperado.regra");
     }
 
     [Fact]
@@ -179,6 +184,67 @@ public class AnalysisDiffTests(SampleSolutionFixture fixture)
         Assert.NotEqual(item.BaseRef, item.CurrentRef); // Pareado pelo comportamento, apesar da renumeração.
         var http = Assert.Single(item.Fields);
         Assert.Equal(("esperado.http", 422, 409), (http.Path, http.Before!.GetValue<int>(), http.After!.GetValue<int>()));
+    }
+
+    [Fact]
+    public async Task Identidade_estrutural_mantem_o_par_mesmo_com_foco_titulo_e_payload_diferentes()
+    {
+        var previous = await ReportAsync();
+        var current = Reshuffled(previous);
+        // Outra redação do foco e do título e outro representante no payload: o par continua pela chave estrutural.
+        var indisponivel = ScenarioOf(current, s => s.Expected.Messages.Contains("Veículo indisponível."));
+        indisponivel.Focus!.Expression = "veiculo.Disponivel == false";
+        indisponivel.Title = "Veículo marcado como indisponível";
+        ((JsonObject)indisponivel.Request.Body!)["observacao"] = "outro texto";
+
+        var group = Group(Compare(previous, current), "matriz-estatica");
+        var item = Assert.Single(group.Items);
+        Assert.Equal(DiffKinds.Changed, item.Kind);
+        Assert.Equal((0, 0), (group.Counts.Added, group.Counts.Removed));
+        Assert.DoesNotContain(item.Fields, f => f.Impact == DiffImpacts.Behavior);
+        Assert.Contains(item.Fields, f => f.Path == "requisicao.corpo" && f.Impact == DiffImpacts.TestData);
+    }
+
+    [Fact]
+    public async Task Matriz_antiga_sem_chave_continua_comparavel()
+    {
+        var current = await ReportAsync();
+        var previous = Clone(current);
+        // Matriz antiga: só cenários com payload (sem as linhas das folhas sem payload).
+        previous.Context.Scenarios!.Scenarios.RemoveAll(s => s.NoPayload is not null);
+        current.Context.Scenarios!.Scenarios.RemoveAll(s => s.NoPayload is not null);
+        foreach (var scenario in previous.Context.Scenarios.Scenarios)
+            (scenario.Key, scenario.Terminal, scenario.Feasibility, scenario.EquivalentTo) = (null, null, null, null);
+        previous.Context.Scenarios.Flow = null;
+
+        var result = Compare(previous, current);
+        var group = Group(result, "matriz-estatica");
+        Assert.Equal((0, 0, 0), (group.Counts.Added, group.Counts.Removed, group.Counts.Uncertain));
+        Assert.Contains(group.Notes, n => n.Contains("Matriz anterior à geração por árvore", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Desfecho_removido_do_codigo_aparece_como_linha_removida_da_matriz()
+    {
+        var previous = await ReportAsync();
+        var current = Clone(previous);
+        current.Context.Scenarios!.Scenarios.RemoveAll(s => s.Expected.Messages.Contains("Veículo indisponível."));
+
+        var result = Compare(previous, current);
+        Assert.Equal(DiffKinds.Removed, Assert.Single(Group(result, "matriz-estatica").Items).Kind);
+    }
+
+    [Fact]
+    public async Task Folha_que_perde_o_payload_e_mudanca_de_comportamento()
+    {
+        var previous = await ReportAsync();
+        var current = Clone(previous);
+        var scenario = current.Context.Scenarios!.Scenarios.First(s => s.Expected.Messages.Contains("Veículo indisponível."));
+        (scenario.Feasibility, scenario.NoPayload) = (PathFeasibilities.Unsat, "caminho contraditório");
+
+        var item = Assert.Single(Group(Compare(previous, current), "matriz-estatica").Items);
+        Assert.Equal(DiffKinds.Changed, item.Kind);
+        Assert.Contains(item.Fields, f => f.Path == "viabilidade" && f.Impact == DiffImpacts.Behavior);
     }
 
     [Fact]

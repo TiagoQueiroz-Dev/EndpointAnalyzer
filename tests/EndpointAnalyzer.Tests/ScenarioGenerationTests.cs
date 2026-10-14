@@ -95,18 +95,29 @@ public class ScenarioGenerationTests(SampleSolutionFixture fixture)
     }
 
     [Fact]
-    public async Task Required_e_StringLength_geram_ausente_vazio_espacos_e_limites()
+    public async Task Required_e_StringLength_geram_so_os_representantes_necessarios()
     {
         var matrix = await MatrixAsync("POST /api/veiculos");
         var validations = matrix.Scenarios.Where(s => s.Kind == ScenarioKinds.Validation).Select(s => s.Title).ToList();
 
-        Assert.Contains("placa vazio (\"\")", validations);
+        // "" e "   " violam a mesma checagem (IsNullOrWhiteSpace): só espaços representa a classe; 6 e 8 são os dois lados do limite.
+        Assert.Equal(3, validations.Count);
         Assert.Contains("placa só com espaços", validations);
+        Assert.DoesNotContain("placa vazio (\"\")", validations);
         Assert.Contains(validations, t => t.StartsWith("placa com 6", StringComparison.Ordinal));
         Assert.Contains(validations, t => t.StartsWith("placa com 8", StringComparison.Ordinal));
 
+        // 7 espaços: viola só o [Required], não o [StringLength(7)].
+        var espacos = Assert.Single(matrix.Scenarios, s => s.Title == "placa só com espaços");
+        Assert.Equal(7, ((string)espacos.Request.Body!["placa"]!).Length);
+        Assert.Single(espacos.Expected.Messages);
+
         var curta = Assert.Single(matrix.Scenarios, s => s.Title.StartsWith("placa com 6", StringComparison.Ordinal));
         Assert.Equal(["A placa deve ter 7 caracteres."], curta.Expected.Messages);
+
+        // O limite válido (7 caracteres) é coberto pelo caminho feliz, sem cenário próprio.
+        Assert.DoesNotContain(matrix.Scenarios, s => s.Kind == ScenarioKinds.Boundary);
+        Assert.Equal(7, ((string)matrix.Scenarios[0].Request.Body!["placa"]!).Length);
 
         // return Conflict(...) no controller: status do próprio código.
         var duplicada = Rule(matrix, "Já existe um veículo com esta placa.");
@@ -265,8 +276,10 @@ public class ScenarioGenerationTests(SampleSolutionFixture fixture)
         Assert.Contains(matrix.Scenarios, s => s.Decisions[existeOrigem.Id] == true);
         Assert.Contains(matrix.Scenarios, s => s.Decisions[existeOrigem.Id] == false);
 
-        // Saída antecipada que nunca acontece (notificações pendentes já encerraram o cenário) fica explicada nas notas.
-        Assert.Contains(matrix.Notes, n => n.Contains("notifications.PossuiNotificacoes()", StringComparison.Ordinal) && n.EndsWith("sempre falsa neste fluxo.", StringComparison.Ordinal));
+        // Saída antecipada que nunca acontece (notificações pendentes já encerraram o cenário): linha própria, sem payload, com o motivo.
+        var notificacoes = Assert.Single(matrix.Scenarios, s => s.Focus?.Expression.Contains("notifications.PossuiNotificacoes()", StringComparison.Ordinal) == true);
+        Assert.Equal(PathFeasibilities.Unsat, notificacoes.Feasibility);
+        Assert.False(string.IsNullOrWhiteSpace(notificacoes.NoPayload));
     }
 
     [Fact]

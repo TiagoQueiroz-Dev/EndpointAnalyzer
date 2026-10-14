@@ -214,12 +214,15 @@ public static class ReportRenderer
             foreach (var s in matrix.Scenarios)
             {
                 var label = labels?.FirstOrDefault(l => l.Id == s.Id);
-                var payload = $"`{s.Request.Method} {s.Request.Url}`" + (s.Request.Body is { } body ? $"<br>`{body.ToJsonString()}`" : "");
+                var payload = s.NoPayload is { } reason
+                    ? $"**sem payload** ({(s.Feasibility ?? PathFeasibilities.Unknown).ToUpperInvariant()}): {reason}"
+                    : $"`{s.Request.Method} {s.Request.Url}`" + (s.Request.Body is { } body ? $"<br>`{body.ToJsonString()}`" : "");
                 var preconditions = s.Preconditions.Count == 0 ? "—" : string.Join("<br>", s.Preconditions.Select(p => p.Description));
                 var expected = $"**{s.Expected.HttpStatus?.ToString() ?? "?"}** {s.Expected.Outcome}"
                     + string.Concat(s.Expected.Messages.Select(m => $"<br>\"{m}\""))
                     + string.Concat(s.Expected.Effects.Select(e => $"<br>{e.Description}{(e.Properties is { Count: > 0 } p ? $" ({string.Join(", ", p)})" : "")}"))
-                    + (s.Expected.Outcome == "erro" && !s.Expected.Persisted ? "<br>nada é gravado" : "");
+                    + (s.Expected.Outcome == "erro" && !s.Expected.Persisted && s.NoPayload is null ? "<br>nada é gravado" : "")
+                    + (s.EquivalentTo is { } same ? $"<br>mesmo resultado de {same}" : "");
                 sb.AppendLine($"| {s.Id} | {Escape(label?.Title ?? s.Title)} <br>_{s.Kind} · {s.Technique}_ | {Escape(payload)} | {Escape(preconditions)} | {Escape(expected)} |");
             }
             sb.AppendLine();

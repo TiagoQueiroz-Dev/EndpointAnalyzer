@@ -7,7 +7,8 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 namespace EndpointAnalyzer.Scenarios;
 
 /// <summary>Valor de teste de uma regra: partição de equivalência ou valor-limite, válido ou inválido.</summary>
-public sealed record Probe(Pred Constraint, bool Valid, string Label, string Technique);
+/// <param name="Class">Classe ou lado do limite exercitado ("nulo", "espacos", "acima-do-maximo", "minimo"...): base da chave da obrigação.</param>
+public sealed record Probe(Pred Constraint, bool Valid, string Label, string Technique, string Class = "");
 
 /// <summary>Validação de entrada estruturada (Fase 3): campo, tipo de restrição, limites e mensagem.</summary>
 public sealed class ValidationRule
@@ -163,47 +164,52 @@ public sealed class ValidationRule
         {
             case "required" or "notEmpty" or "notNull":
                 if (v.Nullable || v.Kind == VarKind.String)
-                    probes.Add(new(new NullPred(v, $"{Field.Path} == null"), false, $"{name} ausente (null)", ep));
+                    probes.Add(new(new NullPred(v, $"{Field.Path} == null"), false, $"{name} ausente (null)", ep, "nulo"));
                 if (v.Kind == VarKind.String && (Kind == "notEmpty" || (Kind == "required" && !AllowEmpty)))
                 {
-                    probes.Add(new(Len(0), false, $"{name} vazio (\"\")", ep));
-                    probes.Add(new(Pred.And(Len(3), new BlankPred(v, true, $"string.IsNullOrWhiteSpace({Field.Path})")), false, $"{name} só com espaços", ep));
+                    probes.Add(new(Len(0), false, $"{name} vazio (\"\")", ep, "vazio"));
+                    // Comprimento livre: o solver escolhe um que não viole as outras regras do campo (7 espaços com [StringLength(7)]).
+                    probes.Add(new(Pred.And(notNull, new CmpPred(length, ">=", ConstTerm.Of(1), $"{Field.Path}.{LengthName} >= 1"),
+                        new BlankPred(v, true, $"string.IsNullOrWhiteSpace({Field.Path})")), false, $"{name} só com espaços", ep, "espacos"));
                 }
                 else if (Kind == "notEmpty" && v.Kind == VarKind.Collection)
-                    probes.Add(new(Len(0), false, $"{name} sem itens", ep));
+                    probes.Add(new(Len(0), false, $"{name} sem itens", ep, "sem-itens"));
                 else if (Kind == "notEmpty" && v.Kind is not VarKind.String)
-                    probes.Add(new(Eq(EmptyValue(v)), false, $"{name} com o valor padrão ({EmptyValue(v).Display})", ep));
+                    probes.Add(new(Eq(EmptyValue(v)), false, $"{name} com o valor padrão ({EmptyValue(v).Display})", ep, "padrao"));
                 break;
             case "maxLength" when Number(Max) is { } max:
-                probes.Add(new(Len(max + 1), false, $"{name} com {Items(max + 1)} (máximo {max})", bva));
-                probes.Add(new(Len(max), true, $"{name} com {Items(max)} (limite máximo)", bva));
+                probes.Add(new(Len(max + 1), false, $"{name} com {Items(max + 1)} (máximo {max})", bva, "acima-do-maximo"));
+                probes.Add(new(Len(max), true, $"{name} com {Items(max)} (limite máximo)", bva, "maximo"));
                 break;
             case "minLength" when Number(Min) is { } min:
-                if (min > 0) probes.Add(new(Len(min - 1), false, $"{name} com {Items(min - 1)} (mínimo {min})", bva));
-                probes.Add(new(Len(min), true, $"{name} com {Items(min)} (limite mínimo)", bva));
+                if (min > 0) probes.Add(new(Len(min - 1), false, $"{name} com {Items(min - 1)} (mínimo {min})", bva, "abaixo-do-minimo"));
+                probes.Add(new(Len(min), true, $"{name} com {Items(min)} (limite mínimo)", bva, "minimo"));
                 break;
             case "length" when Number(Min) is { } lo && Number(Max) is { } hi:
-                if (lo > 0) probes.Add(new(Len(lo - 1), false, $"{name} com {Items(lo - 1)} (mínimo {lo})", bva));
-                probes.Add(new(Len(hi + 1), false, $"{name} com {Items(hi + 1)} (máximo {hi})", bva));
-                probes.Add(new(Len(lo), true, $"{name} com {Items(lo)} (limite mínimo)", bva));
-                if (hi != lo) probes.Add(new(Len(hi), true, $"{name} com {Items(hi)} (limite máximo)", bva));
+                if (lo > 0) probes.Add(new(Len(lo - 1), false, $"{name} com {Items(lo - 1)} (mínimo {lo})", bva, "abaixo-do-minimo"));
+                probes.Add(new(Len(hi + 1), false, $"{name} com {Items(hi + 1)} (máximo {hi})", bva, "acima-do-maximo"));
+                probes.Add(new(Len(lo), true, $"{name} com {Items(lo)} (limite mínimo)", bva, "minimo"));
+                if (hi != lo) probes.Add(new(Len(hi), true, $"{name} com {Items(hi)} (limite máximo)", bva, "maximo"));
                 break;
             case "range" or "exclusiveRange" or "gt" or "gte" or "lt" or "lte":
                 foreach (var (bound, op) in Bounds())
                 {
                     var (invalid, valid) = Adjacent(bound, op);
-                    if (invalid is not null) probes.Add(new(Eq(invalid), false, $"{name} = {Show(invalid)} ({Describe(op, bound)})", bva));
-                    if (valid is not null) probes.Add(new(Eq(valid), true, $"{name} = {Show(valid)} (limite válido)", bva));
+                    var lower = op is ">" or ">=";
+                    if (invalid is not null)
+                        probes.Add(new(Eq(invalid), false, $"{name} = {Show(invalid)} ({Describe(op, bound)})", bva, lower ? "abaixo-do-minimo" : "acima-do-maximo"));
+                    if (valid is not null) probes.Add(new(Eq(valid), true, $"{name} = {Show(valid)} (limite válido)", bva, lower ? "minimo" : "maximo"));
                 }
                 break;
             case "email":
-                probes.Add(new(BaseViolation(), false, $"{name} com formato inválido", ep));
+                probes.Add(new(BaseViolation(), false, $"{name} com formato inválido", ep, "formato"));
                 break;
             case "enum":
-                probes.Add(new(BaseViolation(), false, $"{name} com valor fora do enum", ep));
+                probes.Add(new(BaseViolation(), false, $"{name} com valor fora do enum", ep, "fora-do-enum"));
                 break;
             case "equal" or "notEqual":
-                probes.Add(new(BaseViolation(), false, $"{name} {(Kind == "equal" ? "diferente de" : "igual a")} {Show(Min)}", ep));
+                probes.Add(new(BaseViolation(), false, $"{name} {(Kind == "equal" ? "diferente de" : "igual a")} {Show(Min)}", ep,
+                    Kind == "equal" ? "diferente" : "igual"));
                 break;
         }
 

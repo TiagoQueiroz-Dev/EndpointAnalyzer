@@ -59,7 +59,7 @@ public static class OutcomeMatcher
 
         if (expected.HttpStatus is { } expectedStatus ? status != expectedStatus : success)
         {
-            var explained = matrix.Scenarios.Where(s => s.Id != scenario.Id && ExplainedBy(s.Expected, execution, texts)).Select(s => s.Id).ToList();
+            var explained = matrix.Scenarios.Where(s => s.Id != scenario.Id && s.NoPayload is null && ExplainedBy(s.Expected, execution, texts)).Select(s => s.Id).ToList();
             reasons.Add($"Esperado HTTP {expected.HttpStatus?.ToString() ?? "de erro"}{(expected.Messages.Count > 0 ? $" (\"{expected.Messages[0]}\")" : "")}, observado {observed}"
                 + (explained.Count > 0 ? $" — resultado previsto para {string.Join(", ", explained)}." : "."));
             return new MatchResult(MatchLevel.Mismatch, evidence, reasons, true, observed);
@@ -94,7 +94,7 @@ public static class OutcomeMatcher
 
         // Sem mensagem: só o status identifica a regra se nenhuma outra regra produz o mesmo status.
         var shared = matrix.Scenarios
-            .Where(s => s.Id != scenario.Id && s.Expected.Outcome == "erro" && s.Expected.HttpStatus == status && s.Expected.Rule != expected.Rule)
+            .Where(s => s.Id != scenario.Id && s.NoPayload is null && s.Expected.Outcome == "erro" && s.Expected.HttpStatus == status && s.Expected.Rule != expected.Rule)
             .Select(s => s.Id).ToList();
         if (shared.Count > 0)
         {

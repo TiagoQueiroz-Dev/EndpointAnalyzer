@@ -30,10 +30,15 @@ public sealed class ScenarioModel
     /// <summary>Falso quando a geração falhou (a matriz só tem a observação do erro).</summary>
     public bool CanMaterialize => _run is not null;
 
+    /// <summary>Motivo da linha sem payload (folha que nenhuma entrada alcança): não há o que materializar.</summary>
+    private string? WithoutPayload(string scenarioId) =>
+        Matrix.Scenarios.FirstOrDefault(s => s.Id == scenarioId)?.NoPayload is { } reason ? $"O cenário {scenarioId} não tem payload: {reason}." : null;
+
     /// <summary>Valida a requisição exata, sem completar campos nem reutilizar estado de uma execução anterior.</summary>
     public ScenarioMaterialization ValidateRequest(string scenarioId, ScenarioRequest request)
     {
         if (_run is null) return ScenarioMaterialization.Fail(scenarioId, "A análise não tem modelo de restrições.");
+        if (WithoutPayload(scenarioId) is { } reason) return ScenarioMaterialization.Fail(scenarioId, reason);
         lock (_run) return _run.ValidateRequest(scenarioId, request);
     }
 
@@ -65,6 +70,7 @@ public sealed class ScenarioModel
         ScenarioMaterialization? baseline = null, IReadOnlyCollection<StateFact>? facts = null, IReadOnlyList<ScenarioBinding>? payload = null)
     {
         if (_run is null) return ScenarioMaterialization.Fail(scenarioId, "A matriz não tem o modelo de restrições (a geração falhou).");
+        if (WithoutPayload(scenarioId) is { } reason) return ScenarioMaterialization.Fail(scenarioId, reason);
         lock (_run)
         {
             var result = _run.Materialize(scenarioId, bindings ?? [], baseline, facts ?? [], payload ?? []);
@@ -476,6 +482,8 @@ public partial class ScenarioGenerator
         private bool SameOutcome(Outcome o, Assignment a, Outcome expected, Assignment ea)
         {
             if (o.Success != expected.Success || o.Status != expected.Status || o.Rule != expected.Rule) return false;
+            // A mesma folha do fluxo (duas regras com a mesma condição em pontos diferentes não se confundem).
+            if (_leaves.Count > 0 && LeafOf(o, a) != LeafOf(expected, ea)) return false;
             if (!o.Success) return true;
             return o.Exits.Count == expected.Exits.Count && EffectSignature(o, a) == EffectSignature(expected, ea);
         }

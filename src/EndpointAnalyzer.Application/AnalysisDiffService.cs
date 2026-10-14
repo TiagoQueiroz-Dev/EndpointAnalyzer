@@ -292,8 +292,12 @@ public sealed partial class AnalysisDiffService
         var labels = previous.Ai?.Scenarios is { Count: > 0 } && current.Ai?.Scenarios is { Count: > 0 };
         var (bases, currents) = (StaticScenarios(pm, previous.Ai, labels), StaticScenarios(cm, current.Ai, labels));
         var matches = DiffMatcher.Match(bases, currents);
-        var matrix = Group("matriz-estatica", "Matriz estática", matches, m => Decisions(m, pm, cm),
-            "Cenários pareados pelo comportamento (tipo, foco, regra, mensagens), não pelo id: CEN-xx é renumerado a cada análise.");
+        var structural = pm.Scenarios.Any(s => s.Key is not null) && cm.Scenarios.Any(s => s.Key is not null);
+        var matrix = Group("matriz-estatica", "Matriz estática", matches, m => Decisions(m, pm, cm), structural
+            ? "Cenários pareados pela identidade estrutural (desfecho no código + obrigação de cobertura), não pelo id nem pelo payload: só o resultado esperado conta como mudança de comportamento."
+            : "Cenários pareados pelo comportamento (tipo, foco, regra, mensagens), não pelo id: CEN-xx é renumerado a cada análise.");
+        if (!structural && (pm.Scenarios.Any(s => s.Key is not null) || cm.Scenarios.Any(s => s.Key is not null)))
+            matrix.Notes.Add("Matriz anterior à geração por árvore de execução em uma das versões: pareamento pelo foco, regra e mensagens (sem a identidade estrutural).");
         if (!labels && (previous.Ai?.Scenarios is { Count: > 0 } || current.Ai?.Scenarios is { Count: > 0 }))
             matrix.Notes.Add("Títulos da IA presentes em só uma das versões: não comparados.");
         section.Groups.Add(matrix);
@@ -308,12 +312,21 @@ public sealed partial class AnalysisDiffService
         return matrix.Scenarios.Select((s, i) => StaticScenario(s, i, titles.GetValueOrDefault(s.Id), labels)).ToList();
     }
 
+    /// <summary>
+    /// Cenário da matriz. Com a identidade estrutural (<see cref="Scenario.Key"/>: desfecho no código + obrigação de
+    /// cobertura), o par vem dela e só o resultado esperado é comportamento (sucesso/erro, HTTP, mensagens, exceção, regra,
+    /// efeitos, persistência); payload, pré-condições e foco são o representante escolhido (dado de teste/documentação).
+    /// Matrizes antigas, sem a chave, continuam pareadas pelo foco, mensagens e regra.
+    /// </summary>
     private static DiffProjection StaticScenario(Scenario s, int position, ScenarioLabel? label, bool labels)
     {
         var f = s.Focus;
         var e = s.Expected;
         var messages = Set(e.Messages.Select(Text));
+        var structural = s.Key is not null;
+        var representative = structural ? DiffImpacts.TestData : DiffImpacts.Behavior;
         var p = new DiffProjection(label?.Title is { Length: > 0 } title ? title : s.Title, s.Id, position, DiffImpacts.Behavior) { Source = s };
+        p.Key(structural ? $"cen|chave|{s.Key}" : null);
         if (f is null) p.Key($"cen|{s.Kind}|sem-foco|{Code(e.Rule)}|{e.Outcome}").Key(null).Key(null);
         else p.Key($"cen|{s.Kind}|{Code(f.Expression)}|{f.Value}|{Text(f.Detail)}").Key($"cen|{s.Kind}|{Code(f.Expression)}|{f.Value}|{Mask(f.Detail)}")
             .Key($"cen|{s.Kind}|{Mask(Code(f.Expression))}|{f.Value}");
@@ -321,11 +334,12 @@ public sealed partial class AnalysisDiffService
             .Key(string.IsNullOrWhiteSpace(e.Rule) ? null : $"cen|{s.Kind}|regra|{Code(e.Rule)}")
             .SupportKey(Subject(f?.Expression) is { } subject ? $"cen|{s.Kind}|campo|{subject}" : null);
 
+        var focus = structural ? DiffImpacts.Documentation : DiffImpacts.Behavior;
         p.Add("tipo", "Tipo", DiffImpacts.Behavior, S(s.Kind))
-            .Add("foco.expressao", "Condição exercitada", DiffImpacts.Behavior, S(Code(f?.Expression)), S(f?.Expression))
-            .Add("foco.valor", "Valor da condição", DiffImpacts.Behavior, f is null ? null : JsonValue.Create(f.Value))
-            .Add("foco.detalhe", "Detalhe do foco", DiffImpacts.Behavior, S(Text(f?.Detail)), masked: S(Mask(f?.Detail)), descriptive: true)
-            .Add("precondicoes", "Pré-condições", DiffImpacts.Behavior, Set(s.Preconditions.Select(c => Text($"{c.Kind}: {c.Description}"))),
+            .Add("foco.expressao", "Condição exercitada", focus, S(Code(f?.Expression)), S(f?.Expression))
+            .Add("foco.valor", "Valor da condição", focus, f is null ? null : JsonValue.Create(f.Value))
+            .Add("foco.detalhe", "Detalhe do foco", focus, S(Text(f?.Detail)), masked: S(Mask(f?.Detail)), descriptive: true)
+            .Add("precondicoes", "Pré-condições", representative, Set(s.Preconditions.Select(c => Text($"{c.Kind}: {c.Description}"))),
                 List(s.Preconditions.Select(c => $"{c.Kind}: {c.Description}")), Set(s.Preconditions.Select(c => Mask($"{c.Kind}: {c.Description}"))))
             .Add("esperado.resultado", "Resultado esperado", DiffImpacts.Behavior, S(e.Outcome))
             .Add("esperado.http", "HTTP esperado", DiffImpacts.Behavior, N(e.HttpStatus))
@@ -335,8 +349,13 @@ public sealed partial class AnalysisDiffService
             .Add("esperado.efeitos", "Efeitos", DiffImpacts.Behavior, Set(e.Effects.Select(EffectText)), List(e.Effects.Select(EffectDisplay)))
             .Add("esperado.persiste", "Persiste no banco", DiffImpacts.Behavior, JsonValue.Create(e.Persisted))
             .Add("esperado.origemStatus", "Origem do status", DiffImpacts.Origin, S(e.StatusSource))
-            .Add("esperado.origem", "Origem no código", DiffImpacts.Origin, S(Origin(e.Source)));
-        AddRequest(p, s.Request, DiffImpacts.Behavior, false);
+            .Add("esperado.origem", "Origem no código", DiffImpacts.Origin, S(Origin(e.Source)))
+            .Add("desfecho", "Desfecho no fluxo", DiffImpacts.Origin, S(s.Terminal))
+            // Matriz antiga (sem viabilidade) só tinha cenários com payload alcançável.
+            .Add("viabilidade", "Viabilidade", DiffImpacts.Behavior, S(s.Feasibility ?? PathFeasibilities.Sat))
+            .Add("sem-payload", "Sem payload", DiffImpacts.Environment, S(Text(s.NoPayload)))
+            .Add("equivalente", "Mesmo resultado de", DiffImpacts.Environment, S(s.EquivalentTo));
+        AddRequest(p, s.Request, representative, false);
         p.Add("titulo", "Título", DiffImpacts.Documentation, S(Text(s.Title)), masked: S(Mask(s.Title)), descriptive: true);
         if (labels)
             p.Add("titulo.ia", "Título (IA)", DiffImpacts.Documentation, S(Text(label?.Title)))
@@ -391,8 +410,10 @@ public sealed partial class AnalysisDiffService
             before[$"{key.Split('|')[0]}: {expression}"] = value is { } x ? JsonValue.Create(x) : null;
             after[$"{key.Split('|')[0]}: {expression}"] = other.Value is { } y ? JsonValue.Create(y) : null;
         }
+        // Com a identidade estrutural, os valores das demais condições dependem do payload escolhido: dado de teste.
+        var impact = b.Key is not null && c.Key is not null ? DiffImpacts.TestData : DiffImpacts.Behavior;
         if (before.Count > 0)
-            yield return new AnalysisDiffField { Path = "decisoes", Label = "Tabela de decisão", Impact = DiffImpacts.Behavior, Before = before, After = after };
+            yield return new AnalysisDiffField { Path = "decisoes", Label = "Tabela de decisão", Impact = impact, Before = before, After = after };
     }
 
     private static Dictionary<string, (bool? Value, string Expression)> DecisionValues(Scenario scenario, ScenarioMatrix matrix)

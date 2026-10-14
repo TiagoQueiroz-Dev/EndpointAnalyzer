@@ -45,6 +45,10 @@ public class ScenarioMatrix
 
     /// <summary>Enums no JSON como texto (JsonStringEnumConverter) ou como número (padrão do System.Text.Json).</summary>
     public bool EnumsAsStrings { get; set; }
+
+    /// <summary>Visão lógica do fluxo (entrada, validações, decisões, efeitos e folhas) de onde os cenários vieram.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FlowTreeInfo? Flow { get; set; }
 }
 
 public class ScenarioInput
@@ -180,6 +184,35 @@ public class Scenario
     /// <summary>Partes que não puderam ser determinadas (condições opacas, status inferido...).</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<string>? Notes { get; set; }
+
+    /// <summary>
+    /// Identidade estrutural estável (hash do endpoint, do desfecho no código e da obrigação de cobertura): não depende
+    /// do payload, do CEN-xx, da mensagem nem do status. Nula nas matrizes antigas.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Key { get; set; }
+
+    /// <summary>Desfecho (folha da árvore de execução) do cenário: cada folha tem ao menos uma linha na matriz.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Terminal { get; set; }
+
+    /// <summary>
+    /// Viabilidade estática do caminho até a folha (<see cref="PathFeasibilities"/>): sat, unknown (pendente de
+    /// confirmação) ou unsat (nenhuma entrada alcança: a linha vem sem payload).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Feasibility { get; set; }
+
+    /// <summary>
+    /// Linha sem payload executável: a folha existe no código, mas nenhum payload gerado a alcança. Traz o motivo
+    /// (caminho contraditório, condição não decidida, combinação não encontrada). Nulo quando há payload.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? NoPayload { get; set; }
+
+    /// <summary>Mesma resposta e mesmos efeitos de outro cenário (CEN-xx): a folha é outra, o resultado observável não.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? EquivalentTo { get; set; }
 }
 
 public class ScenarioFocus

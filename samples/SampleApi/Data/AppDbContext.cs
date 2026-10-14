@@ -24,4 +24,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<Origens.Local> Locais => Set<Origens.Local>();
 
     public DbSet<Origens.Endereco> Enderecos => Set<Origens.Endereco>();
+
+    public DbSet<Remessas.Remessa> Remessas => Set<Remessas.Remessa>();
+
+    public DbSet<Remessas.ItemRemessa> ItensRemessa => Set<Remessas.ItemRemessa>();
 }

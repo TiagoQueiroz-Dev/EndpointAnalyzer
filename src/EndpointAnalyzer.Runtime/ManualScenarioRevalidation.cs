@@ -49,6 +49,8 @@ public partial class RuntimeValidationService
     {
         var target = report.Matrix?.Scenarios.FirstOrDefault(s => s.Id == id)
             ?? throw new ScenarioRevalidationException(404, "Cenário não encontrado na matriz validada.");
+        if (model.Matrix.Scenarios.FirstOrDefault(s => s.Id == id)?.NoPayload is { } noPayload)
+            throw new ScenarioRevalidationException(409, $"Cenário sem payload: {noPayload}.");
         if (target.Status is not (ScenarioValidationStatuses.Inconclusive or ScenarioValidationStatuses.NotMaterialized))
             throw new ScenarioRevalidationException(409, "Somente cenários inconclusivos ou não materializados podem ser reanalisados.");
         if (report.Executions.Count(e => e.Phase == RuntimePhases.Manual && e.ScenarioId == id) >= options.MaxManualAttemptsPerScenario)
@@ -110,8 +112,10 @@ public partial class RuntimeValidationService
         target.Preconditions = [];
         foreach (var status in ScenarioValidationStatuses.All)
             report.Matrix!.Counts[status] = report.Matrix.Scenarios.Count(s => s.Status == status) + report.Matrix.Removed.Count(s => s.Status == status);
+        // Linhas sem payload nunca executam: não deixam a validação parcial.
+        var noPayload = model.Matrix.Scenarios.Where(s => s.NoPayload is not null).Select(s => s.Id).ToHashSet();
         if (report.Status != RuntimeValidationStatuses.Failed)
-            report.Status = report.Matrix!.Scenarios.Any(s => s.Status is ScenarioValidationStatuses.Inconclusive or ScenarioValidationStatuses.NotMaterialized)
+            report.Status = report.Matrix!.Scenarios.Any(s => s.Status is ScenarioValidationStatuses.Inconclusive or ScenarioValidationStatuses.NotMaterialized && !noPayload.Contains(s.Id))
                 ? RuntimeValidationStatuses.Partial : RuntimeValidationStatuses.Completed;
         report.Log.Add($"Reanálise manual {target.Id} ({execution.Id}): {match.Level} — {match.Observed}");
         return execution;

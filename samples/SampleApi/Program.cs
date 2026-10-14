@@ -44,6 +44,9 @@ builder.Services.AddScoped<SampleApi.Origens.DomainNotificationHandler>();
 builder.Services.AddScoped<SampleApi.Origens.IProgramacaoTransporteRepository, SampleApi.Origens.ProgramacaoTransporteRepository>();
 builder.Services.AddScoped<SampleApi.Origens.IOrigemAppService, SampleApi.Origens.OrigemAppService>();
 
+// Remessas (geração de cenários pela árvore de execução)
+builder.Services.AddScoped<SampleApi.Remessas.IRemessaService, SampleApi.Remessas.RemessaService>();
+
 var app = builder.Build();
 
 app.UseMiddleware<ExceptionMiddleware>();

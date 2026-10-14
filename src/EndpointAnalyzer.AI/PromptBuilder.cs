@@ -260,6 +260,8 @@ public static partial class PromptBuilder
             effects = s.Expected.Effects.Select(e => e.Description),
             persisted = s.Expected.Persisted,
         },
+        // Desfecho do código que nenhuma entrada gerada alcança (o cenário não tem payload): o motivo.
+        noPayload = s.NoPayload,
     });
 
     private static string WithoutDates(string text) =>

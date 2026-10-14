@@ -25,7 +25,18 @@ internal static class MatrixReconciler
         var result = new ValidatedMatrix();
         foreach (var scenario in matrix.Scenarios)
         {
-            var validated = states.TryGetValue(scenario.Id, out var state)
+            var validated = scenario.NoPayload is { } noPayload
+                ? new ValidatedScenario
+                {
+                    // Folha que nenhuma entrada gerada alcança: continua na matriz, sem execução.
+                    Id = scenario.Id,
+                    Status = ScenarioValidationStatuses.NotMaterialized,
+                    Kind = scenario.Kind,
+                    Title = scenario.Title,
+                    Expected = scenario.Expected,
+                    Reasons = [$"Sem payload: {noPayload}."],
+                }
+                : states.TryGetValue(scenario.Id, out var state)
                 ? Classify(scenario, state, matrix, writesAllowed)
                 : new ValidatedScenario
                 {
@@ -167,7 +178,7 @@ internal static class MatrixReconciler
             missing = $"as execuções terminaram em resultados diferentes ({string.Join(" | ", signatures)}): o resultado depende dos dados, continue variando o payload.";
             return null;
         }
-        var explained = matrix.Scenarios.Where(s => s.Id != scenario.Id && OutcomeMatcher.ExplainedBy(s.Expected, executed[0].Execution)).Select(s => s.Id).ToList();
+        var explained = matrix.Scenarios.Where(s => s.Id != scenario.Id && s.NoPayload is null && OutcomeMatcher.ExplainedBy(s.Expected, executed[0].Execution)).Select(s => s.Id).ToList();
         if (explained.Count == 0)
         {
             missing = $"o resultado observado ({signatures[0]}) não é o previsto para nenhum outro cenário da matriz.";
@@ -192,7 +203,7 @@ internal static class MatrixReconciler
         {
             if (e.Phase == RuntimePhases.Acquisition || e.ScenarioId is null || e.Blocked || confirmed.Contains(e.Id)) continue;
             var texts = Evidence.Texts(e.ResponseBody);
-            if (e.Status is not null && matrix.Scenarios.Any(s => OutcomeMatcher.ExplainedBy(s.Expected, e, texts))) continue;
+            if (e.Status is not null && matrix.Scenarios.Any(s => s.NoPayload is null && OutcomeMatcher.ExplainedBy(s.Expected, e, texts))) continue;
 
             var message = Evidence.MainMessage(e.ResponseBody) ?? e.Exception;
             var signature = $"{e.Status}|{Evidence.Normalize(message ?? "")}";

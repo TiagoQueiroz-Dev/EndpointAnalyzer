@@ -335,6 +335,12 @@
   table.exec td { font-size: 12.5px; } table.exec td.url { font: 12px ui-monospace, Consolas, monospace; overflow-wrap: anywhere; min-width: 220px; }
   .verified { color: var(--post); font-weight: 600; } .unverified { color: var(--put); font-weight: 600; }
 
+  /* ---- Folhas sem payload e viabilidade (SAT/UNSAT/UNKNOWN) na matriz ---- */
+  .cst { display: inline-block; font: 700 10.5px system-ui, sans-serif; padding: 1px 7px; border-radius: 8px; border: 1px solid currentColor; letter-spacing: .02em; text-transform: uppercase; white-space: nowrap; }
+  .cst.sat { color: var(--put); } .cst.unknown { color: var(--put); } .cst.unsat { color: var(--delete); }
+  .nopayload { font-size: 12px; margin-top: 4px; }
+  .leaf-of { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+
   /* ---- Aba Diff: o que mudou, como era e como ficou; detalhes técnicos só sob demanda ---- */
   .diff-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; margin-bottom: 8px; font-size: 13.5px; }
   .diff-head-versions { min-width: 0; overflow-wrap: anywhere; }
@@ -2149,7 +2155,10 @@ function gridRow(s, v, label) {
     title: label?.title ?? (s ? scenarioTitle(s, null) : v.title),
     desc: label?.description || (!v && s.focus?.detail && s.focus.detail !== s.title ? s.focus.detail : ""),
     notes: s?.notes ?? [],
-    request: base.request ?? null,
+    // Folha que nenhuma entrada gerada alcança: a linha existe, sem payload, com o motivo.
+    noPayload: s?.noPayload ?? null, feasibility: s?.feasibility ?? null, equivalentTo: s?.equivalentTo ?? null,
+    pending: s?.feasibility === "unknown" && !s?.noPayload,
+    request: s?.noPayload ? null : base.request ?? null,
     pre: [
       ...(v?.bindings ?? []).map(b => ({ kind: "real", label: b.origin === "fato" ? "fato" : "dado real", text: `${b.variable} = ${b.value}`, code: true, tip: b.source ?? "" })),
       ...base.preconditions.map(p => ({ kind: p.kind, label: preKinds[p.kind] ?? p.kind, text: p.description, tip: p.expression ?? "" })),
@@ -2173,7 +2182,11 @@ function validatedGridRows(list, ai) {
 
 const requestLine = (req) => `<div class="req"><span class="method ${esc(req.method)}">${esc(req.method)}</span> <span class="url">${esc(req.url)}</span></div>`;
 
+const feasibilityLabels = { unsat: "inalcançável", unknown: "não decidido", sat: "não gerado" };
+
 function requestCell(r) {
+  if (r.noPayload) return `<span class="cst ${esc(r.feasibility ?? "unknown")}" title="${esc(r.noPayload)}">sem payload · ${esc(feasibilityLabels[r.feasibility] ?? r.feasibility ?? "")}</span>
+    <div class="muted clamp nopayload" title="${esc(r.noPayload)}">${esc(r.noPayload)}</div>`;
   if (!r.request) return dash;
   return `${requestLine(r.request)}
     <button class="secondary cell-btn" type="button" data-detail="${esc(r.id)}" title="Body, headers e cópia como JSON ou cURL">${eyeIcon}<span>Ver payload</span></button>`;
@@ -2186,10 +2199,10 @@ function preCell(items) {
   return items.length <= 2 ? list : `<details class="pre-more"><summary>${items.length} condições</summary>${list}</details>`;
 }
 
-function expectedCell(e) {
+function expectedCell(e, simulated = true) {
   const effects = e.effects.map(f => `${f.description}${f.properties?.length ? `: ${f.properties.join(", ")}` : ""}${f.uncertain ? " (?)" : ""}`);
-  // Descoberto em runtime: só o que foi observado (não há previsão de persistência).
-  const persisted = e.statusSource === "runtime" ? "" : e.outcome === "erro"
+  // Descoberto em runtime: só o que foi observado; sem payload: o desfecho como o código declara (sem simulação dos efeitos).
+  const persisted = e.statusSource === "runtime" || !simulated ? "" : e.outcome === "erro"
     ? (e.persisted ? `<div class="persist partial">já persistiu antes do erro</div>` : `<div class="persist no">nada é gravado</div>`)
     : (e.persisted && !e.effects.some(f => f.kind === "SAVE_CHANGES") ? `<div class="persist">persiste no banco (SaveChanges)</div>` : "");
   return `<div class="expected">
@@ -2215,7 +2228,7 @@ function statusCell(r) {
   const tip = [validationHelp[r.status], ...r.evidence.map(e => `✓ ${e}`), ...r.reasons.map(x => `⚠ ${x}`)].filter(Boolean).join("\n");
   return `<span class="vstatus ${esc(r.status)}" title="${esc(tip)}">${esc(validationKinds[r.status] ?? r.status)}</span>
     ${r.reasons.length ? `<div class="warn clamp" title="${esc(r.reasons.join("\n"))}">${esc(r.reasons[0])}</div>` : ""}
-    ${revalidatable(r.status) ? `<button class="secondary cell-btn" type="button" data-revalidate="${esc(r.id)}">Reanalisar</button>` : ""}`;
+    ${revalidatable(r.status) && !r.noPayload ? `<button class="secondary cell-btn" type="button" data-revalidate="${esc(r.id)}">Reanalisar</button>` : ""}`;
 }
 
 let manualContext = null;
@@ -2227,6 +2240,7 @@ function openRevalidation(id) {
   const response = lastResponse;
   const scenario = response.report.runtime?.matrix?.scenarios.find(s => s.id === id);
   if (!scenario || !revalidatable(scenario.status)) return;
+  if (response.report.context.scenarios?.scenarios.find(s => s.id === id)?.noPayload) return;
   manualContext = { response, scenario, endpoint: selected, solution: solutionPath, analysisId: response.report.analysisId, apiToken: apiToken() || undefined };
   $("manualTitle").textContent = `Reanalisar ${id}`;
   $("manualContext").innerHTML = `${scenario.request ? requestLine(scenario.request) : ""}<h4>Resultado esperado</h4>${expectedCell(scenario.expected)}
@@ -2310,10 +2324,12 @@ function scenarioGridHtml(rows) {
     <tbody>${rows.map(r => `<tr ${r.pick ? pickAttrs(r.pick) : ""}>
       <td><code>${esc(r.id)}</code><div><span class="kind ${esc(r.kind)}">${esc(scenarioKinds[r.kind] ?? r.kind)}</span></div></td>
       <td><div class="title">${esc(r.title)}</div>${r.desc ? `<div class="desc clamp" title="${esc(r.desc)}">${esc(r.desc)}</div>` : ""}
-        ${r.notes.length ? `<div class="scen-notes clamp" title="${esc(r.notes.join("\n"))}">⚠ ${esc(r.notes[0])}${r.notes.length > 1 ? ` (+${r.notes.length - 1})` : ""}</div>` : ""}</td>
+        ${r.notes.length ? `<div class="scen-notes clamp" title="${esc(r.notes.join("\n"))}">⚠ ${esc(r.notes[0])}${r.notes.length > 1 ? ` (+${r.notes.length - 1})` : ""}</div>` : ""}
+        ${r.pending ? `<div class="leaf-of"><span class="cst unknown" title="O caminho depende de condição não traduzida: o cenário supõe o valor">sob suposição</span></div>` : ""}
+        ${r.equivalentTo ? `<div class="leaf-of">mesmo resultado de <code>${esc(r.equivalentTo)}</code></div>` : ""}</td>
       <td>${requestCell(r)}</td>
       <td>${preCell(r.pre)}</td>
-      <td>${expectedCell(r.expected)}</td>
+      <td>${expectedCell(r.expected, !r.noPayload)}</td>
       <td>${observedCell(r)}</td>
       <td>${statusCell(r)}</td>
     </tr>`).join("")}</tbody></table></div>`;
@@ -2353,9 +2369,11 @@ function gridMarkdown(rows) {
   const lines = ["| ID | Cenário | Request | Pré-condições / Contexto | Resultado esperado | Resultado observado | Status runtime |", "|---|---|---|---|---|---|---|"];
   for (const r of rows) {
     const e = r.expected;
-    const request = r.request ? `\`${r.request.method} ${r.request.url}\`${r.request.body === undefined ? "" : `\n\`${JSON.stringify(r.request.body)}\``}` : "—";
+    const request = r.noPayload ? `sem payload (${feasibilityLabels[r.feasibility] ?? r.feasibility}): ${r.noPayload}`
+      : r.request ? `\`${r.request.method} ${r.request.url}\`${r.request.body === undefined ? "" : `\n\`${JSON.stringify(r.request.body)}\``}` : "—";
     const expected = [`**${e.httpStatus ?? "?"}** ${e.outcome}`, ...e.messages.map(x => `"${x}"`), ...e.effects.map(f => f.description),
-      e.outcome === "erro" && !e.persisted && e.statusSource !== "runtime" ? "nada é gravado" : ""].filter(Boolean).join("\n");
+      e.outcome === "erro" && !e.persisted && e.statusSource !== "runtime" && !r.noPayload ? "nada é gravado" : "",
+      r.equivalentTo ? `mesmo resultado de ${r.equivalentTo}` : ""].filter(Boolean).join("\n");
     const observed = !r.runtime ? "—" : r.observed ? [`**${r.observed.httpStatus ?? "—"}**`, r.observed.exception].filter(Boolean).join("\n") : "não executado";
     const status = !r.runtime ? "—" : [validationKinds[r.status] ?? r.status, ...r.reasons.map(x => `⚠ ${x}`)].join("\n");
     lines.push(`| ${r.id} | ${cell(r.title)} | ${cell(request)} | ${cell(r.pre.map(p => p.text).join("\n") || "—")} | ${cell(expected)} | ${cell(observed)} | ${cell(status)} |`);
@@ -2379,7 +2397,8 @@ function renderStaticScenarios(m, ai, runtime) {
     .filter(([k, , n]) => k === "all" || n > 0)
     .map(([k, l, n]) => `<button type="button" class="chip ${scenarioFilter === k ? "on" : ""}" data-scen-filter="${k}">${l}<span class="n">${n}</span></button>`).join("");
 
-  return `<p class="muted" style="margin-top:0">${runtime ? "Matriz estática (candidata): " : ""}${m.scenarios.length} cenário(s) gerados do código${ai?.scenarios?.length ? " · títulos pela IA" : ""}.
+  const noPayload = m.scenarios.filter(s => s.noPayload).length;
+  return `<p class="muted" style="margin-top:0">${runtime ? "Matriz estática (candidata): " : ""}${m.scenarios.length} cenário(s) gerados do código, ao menos um por desfecho do fluxo${noPayload ? ` (${noPayload} sem payload: nenhuma entrada gerada alcança o desfecho)` : ""}${ai?.scenarios?.length ? " · títulos pela IA" : ""}.
     ${runtime ? "" : "Sem validação em runtime: as colunas de resultado observado e status ficam vazias. "}Clique num cenário para ver o código da regra.</p>
     <div class="scen-toolbar">${runtime?.matrix ? viewToggleHtml() : ""}${chips}<span class="spacer"></span>
       <button class="secondary" type="button" id="copyScenarios" title="Copiar a matriz como tabela Markdown">${copyIcon}<span>Copiar matriz</span></button>

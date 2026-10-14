@@ -15,7 +15,14 @@ public sealed class ConstraintSolver
     /// <summary>Erro ao carregar/usar o Z3 (biblioteca nativa ausente, por exemplo).</summary>
     public string? Z3Error { get; private set; }
 
-    public Assignment? Solve(IEnumerable<Pred> goals)
+    /// <summary>Valores que satisfazem as restrições; nulo quando não há (UNSAT) ou não foi possível decidir (UNKNOWN).</summary>
+    public Assignment? Solve(IEnumerable<Pred> goals) => Check(goals).Assignment;
+
+    /// <summary>
+    /// Satisfatibilidade trivalente: SAT com os valores, UNSAT só quando a busca é completa na semântica suportada e
+    /// UNKNOWN quando o solver não decide (limite de busca, Z3 indisponível ou sem resposta, átomo não modelado).
+    /// </summary>
+    public SolveResult Check(IEnumerable<Pred> goals)
     {
         var nnf = goals.Select(g => Evaluator.Nnf(g)).ToList();
         if (nnf.SelectMany(Evaluator.Atoms).Any(a => a is CmpPred { IsComplex: true }))
@@ -23,24 +30,35 @@ public sealed class ConstraintSolver
             Z3Calls++;
             return SolveZ3(nnf);
         }
-        return new DomainSolver().Solve(nnf);
+        var solver = new DomainSolver();
+        if (solver.Solve(nnf) is { } assignment) return SolveResult.Sat(assignment);
+        return solver.Exhausted
+            ? SolveResult.Unknown("limite de busca do solver de domínios atingido")
+            : SolveResult.Unsat;
     }
 
-    private Assignment? SolveZ3(List<Pred> goals)
+    private SolveResult SolveZ3(List<Pred> goals)
     {
         try
         {
             // Os decimais do modelo podem ser frações (100/51): a resposta só vale se as restrições continuam
             // verdadeiras com o valor arredondado; senão, tenta de novo com os decimais inteiros.
+            var unconfirmed = false;
             foreach (var integral in new[] { false, true })
-                if (new Z3Encoder(integral).Solve(goals) is { } assignment && goals.All(g => Evaluator.Eval(g, assignment) != false))
-                    return assignment;
-            return null;
+            {
+                var (status, assignment) = new Z3Encoder(integral).Solve(goals);
+                if (status == Status.UNSATISFIABLE && !integral) return SolveResult.Unsat;
+                if (status == Status.UNKNOWN) return SolveResult.Unknown("o Z3 não decidiu (UNKNOWN)");
+                if (assignment is null) continue;
+                if (goals.All(g => Evaluator.Eval(g, assignment) != false)) return SolveResult.Sat(assignment);
+                unconfirmed = true;
+            }
+            return unconfirmed ? SolveResult.Unknown("o modelo do Z3 não se confirmou com os valores arredondados") : SolveResult.Unsat;
         }
         catch (Exception ex) when (ex is DllNotFoundException or TypeInitializationException or BadImageFormatException or Z3Exception or EntryPointNotFoundException)
         {
             Z3Error = ex.Message;
-            return null;
+            return SolveResult.Unknown($"Z3 indisponível ({ex.Message})");
         }
     }
 
@@ -51,6 +69,18 @@ public sealed class ConstraintSolver
         if (format == false) return Values.Fill("email-invalido", length);
         return Values.Fill(Values.SampleText(v), length, email: format == true || (format is null && Values.IsEmailField(v)));
     }
+}
+
+public enum Feasibility { Sat, Unsat, Unknown }
+
+/// <summary>Resposta do solver: SAT (com valores), UNSAT ou UNKNOWN (com o motivo). Falha de análise nunca vira UNSAT.</summary>
+public sealed record SolveResult(Feasibility Status, Assignment? Assignment, string? Reason)
+{
+    public static SolveResult Unsat { get; } = new(Feasibility.Unsat, null, null);
+
+    public static SolveResult Sat(Assignment assignment) => new(Feasibility.Sat, assignment, null);
+
+    public static SolveResult Unknown(string reason) => new(Feasibility.Unknown, null, reason);
 }
 
 /// <summary>Domínio de uma variável durante a busca.</summary>
@@ -88,6 +118,9 @@ internal sealed class DomainSolver
 {
     private const int Budget = 50_000;
     private int _steps;
+
+    /// <summary>A busca parou no limite de passos: "sem solução" não é prova de UNSAT.</summary>
+    public bool Exhausted => _steps > Budget;
 
     private sealed class State
     {
@@ -263,6 +296,12 @@ internal sealed class DomainSolver
             if (exactNow && effective != "!=") alt.Add(new PNum(v, "!=", number));
             yield return alt;
         }
+        else
+        {
+            // Comparação que o domínio não modela (bool com número, texto com comprimento...): suposição, nunca UNSAT.
+            yield return [new PAssume($"cmp:{v.Key}{effective}{c.Display}", true)];
+            yield break;
+        }
 
         // null != x é verdadeiro; null == x e as comparações com null são falsas (alternativa por último).
         if (v.Nullable && (effective == "!=" || (!positive && op is "<" or "<=" or ">" or ">=")))
@@ -299,6 +338,7 @@ internal sealed class DomainSolver
                 var d = state.Of(w.Var);
                 if (d.Whitespace is { } value && value != w.Value) return false;
                 if (w.Value && d.Format == true) return false;
+                if (d.Text is { } fixedText && !WhitespaceConsistent(fixedText, w.Value)) return false;
                 d.Whitespace = w.Value;
                 return Feasible(w.Var, d);
             }
@@ -327,6 +367,7 @@ internal sealed class DomainSolver
                 {
                     if (d.Text is { } text && text != t.Value) return false;
                     if (d.NotText.Contains(t.Value)) return false;
+                    if (d.Whitespace is { } whitespace && !WhitespaceConsistent(t.Value, whitespace)) return false;
                     d.Text = t.Value;
                 }
                 else
@@ -357,6 +398,10 @@ internal sealed class DomainSolver
         }
         return false;
     }
+
+    /// <summary>Texto fixo compatível com "só espaços" (true) ou "não só espaços" (false; o vazio não é "só espaços").</summary>
+    private static bool WhitespaceConsistent(string text, bool whitespace) =>
+        whitespace ? text.Length > 0 && string.IsNullOrWhiteSpace(text) : text.Length == 0 || !string.IsNullOrWhiteSpace(text);
 
     private static void Tighten(Domain d, decimal value, bool open, bool lower)
     {
@@ -485,7 +530,7 @@ internal sealed class Z3Encoder(bool integralDecimals = false)
     private readonly Dictionary<Var, List<(string Text, BoolExpr Flag)>> _texts = [];
     private readonly Dictionary<string, BoolExpr> _assumptions = [];
 
-    public Assignment? Solve(List<Pred> goals)
+    public (Status Status, Assignment? Assignment) Solve(List<Pred> goals)
     {
         using var ctx = new Context();
         _ctx = ctx;
@@ -493,10 +538,19 @@ internal sealed class Z3Encoder(bool integralDecimals = false)
         foreach (var goal in goals) opt.Assert(Encode(goal));
 
         foreach (var v in _vars.ToList()) Domain(opt, v);
-        foreach (var flags in _texts.Values)
+        foreach (var (v, flags) in _texts)
+        {
             for (var i = 0; i < flags.Count; i++)
                 for (var j = i + 1; j < flags.Count; j++)
                     if (flags[i].Text != flags[j].Text) opt.Assert(ctx.MkNot(ctx.MkAnd(flags[i].Flag, flags[j].Flag)));
+            // O texto escolhido fixa o comprimento e se é só espaços.
+            foreach (var (text, flag) in flags)
+            {
+                if (_consts.ContainsKey($"len|{v.Key}")) opt.Assert(ctx.MkImplies(flag, ctx.MkEq(Len(v), ctx.MkInt(text.Length))));
+                if (_consts.ContainsKey($"ws|{v.Key}"))
+                    opt.Assert(ctx.MkImplies(flag, text.Length > 0 && string.IsNullOrWhiteSpace(text) ? Flag("ws", v) : ctx.MkNot(Flag("ws", v))));
+            }
+        }
         // Preferências em ordem de prioridade (o Z3 combina os objetivos na ordem em que aparecem):
         // valores não negativos no payload, decimais inteiros, o valor padrão e, por fim, o mais perto dele.
         foreach (var v in _vars.Where(v => v.Origin == VarOrigin.Input && _consts.ContainsKey($"num|{v.Key}") && v.Kind is VarKind.Int or VarKind.Decimal))
@@ -510,8 +564,8 @@ internal sealed class Z3Encoder(bool integralDecimals = false)
             opt.MkMinimize(_ctx.MkITE(_ctx.MkGe(x, d), _ctx.MkSub(x, d), _ctx.MkSub(d, x)));
         }
 
-        if (opt.Check() != Status.SATISFIABLE) return null;
-        return Read(opt.Model);
+        var status = opt.Check();
+        return status == Status.SATISFIABLE ? (status, Read(opt.Model)) : (status, null);
     }
 
     private BoolExpr Encode(Pred p) => p switch

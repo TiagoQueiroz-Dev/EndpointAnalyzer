@@ -619,8 +619,29 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
     {
         if (_callerPaths.TryGetValue(method, out var cached)) return cached;
         _callerPaths[method] = Scenarios.Pred.True; // ciclos
-        var path = CallSiteOf(method) is { } site ? PathOf(site.Syntax, site.Caller) : Scenarios.Pred.True;
+        var path = CallSiteOf(method) is { } site
+            ? Scenarios.Pred.Or(EquivalentCallSites(method, site.Syntax, site.Caller).Select(s => PathOf(s, site.Caller)))
+            : Scenarios.Pred.True;
         return _callerPaths[method] = path;
+    }
+
+    /// <summary>
+    /// Chamadas do mesmo método, no mesmo chamador e com os mesmos argumentos (if (x) Validar(a); else Validar(a);): o
+    /// grafo analisa o método uma vez só, mas o trecho executa por qualquer uma delas.
+    /// </summary>
+    private static IEnumerable<SyntaxNode> EquivalentCallSites(AnalyzedMethod method, SyntaxNode first, AnalyzedMethod caller)
+    {
+        static string Call(SyntaxNode syntax) => syntax switch
+        {
+            InvocationExpressionSyntax inv => $"{inv.Expression.Compact()}{inv.ArgumentList.Compact()}",
+            _ => syntax.Compact(),
+        };
+        var text = Call(first);
+        yield return first;
+        foreach (var other in caller.CallSites)
+            if (other.Syntax != first && other.Node.AlreadyVisited && other.Message is null
+                && other.Node.MethodName == method.Node.MethodName && other.Node.TypeName == method.Node.TypeName && Call(other.Syntax) == text)
+                yield return other.Syntax;
     }
 
     private Pred Local(SyntaxNode node, AnalyzedMethod method)

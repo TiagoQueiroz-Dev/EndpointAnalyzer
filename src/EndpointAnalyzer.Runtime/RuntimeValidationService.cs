@@ -39,8 +39,11 @@ public partial class RuntimeValidationService(RuntimeOptions options, IAppRunner
         ScenarioExecutor? executor = null;
         try
         {
-            if (!model.CanMaterialize || model.Matrix.Scenarios.Count == 0)
-                throw new RuntimeStartException("A matriz candidata está vazia: não há cenários para validar.");
+            var executable = model.Matrix.Scenarios.Count(s => s.NoPayload is null);
+            if (!model.CanMaterialize || executable == 0)
+                throw new RuntimeStartException("A matriz candidata não tem cenários com payload: não há o que validar.");
+            if (executable < model.Matrix.Scenarios.Count)
+                report.Notes.Add($"{model.Matrix.Scenarios.Count - executable} linha(s) da matriz sem payload (nenhuma entrada gerada alcança a folha): ficam fora da execução.");
 
             // Fase 2: runtime só com IA.
             var catalog = await EndpointCatalog.BuildAsync(solution, analysis.Endpoint, cancellationToken);
@@ -57,8 +60,8 @@ public partial class RuntimeValidationService(RuntimeOptions options, IAppRunner
             var context = new ScenarioContext(report);
             var scenarios = Select(model.Matrix);
             report.Stats.Scenarios = scenarios.Count;
-            if (scenarios.Count < model.Matrix.Scenarios.Count)
-                report.Notes.Add($"Validados {scenarios.Count} de {model.Matrix.Scenarios.Count} cenários (Runtime:MaxScenarios).");
+            if (scenarios.Count < executable)
+                report.Notes.Add($"Validados {scenarios.Count} de {executable} cenários com payload (Runtime:MaxScenarios).");
 
             // Fase 3: requisitos de dados do payload completo e de cada cenário.
             report.Requirements = await new ScenarioRequirementPlanner(runtimeAi).PlanAsync(analysis, model.Matrix, scenarios, catalog, report.Notes, cancellationToken);
@@ -114,11 +117,12 @@ public partial class RuntimeValidationService(RuntimeOptions options, IAppRunner
         return report;
     }
 
-    /// <summary>Caminho feliz primeiro (baseline), depois validações, regras, limites e variações de sucesso.</summary>
+    /// <summary>Caminho feliz primeiro (baseline), depois validações, regras, limites e variações de sucesso. Linhas sem payload ficam de fora.</summary>
     private List<Scenario> Select(ScenarioMatrix matrix)
     {
         var order = new[] { ScenarioKinds.Validation, ScenarioKinds.Rule, ScenarioKinds.Boundary, ScenarioKinds.Success };
         return matrix.Scenarios
+            .Where(s => s.NoPayload is null)
             .OrderBy(s => s.Kind == ScenarioKinds.Success && s.Focus is null ? -1 : Array.IndexOf(order, s.Kind))
             .Take(Math.Max(1, options.MaxScenarios))
             .ToList();

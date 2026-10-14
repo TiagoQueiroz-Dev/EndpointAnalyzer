@@ -263,7 +263,7 @@ internal sealed class ScenarioExplorer(
         if (outside.Count > 0)
             return match with { Reasons = [.. match.Reasons, $"Isolamento: o payload também muda {string.Join(", ", outside)}, fora da condição do cenário; mude só os campos da condição."] };
 
-        var rivals = model.Matrix.Scenarios.Where(s => s.Id != scenario.Id && s.Expected.Outcome == "erro" && s.Expected.HttpStatus == status).ToList();
+        var rivals = model.Matrix.Scenarios.Where(s => s.Id != scenario.Id && s.NoPayload is null && s.Expected.Outcome == "erro" && s.Expected.HttpStatus == status).ToList();
         if (rivals.Any(r => r.Expected.Messages.Any(x => !string.IsNullOrWhiteSpace(x)) && OutcomeMatcher.ExplainedBy(r.Expected, execution))) return match;
         var shared = rivals.Where(r => changed.Any(f => Touches(model.FocusVariables(r.Id, baseline.Materialization), f))).Select(r => r.Id).ToList();
         if (shared.Count > 0)
