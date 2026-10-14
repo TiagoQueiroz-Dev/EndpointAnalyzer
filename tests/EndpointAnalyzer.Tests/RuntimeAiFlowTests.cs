@@ -58,10 +58,8 @@ public class RuntimeAiFlowTests(SampleSolutionFixture fixture)
         Assert.True(Status(s => s.Expected.Messages.Contains("Veículo não encontrado.")) == ScenarioValidationStatuses.Confirmed, Why(s => s.Expected.Messages.Contains("Veículo não encontrado.")));
         Assert.Equal(ScenarioValidationStatuses.Confirmed, Status(s => s.Expected.Messages.Any(m => m.StartsWith("Data inválida"))));
 
-        // Limites de sucesso: o baseline deixou o veículo 1 indisponível; a exploração criou outro veículo.
-        foreach (var boundary in statics.Where(s => s.Kind == ScenarioKinds.Boundary))
-            Assert.True(byId[boundary.Id].Status == ScenarioValidationStatuses.Confirmed, $"{boundary.Id}: {Why(s => s.Id == boundary.Id)}");
-        Assert.Contains(runtime.Executions, e => e is { Phase: RuntimePhases.Exploration, Method: "POST", Url: "/api/veiculos" });
+        // Limites e classes de entrada não são desfechos: a matriz não tem cenários só para eles.
+        Assert.DoesNotContain(statics, s => s.Kind == ScenarioKinds.Boundary);
 
         // FluentValidation sem validação automática: a análise estática previa 400, mas o fluxo segue para o service.
         // Nunca é confirmado. A primeira declaração de inalcançável não basta (1 execução): a IA recebe o que falta e

@@ -20,28 +20,34 @@ public interface IScenarioGenerator
 /// <summary>Limites da geração de cenários.</summary>
 public sealed class ScenarioGenerationOptions
 {
-    /// <summary>Máximo de cenários por endpoint: as obrigações que ficarem de fora aparecem como não cobertas (limite).</summary>
-    public int MaxScenarios { get; set; } = ScenarioGenerator.MaxScenarios;
-
-    /// <summary>Iterações cobertas nos laços sobre coleções do payload (zero, uma e várias). Não é enumeração exaustiva.</summary>
-    public IReadOnlyList<int> LoopIterations { get; set; } = [0, 1, 2];
+    /// <summary>
+    /// Máximo de caminhos de execução explorados por endpoint. No limite, os desfechos sem caminho encontrado ficam
+    /// UNKNOWN (nunca UNSAT) e a matriz avisa.
+    /// </summary>
+    public int MaxPaths { get; set; } = ScenarioGenerator.MaxPaths;
 }
 
 /// <summary>
-/// Fase 4 (tecnologias-fases-geracao-payloads.md): gera a matriz de cenários a partir dos desfechos alcançáveis do fluxo
-/// (EndpointAnalyzer_Arvore_Geracao_Cenarios.md), e não de candidatos de teste:
+/// Fase 4 (tecnologias-fases-geracao-payloads.md): gera a matriz de cenários a partir dos desfechos reais do endpoint
+/// (EndpointAnalyzer_Arvore_Geracao_Cenarios.md), e não de condições ou obrigações de cobertura:
 /// <list type="number">
-/// <item>Árvore lógica da execução: entrada HTTP, validações antes da action, decisões, efeitos e folhas (<see cref="FlowTreeBuilder"/>).</item>
-/// <item>Folhas distintas pelo ponto semântico do código (<see cref="TerminalOutcomeCollector"/>).</item>
-/// <item>Viabilidade de cada folha: SAT, UNSAT ou UNKNOWN (<see cref="PathFeasibilityService"/>).</item>
-/// <item>Obrigações de cobertura (desfecho, classe, limite, ramo, laço) e seleção gulosa de cenários (<see cref="CoveragePlanner"/>).</item>
+/// <item>Fluxo de controle interprocedural (<see cref="FlowModel"/>): regras, returns (do endpoint e de métodos internos)
+/// e efeitos na ordem do código, com o valor devolvido pelos métodos chamados propagado às condições do chamador
+/// (<see cref="SymbolicResolver"/>).</item>
+/// <item>Pontos reais de encerramento: validação de entrada, tipo do JSON, regra que encerra com erro, return do
+/// endpoint e resposta final (<see cref="TerminalOutcomeCollector.Points"/>).</item>
+/// <item>Caminhos de execução até eles, com o solver podando os contraditórios (<see cref="ExecutionPathExplorer"/>).</item>
+/// <item>Desfechos distintos: ponto de encerramento + efeitos executados; viabilidade SAT, UNSAT ou UNKNOWN
+/// (<see cref="TerminalOutcomeCollector.Group"/>).</item>
+/// <item>Um cenário por desfecho: o payload resolve as restrições de um caminho até ele e só vale se a simulação do
+/// fluxo com esses valores chega ao mesmo desfecho.</item>
 /// </list>
-/// Cada cenário é resolvido pelo solver (o Z3 só nas restrições complexas), o resultado esperado vem da simulação do fluxo
-/// com os valores encontrados e só conta como cobertura se a simulação atinge a folha-alvo.
+/// Classes de equivalência, limites, ramos que não mudam o desfecho e iterações de laço não geram cenários: não são
+/// desfechos. O desfecho sem entrada que o alcance entra na matriz sem payload, com o motivo.
 /// </summary>
 public partial class ScenarioGenerator(ScenarioGenerationOptions? options = null) : IScenarioGenerator
 {
-    public const int MaxScenarios = 80;
+    public const int MaxPaths = 512;
 
     private readonly ScenarioGenerationOptions _options = options ?? new ScenarioGenerationOptions();
 
@@ -68,8 +74,7 @@ public partial class ScenarioGenerator(ScenarioGenerationOptions? options = null
         }
     }
 
-    private sealed record Candidate(string Kind, string Technique, string Title, List<Pred> Constraints, ScenarioFocus? Focus = null, bool HidePreconditions = false,
-        string? Note = null);
+    private sealed record Candidate(string Kind, string Technique, string Title, ScenarioFocus? Focus = null, bool HidePreconditions = false);
 
     private sealed record Outcome(
         bool Success,
@@ -93,6 +98,8 @@ public partial class ScenarioGenerator(ScenarioGenerationOptions? options = null
 
     internal sealed partial class Run
     {
+        private const string HappyTitle = "Caminho feliz: todos os dados válidos e nenhuma regra bloqueia";
+
         private readonly EndpointAnalysisContext _context;
         private readonly InputModel _input;
         private readonly VarTable _vars;
@@ -105,6 +112,7 @@ public partial class ScenarioGenerator(ScenarioGenerationOptions? options = null
         private readonly ConstraintSolver _solver = new();
         private readonly PayloadBuilder _payload;
         private readonly Pred _validationsOk;
+        private readonly InputField? _mismatch;
         private readonly List<CodeRule> _rules;
         private readonly List<EarlyExit> _exits;
         private readonly Dictionary<string, SolveResult> _solved = [];
@@ -113,25 +121,17 @@ public partial class ScenarioGenerator(ScenarioGenerationOptions? options = null
         /// <summary>Restrições, valores e simulação de cada cenário gerado (por id), para a materialização em runtime.</summary>
         private readonly Dictionary<string, Entry> _entries = [];
 
-        // ---- Árvore e cobertura (preenchidas por Execute) ----
-        private List<TerminalOutcome> _leaves = [];
+        // ---- Pontos de encerramento e desfechos (preenchidos por Execute) ----
+        private List<TerminalPoint> _points = [];
+        private List<TerminalOutcome> _outcomes = [];
         private TerminalOutcome? _principal;
-        private readonly Dictionary<ValidationRule, TerminalOutcome> _byValidation = [];
-        private readonly Dictionary<CodeRule, TerminalOutcome> _byRule = [];
-        private readonly Dictionary<EarlyExit, TerminalOutcome> _byExit = [];
-        private readonly Dictionary<CoverageTarget, bool> _isolable = [];
-        private PathFeasibilityService? _feasibility;
         private Entry? _principalEntry;
-
-        /// <summary>Payload gerado para a variação de ramo equivalente ao caminho principal: vira a linha da folha dela.</summary>
-        private readonly Dictionary<TerminalOutcome, Entry> _equivalentEntries = [];
+        private readonly Dictionary<ValidationRule, TerminalPoint> _byValidation = [];
+        private readonly Dictionary<CodeRule, TerminalPoint> _byRule = [];
+        private readonly Dictionary<EarlyExit, TerminalPoint> _byExit = [];
 
         private sealed record Entry(Scenario Scenario, List<Pred> Constraints, bool HidePreconditions, Assignment Assignment, Outcome Outcome,
-            InputField? MismatchField, CoverageTarget? Target = null);
-
-        /// <summary>Restrições do caminho feliz (escolhas gulosas legíveis), ramos ativados e como cada saída foi evitada.</summary>
-        private sealed record Plan(List<Pred> Happy, List<Pred> Branches, Dictionary<EarlyExit, Pred> Avoidance,
-            List<(DecisionCondition Condition, Func<Assignment, Outcome, bool?> Value)> Conditions);
+            InputField? MismatchField, TerminalOutcome? Leaf = null);
 
         public Run(EndpointAnalysisContext context, InputModel input, VarTable vars, SymbolicResolver resolver,
             List<ValidationRule> validations, FlowModel flow, ExceptionStatusMap solution, string endpoint, ScenarioGenerationOptions options)
@@ -147,9 +147,10 @@ public partial class ScenarioGenerator(ScenarioGenerationOptions? options = null
             _options = options;
             _payload = new PayloadBuilder(input, vars, solution.EnumsAsStrings);
             _validationsOk = Pred.And(validations.Select(v => Pred.Not(v.Violation)));
-            // if (!ModelState.IsValid) return ...: com validações, os cenários de validação já cobrem.
-            _rules = flow.Rules.Where(r => !(r.IsModelStateCheck && validations.Count > 0)).ToList();
-            // Saída antecipada só importa quando impede algum efeito ou regra (return false num helper não muda nada).
+            _mismatch = MismatchField();
+            // if (!ModelState.IsValid) return ...: o encerramento das validações e do tipo inválido no JSON, não um desfecho à parte.
+            _rules = flow.Rules.Where(r => !(r.IsModelStateCheck && (validations.Count > 0 || _mismatch is not null))).ToList();
+            // Return interno só importa quando impede algum efeito ou regra (return false num helper não muda nada).
             _exits = flow.Exits.Where(x => x.InEntry || flow.Effects.Any(e => FlowModel.Blocks(x, e.Site.Order)) || _rules.Any(r => FlowModel.Blocks(x, r.Site.Order))).ToList();
         }
 
@@ -157,84 +158,53 @@ public partial class ScenarioGenerator(ScenarioGenerationOptions? options = null
 
         public ScenarioMatrix Execute()
         {
-            // Fase 1 e 2: fluxo, árvore lógica e folhas.
-            var happy = HappyConstraints(out var branches, out var avoidance);
-            var context = new FlowContext(_endpoint, _input, _vars, _flow, _validations, _validationsOk, _rules, _exits, branches, MismatchField(), _options.LoopIterations);
-            _leaves = TerminalOutcomeCollector.Collect(context, Label);
-            var tree = FlowTreeBuilder.Build(context, _leaves);
-            _principal = _leaves.First(l => l is { Kind: TerminalKinds.Success, Flipped: null });
-            foreach (var leaf in _leaves)
+            // Fase 1 e 2: fluxo de controle, pontos reais de encerramento e os caminhos até eles.
+            var context = new FlowContext(_endpoint, _input, _vars, _flow, _validations, _validationsOk, _rules, _exits, _mismatch, Math.Max(1, _options.MaxPaths));
+            _points = TerminalOutcomeCollector.Points(context, Label);
+            foreach (var point in _points)
             {
-                if (leaf.Validation is { } validation) _byValidation[validation] = leaf;
-                foreach (var rule in leaf.Rules) _byRule[rule] = leaf;
-                foreach (var exit in leaf.Exits) _byExit[exit] = leaf;
+                if (point.Validation is { } validation) _byValidation[validation] = point;
+                foreach (var rule in point.Rules) _byRule[rule] = point;
+                if (point.Exit is { } exit) _byExit[exit] = point;
             }
+            var explorer = new ExecutionPathExplorer(context, _points, Check);
+            explorer.Explore();
 
-            // Fase 3: viabilidade de cada folha (SAT, UNSAT ou UNKNOWN).
-            _feasibility = new PathFeasibilityService(context, Check);
-            _feasibility.EvaluateAll(_leaves);
-            ModelStateLeaves();
+            // Fase 3: desfechos distintos (ponto + efeitos) e a viabilidade de cada um.
+            _outcomes = TerminalOutcomeCollector.Group(_points, explorer.Paths);
+            foreach (var outcome in _outcomes) Evaluate(outcome, explorer);
+            var tree = FlowTreeBuilder.Build(context, _outcomes);
+            _principal = _outcomes.FirstOrDefault(o => o is { Kind: TerminalKinds.Success, IsVariant: false, Paths.Count: > 0 })
+                ?? _outcomes.FirstOrDefault(o => o is { Kind: TerminalKinds.Exit, IsVariant: false, Paths.Count: > 0 });
 
-            // Fase 4: obrigações e seleção gulosa.
-            var conditions = DecisionConditions(branches);
-            var plan = new Plan(happy, branches, avoidance, conditions);
-            var targets = CoveragePlanner.Targets(context, _leaves);
-            foreach (var target in targets)
-                if (target.Anchor.Feasibility == Feasibility.Unsat || target.Leaf?.Feasibility == Feasibility.Unsat)
-                {
-                    target.Status = CoverageStatuses.Infeasible;
-                    target.Reason = (target.Leaf ?? target.Anchor).Reason;
-                }
-                else if ((target.Leaf ?? target.Anchor).EquivalentTo is not null)
-                {
-                    target.Status = CoverageStatuses.Equivalent;
-                    target.Reason = (target.Leaf ?? target.Anchor).Reason;
-                }
-                else if (target.Predicate is { } predicate && Check([predicate]).Status == Feasibility.Unsat)
-                {
-                    // null numa referência não anulável é possível no JSON: limitação do modelo, não prova de impossibilidade.
-                    var unmodeled = PathFeasibilityService.UnmodeledNull(predicate);
-                    target.Status = unmodeled ? CoverageStatuses.Pending : CoverageStatuses.Infeasible;
-                    target.Reason = unmodeled
-                        ? "null num campo de tipo não anulável: o model binding aceita null no JSON, mas o gerador de payload não produz esse valor"
-                        : "a classe ou o limite não é possível com o tipo do campo";
-                }
-
-            var selected = new List<Entry>();
-            var truncated = CoveragePlanner.Select(targets, selected, _options.MaxScenarios, Covers, t => Generate(t, plan));
-
-            // Fase 5: uma linha por folha. A folha que nenhum cenário atinge (equivalente a outra, inviável, não decidida
-            // ou cortada pelo limite) entra mesmo assim: com o payload da folha equivalente, gerada agora ou sem payload.
-            var rows = selected.Select(e => new Row(e.Scenario, e, TerminalOf(e), e.Target!.Key)).ToList();
-            foreach (var leaf in _leaves.Where(l => rows.All(r => r.Leaf != l)).ToList())
-                rows.Add(LeafRow(leaf, targets, plan, rows));
+            // Fase 4: um cenário por desfecho. O principal primeiro: o tipo inválido no JSON parte do payload dele.
+            var conditions = DecisionConditions(BranchLiterals(explorer.Paths));
+            var rows = new List<Row>();
+            foreach (var outcome in _outcomes.OrderBy(o => o == _principal ? 0 : 1)) rows.Add(RowOf(outcome, conditions));
 
             // Identidade e ordem de exibição.
-            var order = new[] { ScenarioKinds.Success, ScenarioKinds.Validation, ScenarioKinds.Rule, ScenarioKinds.Boundary };
-            rows = rows.OrderBy(r => Array.IndexOf(order, r.Scenario.Kind)).ToList();
+            var order = new[] { ScenarioKinds.Success, ScenarioKinds.Validation, ScenarioKinds.Rule };
+            rows = rows.OrderBy(r => r.Leaf == _principal ? -1 : Array.IndexOf(order, r.Scenario.Kind)).ToList();
             for (var i = 0; i < rows.Count; i++)
             {
-                var (scenario, entry, leaf, key) = rows[i];
+                var (scenario, entry, leaf) = rows[i];
                 scenario.Id = $"CEN-{i + 1:00}";
-                scenario.Key = ScenarioKey.Of(_endpoint, key);
+                scenario.Key = ScenarioKey.Of(_endpoint, leaf.Key);
                 scenario.Terminal = leaf.Key;
                 scenario.Feasibility = leaf.Feasibility switch { Feasibility.Sat => PathFeasibilities.Sat, Feasibility.Unsat => PathFeasibilities.Unsat, _ => PathFeasibilities.Unknown };
                 if (entry is not null) _entries[scenario.Id] = entry;
             }
-            foreach (var row in rows)
-                if (row.Leaf.EquivalentTo is { } other && rows.FirstOrDefault(r => r.Leaf == other) is { } same)
-                {
-                    row.Scenario.EquivalentTo = same.Scenario.Id;
-                    row.Scenario.Notes = [.. row.Scenario.Notes ?? [], $"Mesmo resultado de {same.Scenario.Id}: {row.Leaf.Reason ?? "mesma resposta e mesmos efeitos"}."];
-                }
 
-            var scenarios = rows.Select(r => r.Scenario).ToList();
             CodeConditionNotes();
-            if (truncated)
-                _notes.Add($"Limite de {_options.MaxScenarios} cenários atingido: {targets.Count(t => t.Status == CoverageStatuses.Truncated)} variação(ões) (classe, limite, ramo ou laço) ficaram sem cenário. Toda folha do fluxo continua com linha na matriz.");
-            if (_options.LoopIterations.Count > 0 && targets.Any(t => t.Kind == CoverageTargetKinds.Loop))
-                _notes.Add($"Laços cobertos com {string.Join(", ", _options.LoopIterations.Distinct().Order())} iteração(ões): outras quantidades não são enumeradas.");
-
+            if (!rows.Any(r => r.Leaf.Success && r.Entry is not null) && _outcomes.FirstOrDefault(o => o.Kind == TerminalKinds.Success) is { Reason: { } blocked })
+                _notes.Add($"Nenhum caminho de sucesso: {blocked}.");
+            if (explorer.Truncated)
+                _notes.Add($"Limite de {context.MaxPaths} caminhos de execução atingido: desfechos sem caminho encontrado ficaram como não decididos (UNKNOWN), não como inalcançáveis.");
+            // Classe de entrada sem desfecho próprio: avisada, não vira cenário.
+            foreach (var field in ValidationRuleExtractor.RequiredWithoutEffect(_input))
+                if (field.Kind is VarKind.Int or VarKind.Decimal or VarKind.Enum or VarKind.Guid && SymbolicResolver.DefaultOf(field.Type) is { Number: { } number } value)
+                    _notes.Add($"{FieldName(field)}: [Required] não tem efeito em {field.TypeDisplay} não anulável (ausente no JSON, chega como "
+                        + $"{(field.Kind == VarKind.Guid ? value.Display : number.ToString(CultureInfo.InvariantCulture))} e segue o caminho principal); não é um desfecho próprio.");
             if (_solver.Z3Error is { } z3) _notes.Add($"Z3 indisponível ({z3}): restrições com mais de uma variável ficaram sem cenário.");
             if (!_solution.FluentAutoValidation && _validations.Any(v => v.Origin == "FluentValidation"))
                 _notes.Add("Validação automática do FluentValidation (AddFluentValidationAutoValidation) não encontrada: confira se o validator é executado antes da action.");
@@ -245,425 +215,236 @@ public partial class ScenarioGenerator(ScenarioGenerationOptions? options = null
             {
                 Inputs = Inputs(),
                 Conditions = conditions.Select(c => c.Condition).ToList(),
-                Scenarios = scenarios,
+                Scenarios = rows.Select(r => r.Scenario).ToList(),
                 Notes = _notes.Distinct().ToList(),
                 EnumsAsStrings = _solution.EnumsAsStrings,
                 Flow = tree.ToInfo(),
             };
         }
 
-        /// <summary>Linha da matriz: o cenário, as restrições (nulas quando não há payload), a folha que atinge e a chave da identidade.</summary>
-        private sealed record Row(Scenario Scenario, Entry? Entry, TerminalOutcome Leaf, string Key);
-
-        /// <summary>Folha que o cenário atinge.</summary>
-        private TerminalOutcome TerminalOf(Entry entry) => entry.MismatchField is not null ? entry.Target!.Leaf! : LeafOf(entry.Outcome, entry.Assignment);
+        /// <summary>Linha da matriz: o cenário, as restrições (nulas quando não há payload) e o desfecho que ele atinge.</summary>
+        private sealed record Row(Scenario Scenario, Entry? Entry, TerminalOutcome Leaf);
 
         /// <summary>
-        /// Linha da folha que nenhum cenário selecionado atinge:
-        /// <list type="number">
-        /// <item>cortada pelo limite de cenários: gerada agora (o limite vale para as variações, nunca para as folhas);</item>
-        /// <item>equivalente a outra folha: o payload que a atinge (o da variação de ramo, ou o da folha equivalente);</item>
-        /// <item>senão, sem payload, com o motivo (caminho contraditório, condição não decidida, combinação não encontrada).</item>
-        /// </list>
+        /// SAT: algum caminho é satisfazível (UNKNOWN se o desfecho depende de supor uma condição não traduzida); UNKNOWN:
+        /// o solver não decidiu; UNSAT: nenhum caminho chega ao ponto (com o motivo).
         /// </summary>
-        private Row LeafRow(TerminalOutcome leaf, List<CoverageTarget> targets, Plan plan, List<Row> rows)
+        private void Evaluate(TerminalOutcome outcome, ExecutionPathExplorer explorer)
         {
-            var own = targets.Where(t => t.Leaf == leaf).OrderBy(t => t.Kind == CoverageTargetKinds.Outcome ? 0 : 1).FirstOrDefault();
-            if (own is { Status: CoverageStatuses.Truncated })
+            var sat = outcome.Paths.FirstOrDefault(p => p.Result.Status == Feasibility.Sat);
+            if (sat is not null)
             {
-                var (item, status, reason) = Generate(own, plan);
-                if (item is not null && TerminalOf(item) == leaf)
+                outcome.Paths.Remove(sat);
+                outcome.Paths.Insert(0, sat);
+                outcome.Feasibility = Feasibility.Sat;
+                outcome.Aggregated = sat.Aggregated;
+                outcome.Reason = sat.Aggregated ? sat.Reason : null;
+                var opaque = sat.Decisive.SelectMany(d => Evaluator.Atoms(Expand(d.Pred))).OfType<OpaquePred>().Select(o => o.Text).Distinct().ToList();
+                if (opaque.Count > 0)
                 {
-                    own.Status = CoverageStatuses.Covered;
-                    return new Row(item.Scenario, item, leaf, own.Key);
+                    // Há valores, mas eles dependem de supor o resultado de uma condição que não foi traduzida.
+                    outcome.Feasibility = Feasibility.Unknown;
+                    outcome.Reason = $"depende de condição não traduzida: {string.Join("; ", opaque)} (o cenário supõe o valor, sem prova)";
                 }
-                own.Status = status ?? (leaf.Feasibility == Feasibility.Unknown ? CoverageStatuses.Pending : CoverageStatuses.Uncovered);
-                own.Reason = reason;
+                return;
             }
-
-            if (leaf.EquivalentTo is { } other
-                && (_equivalentEntries.GetValueOrDefault(leaf) ?? rows.FirstOrDefault(r => r.Leaf == other && r.Entry is not null)?.Entry) is { } source)
+            if (outcome.Paths.FirstOrDefault(p => p.Result.Status == Feasibility.Unknown) is { } unknown)
             {
-                var scenario = System.Text.Json.JsonSerializer.Deserialize<Scenario>(System.Text.Json.JsonSerializer.Serialize(source.Scenario))!;
-                (scenario.Kind, scenario.Title, scenario.Focus) = (KindOf(leaf), TitleOf(leaf), FocusOf(leaf));
-                return new Row(scenario, source with { Scenario = scenario, Target = own }, leaf, leaf.Key);
+                outcome.Feasibility = Feasibility.Unknown;
+                outcome.Reason = unknown.Reason ?? unknown.Result.Reason ?? "o solver não decidiu o caminho";
+                return;
+            }
+            outcome.Feasibility = explorer.Truncated ? Feasibility.Unknown : Feasibility.Unsat;
+            outcome.Reason = outcome.Paths.FirstOrDefault()?.Reason ?? explorer.UnreachableReason(outcome.Point);
+            outcome.Paths.Clear();
+        }
+
+        /// <summary>
+        /// Cenário do desfecho: resolve as restrições de um caminho até ele (primeiro na forma legível, depois na exata) e
+        /// só aceita o payload cuja simulação chega ao mesmo desfecho. Sem isso, a linha fica sem payload, com o motivo.
+        /// </summary>
+        private Row RowOf(TerminalOutcome outcome, List<(DecisionCondition Condition, Func<Assignment, Outcome, bool?> Value)> conditions)
+        {
+            if (outcome.Kind == TerminalKinds.Binding)
+            {
+                var (mismatch, reason) = Mismatch(outcome, conditions);
+                return mismatch is not null ? new Row(mismatch.Scenario, mismatch, outcome) : new Row(WithoutPayload(outcome, reason, conditions), null, outcome);
             }
 
-            return new Row(WithoutPayload(leaf, own, plan), null, leaf, leaf.Key);
+            string? miss = null;
+            foreach (var path in outcome.Paths.Take(4))
+            {
+                var exact = path.Constraints.Select(c => c.Exact).ToList();
+                foreach (var constraints in new[] { Readable(path), exact }.DistinctBy(c => string.Join("|", c.Select(p => p.Key))))
+                {
+                    if (Solve(constraints) is not { } assignment) continue;
+                    var simulated = Simulate(assignment);
+                    var scenario = ToScenario(CandidateOf(outcome, path, assignment), assignment, simulated, conditions);
+                    var entry = new Entry(scenario, constraints, outcome.Point.Validation is not null, assignment, simulated, null, outcome);
+                    if (!Reaches(entry, outcome))
+                    {
+                        miss ??= $"o payload gerado atinge \"{LeafOf(simulated, assignment)?.Label ?? Describe(simulated)}\" em vez de \"{outcome.Label}\"";
+                        continue;
+                    }
+                    if (outcome == _principal) _principalEntry = entry;
+                    return new Row(scenario, entry, outcome);
+                }
+            }
+            var noPayload = miss ?? outcome.Reason ?? "nenhuma combinação de valores satisfaz as restrições do caminho";
+            return new Row(WithoutPayload(outcome, noPayload, conditions), null, outcome);
+        }
+
+        /// <summary>Restrições do caminho com as formas legíveis (¬gatilho em vez de ¬(alcançada ∧ gatilho)) quando continuam satisfazíveis.</summary>
+        private List<Pred> Readable(ExecutionPath path)
+        {
+            var exact = path.Constraints.Select(c => c.Exact).ToList();
+            var chosen = new List<Pred>();
+            for (var i = 0; i < path.Constraints.Count; i++)
+            {
+                var constraint = path.Constraints[i];
+                chosen.Add(constraint.Preferred is { } preferred && Solve([.. chosen, preferred, .. exact.Skip(i + 1)]) is not null ? preferred : constraint.Exact);
+            }
+            return chosen;
+        }
+
+        private Candidate CandidateOf(TerminalOutcome outcome, ExecutionPath path, Assignment assignment)
+        {
+            var point = outcome.Point;
+            switch (point.Kind)
+            {
+                case TerminalKinds.Validation:
+                {
+                    // Um cenário por validação; o título diz qual classe o valor escolhido representa ("placa com 6 caracteres").
+                    var v = point.Validation!;
+                    var probe = v.Probes().FirstOrDefault(p => !p.Valid && Eval(p.Constraint, assignment) == true);
+                    return new Candidate(ScenarioKinds.Validation, probe?.Technique ?? ScenarioTechniques.EquivalencePartitioning, probe?.Label ?? $"{v.FieldName}: {v.Text} violada",
+                        new ScenarioFocus { Expression = v.ViolationCode, Value = true, Detail = probe?.Label }, HidePreconditions: true);
+                }
+                case TerminalKinds.Rule:
+                {
+                    var rule = point.Rules[0];
+                    return new Candidate(ScenarioKinds.Rule, ScenarioTechniques.DecisionTable, $"Regra: {Label(rule)}", new ScenarioFocus { Expression = rule.TriggerCode, Value = true });
+                }
+            }
+            if (outcome == _principal) return new Candidate(ScenarioKinds.Success, ScenarioTechniques.DecisionTable, HappyTitle);
+
+            // Sucesso que não é o principal: o que o distingue do caminho principal (return do endpoint, return interno, ramo de efeito).
+            var cause = Cause(path);
+            var effects = TerminalOutcomeCollector.Describe(outcome.Missing, outcome.Extra, outcome.Effects.Count);
+            var title = point.Kind == TerminalKinds.Exit
+                ? $"{point.Label}{(effects.Length > 0 ? $" ({effects})" : "")}"
+                : $"{(point.Kind == TerminalKinds.Success && _principal?.Point != point ? "Resposta final" : "Sucesso")}{(effects.Length > 0 ? $" {effects}" : "")}{(cause.Count > 0 ? $": {string.Join(" e ", cause.Select(Describe))}" : "")}";
+            var focus = point.Exit is { } exit && _principal?.Point != point
+                ? new ScenarioFocus { Expression = exit.TriggerCode, Value = true }
+                : cause.FirstOrDefault() is { } first ? new ScenarioFocus { Expression = first.Code, Value = first.Value }
+                : new ScenarioFocus { Expression = outcome.Label, Value = true };
+            return new Candidate(ScenarioKinds.Success, ScenarioTechniques.DecisionTable, title, focus);
+        }
+
+        /// <summary>Decisões do caminho que o caminho principal não toma.</summary>
+        private List<Decision> Cause(ExecutionPath path)
+        {
+            var principal = _principal?.Paths.FirstOrDefault()?.Decisive.Select(d => (d.Pred.Key, d.Value)).ToHashSet() ?? [];
+            return path.Decisive.Where(d => !principal.Contains((d.Pred.Key, d.Value))).ToList();
+        }
+
+        /// <summary>"Criar retorna quando request.Rascunho", "request.Itens.Count &gt; 0 falso".</summary>
+        private string Describe(Decision decision)
+        {
+            if (_exits.FirstOrDefault(x => !x.InEntry && x.Trigger.Key == decision.Pred.Key) is { } exit && decision.Value)
+                return $"{exit.Site.Method.Node.MethodName} retorna quando {exit.TriggerCode}";
+            return $"{decision.Code} {(decision.Value ? "verdadeiro" : "falso")}";
+        }
+
+        /// <summary>Condições de efeito em que os caminhos se dividem: os ramos da tabela de decisão.</summary>
+        private List<Pred> BranchLiterals(IEnumerable<ExecutionPath> paths)
+        {
+            var triggers = _rules.Select(r => r.Trigger.Key).Concat(_exits.Select(x => x.Trigger.Key)).Concat(_validations.Select(v => v.Violation.Key)).ToHashSet();
+            return paths.SelectMany(p => p.Decisive).Where(d => !triggers.Contains(d.Pred.Key)).Select(d => d.Pred).DistinctBy(p => p.Key).ToList();
         }
 
         /// <summary>Linha sem payload: o desfecho como o código o declara (status, mensagem, regra), sem simulação.</summary>
-        private Scenario WithoutPayload(TerminalOutcome leaf, CoverageTarget? own, Plan plan)
+        private Scenario WithoutPayload(TerminalOutcome outcome, string? reason, List<(DecisionCondition Condition, Func<Assignment, Outcome, bool?> Value)> conditions)
         {
-            var rule = leaf.Rules.FirstOrDefault();
-            var exit = leaf.Exits.FirstOrDefault();
-            var validation = leaf.Validation;
+            var point = outcome.Point;
+            var rule = point.Rules.FirstOrDefault();
+            var validation = point.Validation;
             var space = _endpoint.IndexOf(' ');
-            var reason = leaf.Feasibility == Feasibility.Sat ? own?.Reason ?? leaf.Reason : leaf.Reason ?? own?.Reason;
             return new Scenario
             {
-                Kind = KindOf(leaf),
-                Technique = leaf.Kind is TerminalKinds.Validation or TerminalKinds.Binding ? ScenarioTechniques.EquivalencePartitioning : ScenarioTechniques.DecisionTable,
-                Title = TitleOf(leaf),
-                Focus = FocusOf(leaf),
+                Kind = KindOf(point),
+                Technique = point.Kind is TerminalKinds.Validation or TerminalKinds.Binding ? ScenarioTechniques.EquivalencePartitioning : ScenarioTechniques.DecisionTable,
+                Title = point switch
+                {
+                    { Kind: TerminalKinds.Rule } => $"Regra: {Label(rule!)}",
+                    { Validation: { } v } => $"{v.FieldName}: {v.Text} violada",
+                    { Kind: TerminalKinds.Success } when outcome == _principal => HappyTitle,
+                    _ => outcome.Label,
+                },
+                Focus = point switch
+                {
+                    { Kind: TerminalKinds.Rule } => new ScenarioFocus { Expression = rule!.TriggerCode, Value = true },
+                    { Validation: { } v } => new ScenarioFocus { Expression = v.ViolationCode, Value = true },
+                    { BindingField: { } field } => new ScenarioFocus { Expression = $"{field.Path} com tipo inválido", Value = true },
+                    { Exit: { } exit } => new ScenarioFocus { Expression = exit.TriggerCode, Value = true },
+                    _ when outcome == _principal => null,
+                    _ => new ScenarioFocus { Expression = outcome.Label, Value = true },
+                },
                 Request = new ScenarioRequest { Method = _endpoint[..space], Url = _endpoint[(space + 1)..] },
                 Expected = new ScenarioExpectation
                 {
-                    Outcome = leaf.Success ? "sucesso" : "erro",
-                    HttpStatus = leaf.Status,
-                    StatusSource = leaf.Kind switch
+                    Outcome = point.Success ? "sucesso" : "erro",
+                    HttpStatus = point.Status,
+                    StatusSource = point.Kind switch
                     {
                         TerminalKinds.Validation or TerminalKinds.Binding => ValidationStatus().Source,
                         TerminalKinds.Rule => rule!.StatusSource,
-                        TerminalKinds.Exit when exit!.Status is not null => "código",
+                        TerminalKinds.Exit when point.Exit!.Status is not null => "código",
                         _ => _flow.SuccessStatusSource,
                     },
                     Messages = validation is not null ? [validation.MessageOrDefault] : rule?.Message is not null ? [Label(rule)] : [],
                     Exception = rule?.Exception,
                     Rule = validation is not null ? $"{validation.FieldName}: {validation.Text}"
-                        : leaf.Kind == TerminalKinds.Binding ? "model binding: tipo do JSON incompatível"
+                        : point.Kind == TerminalKinds.Binding ? "model binding: tipo do JSON incompatível"
                         : rule?.TriggerCode,
-                    Source = leaf.Source,
+                    Source = point.Source,
                 },
-                Decisions = plan.Conditions.ToDictionary(c => c.Condition.Id, _ => (bool?)null),
+                Decisions = conditions.ToDictionary(c => c.Condition.Id, _ => (bool?)null),
                 Solver = "nenhum",
                 NoPayload = reason ?? "nenhum payload gerado atinge este desfecho",
             };
         }
 
-        private static string KindOf(TerminalOutcome leaf) => leaf.Kind switch
+        private static string KindOf(TerminalPoint point) => point.Kind switch
         {
             TerminalKinds.Validation or TerminalKinds.Binding => ScenarioKinds.Validation,
             TerminalKinds.Rule => ScenarioKinds.Rule,
             _ => ScenarioKinds.Success,
         };
 
-        private string TitleOf(TerminalOutcome leaf) => leaf switch
-        {
-            { Kind: TerminalKinds.Rule } => $"Regra: {Label(leaf.Rules[0])}",
-            { Validation: { } v } => $"{v.FieldName}: {v.Text} violada",
-            { Flipped: { } flipped } => $"Sucesso com {(flipped is NotPred n ? n.Inner : flipped).Text} {(flipped is NotPred ? "falso" : "verdadeiro")}",
-            { Kind: TerminalKinds.Success } => "Caminho feliz: todos os dados válidos e nenhuma regra bloqueia",
-            _ => leaf.Label,
-        };
+        // ---- Desfecho atingido ----
 
-        private static ScenarioFocus? FocusOf(TerminalOutcome leaf) => leaf switch
+        /// <summary>Desfecho que a simulação atinge: o ponto de encerramento e, no sucesso, os efeitos executados.</summary>
+        private TerminalOutcome? LeafOf(Outcome o, Assignment a)
         {
-            { Kind: TerminalKinds.Rule } => new ScenarioFocus { Expression = leaf.Rules[0].TriggerCode, Value = true },
-            { Validation: { } v } => new ScenarioFocus { Expression = v.ViolationCode, Value = true },
-            { BindingField: { } field } => new ScenarioFocus { Expression = $"{field.Path} com tipo inválido", Value = true },
-            { Kind: TerminalKinds.Exit } => new ScenarioFocus { Expression = leaf.Exits[0].TriggerCode, Value = true },
-            { Flipped: { } flipped } => new ScenarioFocus { Expression = (flipped is NotPred n ? n.Inner : flipped).Text, Value = flipped is not NotPred },
-            _ => null,
-        };
+            TerminalPoint point;
+            if (o.ValidationFailed && o.Violated.Count > 0) point = _byValidation[o.Violated[0]];
+            else if (o.Fired is { } rule && _byRule.TryGetValue(rule, out var fired)) point = fired;
+            else if (o.Exits.LastOrDefault(x => x.InEntry) is { } exit && _byExit.TryGetValue(exit, out var returned)) point = returned;
+            else point = _points[^1];
+            if (!point.Success) return _outcomes.FirstOrDefault(x => x.Point == point);
 
-        /// <summary>
-        /// if (!ModelState.IsValid) return ... sem validações declaradas: o ModelState só fica inválido com o tipo do JSON
-        /// incompatível, que é a folha do model binding.
-        /// </summary>
-        private void ModelStateLeaves()
-        {
-            var binding = _leaves.FirstOrDefault(l => l.Kind == TerminalKinds.Binding);
-            foreach (var leaf in _leaves.Where(l => l.Kind == TerminalKinds.Rule && l.Rules.All(r => r.IsModelStateCheck)))
-            {
-                leaf.EquivalentTo = binding;
-                leaf.Feasibility = binding is null ? Feasibility.Unsat : Feasibility.Sat;
-                leaf.Reason = binding is null
-                    ? "ModelState só fica inválido com payload malformado e não há campo para o cenário de tipo inválido"
-                    : "ModelState só fica inválido com payload malformado: coberto pelo cenário de tipo inválido";
-            }
+            var executed = Happened(o, a).Where(e => e.Value == true && !Evaluator.Atoms(e.Effect.Site.Path).Any(p => p is OpaquePred)).Select(e => e.Effect);
+            var signature = TerminalOutcomeCollector.Signature(executed, true);
+            return _outcomes.FirstOrDefault(x => x.Point == point && x.Effects.SequenceEqual(signature));
         }
 
-        // ---- Cobertura ----
-
-        /// <summary>Folha que a simulação atinge: validação, regra, retorno antecipado, variação de ramo ou o caminho principal.</summary>
-        private TerminalOutcome LeafOf(Outcome o, Assignment a)
+        /// <summary>O cenário chega ao desfecho: a mesma folha; na validação, só ela falha (ou falha junto com as do mesmo campo, quando agregada).</summary>
+        private bool Reaches(Entry entry, TerminalOutcome outcome)
         {
-            if (o.ValidationFailed && o.Violated.Count > 0) return _byValidation[o.Violated[0]];
-            if (o.Fired is { } rule && _byRule.TryGetValue(rule, out var ruleLeaf)) return ruleLeaf;
-            foreach (var exit in o.Exits)
-                if (_byExit.TryGetValue(exit, out var exitLeaf) && exitLeaf.EquivalentTo is null) return exitLeaf;
-            foreach (var flip in _leaves.Where(l => l is { Flipped: not null, EquivalentTo: null }))
-                if (Eval(flip.Flipped!, a) == true) return flip;
-            return _principal!;
-        }
-
-        /// <summary>O cenário exercita a obrigação: atinge a folha-alvo (ou um sucesso) com a classe/limite/ramo verdadeiro.</summary>
-        private bool Covers(Entry entry, CoverageTarget target)
-        {
-            if (entry.MismatchField is not null || target.Leaf?.Kind == TerminalKinds.Binding)
-                return entry.MismatchField is not null && entry.MismatchField == target.Leaf?.BindingField;
-
-            var (o, a) = (entry.Outcome, entry.Assignment);
-            var holds = target.Predicate is null || Eval(target.Predicate, a) == true;
-            if (!holds) return false;
-            if (target.Kind == CoverageTargetKinds.Default) return !o.ValidationFailed;
-            if (target.Leaf is null) return o.Success && LeafOf(o, a).Kind == TerminalKinds.Success;
-            if (target.Leaf.Validation is { } validation)
-                // Só a validação-alvo falha, ou não há como isolá-la (os erros do mesmo campo vêm juntos).
-                return o.Violated.Contains(validation) && (o.Violated.Count == 1 || !Isolable(target));
-            return LeafOf(o, a) == target.Leaf;
-        }
-
-        /// <summary>Existe valor que viola só a validação-alvo (com a classe pedida) e mantém as outras passando.</summary>
-        private bool Isolable(CoverageTarget target)
-        {
-            if (_isolable.TryGetValue(target, out var cached)) return cached;
-            var validation = target.Leaf!.Validation!;
-            List<Pred> constraints = [target.Predicate ?? validation.Violation, .. _validations.Where(v => v != validation).Select(v => Pred.Not(v.Violation))];
-            return _isolable[target] = Check(constraints).Status != Feasibility.Unsat;
-        }
-
-        // ---- Cenário de cada obrigação ----
-
-        /// <summary>
-        /// Gera o cenário da obrigação: tenta as restrições legíveis (escolhas gulosas do caminho feliz) e, se não dão, as
-        /// exatas do caminho. Só aceita o cenário cuja simulação atinge a folha-alvo com a classe/limite pedido.
-        /// </summary>
-        private (Entry? Item, string? Status, string? Reason) Generate(CoverageTarget target, Plan plan)
-        {
-            if (target.Leaf?.Kind == TerminalKinds.Binding) return Mismatch(target, plan);
-
-            string? miss = null;
-            var tried = new HashSet<string>();
-            foreach (var candidate in Candidates(target, plan))
-            {
-                if (!tried.Add(string.Join("|", candidate.Constraints.Select(c => c.Key)))) continue;
-                if (Solve(candidate.Constraints) is not { } assignment) continue;
-                var outcome = Simulate(assignment);
-                var scenario = ToScenario(candidate, assignment, outcome, plan.Conditions);
-                if (candidate.Note is { } note) scenario.Notes = [.. scenario.Notes ?? [], note];
-                var entry = new Entry(scenario, candidate.Constraints, candidate.HidePreconditions, assignment, outcome, null, target);
-
-                // Variação de ramo com a mesma resposta e os mesmos efeitos do caminho principal: não é outro desfecho.
-                if (target.Leaf is { Flipped: not null } flip && _principalEntry is { } principal && SameResponse(entry, principal))
-                {
-                    flip.EquivalentTo = _principal;
-                    flip.Reason = "mesma resposta e mesmos efeitos do caminho principal";
-                    _equivalentEntries[flip] = entry;
-                    return (null, CoverageStatuses.Equivalent, flip.Reason);
-                }
-                if (!Covers(entry, target))
-                {
-                    miss ??= $"o payload gerado atinge \"{LeafOf(outcome, assignment).Label}\" em vez de \"{target.Leaf?.Label ?? "uma resposta de sucesso"}\"";
-                    continue;
-                }
-                if (target.Leaf == _principal && target.Kind == CoverageTargetKinds.Outcome) _principalEntry = entry;
-                return (entry, null, null);
-            }
-            return (null, null, miss ?? (target.Anchor.Feasibility == Feasibility.Unknown ? target.Anchor.Reason : "nenhuma combinação de valores satisfaz as restrições do cenário"));
-        }
-
-        private IEnumerable<Candidate> Candidates(CoverageTarget target, Plan plan)
-        {
-            var happy = plan.Happy;
-            var principal = _feasibility!.Principal();
-            var leaf = target.Leaf;
-
-            switch (target.Kind)
-            {
-                case CoverageTargetKinds.Outcome when leaf == _principal:
-                {
-                    const string title = "Caminho feliz: todos os dados válidos e nenhuma regra bloqueia";
-                    yield return new Candidate(ScenarioKinds.Success, ScenarioTechniques.DecisionTable, title, happy);
-                    yield return new Candidate(ScenarioKinds.Success, ScenarioTechniques.DecisionTable, title, WithBranches(principal, plan.Branches));
-                    break;
-                }
-
-                case CoverageTargetKinds.Branch:
-                {
-                    var literal = leaf?.Flipped ?? target.Predicate!;
-                    var atom = literal is NotPred n ? n.Inner : literal;
-                    var value = literal is not NotPred;
-                    var title = $"Sucesso com {atom.Text} {(value ? "verdadeiro" : "falso")}";
-                    var focus = new ScenarioFocus { Expression = atom.Text, Value = value };
-                    var opposite = Pred.Not(literal).Key;
-                    yield return new Candidate(ScenarioKinds.Success, ScenarioTechniques.DecisionTable, title, [.. happy.Where(c => c.Key != opposite), literal], focus);
-                    yield return new Candidate(ScenarioKinds.Success, ScenarioTechniques.DecisionTable, title,
-                        WithBranches([.. principal, literal], plan.Branches.Where(b => b.Key != opposite && b.Key != literal.Key)), focus);
-                    break;
-                }
-
-                case CoverageTargetKinds.Loop:
-                {
-                    var focus = new ScenarioFocus { Expression = target.Predicate!.Text, Value = true, Detail = target.Label };
-                    yield return new Candidate(ScenarioKinds.Success, ScenarioTechniques.EquivalencePartitioning, target.Label, [.. happy, target.Predicate], focus);
-                    yield return new Candidate(ScenarioKinds.Success, ScenarioTechniques.EquivalencePartitioning, target.Label,
-                        WithBranches([.. principal, target.Predicate], plan.Branches), focus);
-                    break;
-                }
-
-                case CoverageTargetKinds.Outcome when leaf!.Kind == TerminalKinds.Exit:
-                    foreach (var exit in leaf.Exits)
-                    {
-                        var focus = new ScenarioFocus { Expression = exit.TriggerCode, Value = true };
-                        var constraints = happy.Where(c => !plan.Avoidance.TryGetValue(exit, out var a) || c != a).ToList();
-                        constraints.Add(exit.Site.Path);
-                        constraints.Add(exit.Trigger);
-                        yield return new Candidate(ScenarioKinds.Success, ScenarioTechniques.DecisionTable, leaf.Label, constraints, focus);
-                        yield return new Candidate(ScenarioKinds.Success, ScenarioTechniques.DecisionTable, leaf.Label,
-                            WithBranches(_feasibility.Exit(exit), plan.Branches), focus);
-                    }
-                    break;
-
-                case CoverageTargetKinds.Outcome or CoverageTargetKinds.Class or CoverageTargetKinds.Boundary when leaf?.Validation is { } rule:
-                {
-                    var probe = target.Probe;
-                    var label = probe?.Label ?? $"{rule.FieldName}: {rule.Text} violada";
-                    var constraints = ValidationConstraints(rule, probe?.Constraint ?? rule.Violation, plan.Branches);
-                    yield return new Candidate(ScenarioKinds.Validation, probe?.Technique ?? ScenarioTechniques.EquivalencePartitioning, label, constraints,
-                        new ScenarioFocus { Expression = rule.ViolationCode, Value = true, Detail = label }, HidePreconditions: true);
-                    break;
-                }
-
-                case CoverageTargetKinds.Default:
-                {
-                    var field = target.Field!;
-                    var code = target.Predicate!.Text;
-                    var shown = code[(field.Path.Length + " == ".Length)..];
-                    var name = CoveragePlanner.FieldName(field);
-                    var constraints = new List<Pred> { _validationsOk, target.Predicate };
-                    foreach (var constraint in happy) Extend(constraints, constraint);
-                    yield return new Candidate(ScenarioKinds.Validation, ScenarioTechniques.EquivalencePartitioning, target.Label, constraints,
-                        new ScenarioFocus { Expression = code, Value = true, Detail = $"{name} = {shown}" },
-                        Note: $"Omitir {name} no JSON tem o mesmo efeito: o campo chega com {shown} e o [Required] não falha.");
-                    break;
-                }
-
-                case CoverageTargetKinds.Outcome when leaf!.Kind == TerminalKinds.Rule:
-                    foreach (var rule in leaf.Rules)
-                    {
-                        var focus = new ScenarioFocus { Expression = rule.TriggerCode, Value = true };
-                        var title = $"Regra: {Label(rule)}";
-                        if (RuleConstraints(rule, plan.Branches) is { } constraints)
-                            yield return new Candidate(ScenarioKinds.Rule, ScenarioTechniques.DecisionTable, title, constraints, focus);
-                        yield return new Candidate(ScenarioKinds.Rule, ScenarioTechniques.DecisionTable, title, WithBranches(_feasibility.Rule(rule), plan.Branches), focus);
-                    }
-                    break;
-
-                case CoverageTargetKinds.Boundary when leaf?.Kind == TerminalKinds.Rule:
-                {
-                    var rule = target.Rule!;
-                    var focus = new ScenarioFocus { Expression = rule.TriggerCode, Value = true, Detail = target.Label };
-                    if (RuleConstraints(rule, []) is { } constraints)
-                        yield return new Candidate(ScenarioKinds.Rule, ScenarioTechniques.BoundaryValue, target.Label, [.. constraints, target.Predicate!], focus);
-                    yield return new Candidate(ScenarioKinds.Rule, ScenarioTechniques.BoundaryValue, target.Label,
-                        WithBranches([.. _feasibility.Rule(rule), target.Predicate!], plan.Branches), focus);
-                    break;
-                }
-
-                case CoverageTargetKinds.Boundary:
-                {
-                    // Limite válido (validação ou regra do código): a operação ainda deve ser aceita.
-                    var expression = target.Probe is not null ? target.Anchor.Validation!.ViolationCode : target.Rule!.TriggerCode;
-                    var technique = target.Probe?.Technique ?? ScenarioTechniques.BoundaryValue;
-                    var focus = new ScenarioFocus { Expression = expression, Value = false, Detail = target.Label };
-                    yield return new Candidate(ScenarioKinds.Boundary, technique, target.Label, [.. happy, target.Predicate!], focus);
-                    yield return new Candidate(ScenarioKinds.Boundary, technique, target.Label, WithBranches([.. principal, target.Predicate!], plan.Branches), focus);
-                    break;
-                }
-            }
-        }
-
-        /// <summary>Restrições exatas acrescidas dos ramos que continuam satisfazíveis (mais efeitos cobertos).</summary>
-        private List<Pred> WithBranches(List<Pred> constraints, IEnumerable<Pred> branches)
-        {
-            var result = new List<Pred>(constraints);
-            foreach (var branch in branches) Extend(result, branch);
-            return result;
-        }
-
-        /// <summary>Partição inválida de uma validação, com as outras validações passando (uma falha por cenário quando possível).</summary>
-        private List<Pred> ValidationConstraints(ValidationRule rule, Pred violation, List<Pred> branches)
-        {
-            var others = _validations.Where(v => v != rule).ToList();
-            var constraints = new List<Pred> { violation };
-            // Outras regras do mesmo campo podem falhar juntas ("" viola [Required] e [StringLength(7, MinimumLength = 7)]).
-            if (Solve([.. constraints, .. others.Select(o => Pred.Not(o.Violation))]) is not null)
-                constraints.AddRange(others.Select(o => Pred.Not(o.Violation)));
-            else
-                constraints.AddRange(others.Where(o => o.Field != rule.Field).Select(o => Pred.Not(o.Violation)));
-            foreach (var branch in branches.Where(b => Evaluator.VarsOf(b).All(v => v.Origin == VarOrigin.Input))) Extend(constraints, branch);
-            return constraints;
-        }
-
-        /// <summary>A regra disparando, com o trecho alcançado e as regras/saídas anteriores passando (escolhas legíveis primeiro).</summary>
-        private List<Pred>? RuleConstraints(CodeRule rule, List<Pred> branches)
-        {
-            var constraints = new List<Pred> { _validationsOk, rule.Site.Path, rule.Trigger };
-            if (Solve(constraints) is null) return null;
-            foreach (var previous in _rules.TakeWhile(r => r != rule))
-                if (Extend(constraints, Pred.Not(previous.Trigger), Pred.Not(Pred.And(previous.Site.Path, previous.Trigger))) is null) return null;
-            foreach (var exit in _exits.Where(e => FlowModel.Blocks(e, rule.Site.Order)))
-                if (Extend(constraints, Pred.Not(exit.Trigger), Pred.Not(Pred.And(exit.Site.Path, exit.Trigger))) is null) return null;
-            foreach (var branch in branches) Extend(constraints, branch);
-            return constraints;
-        }
-
-        /// <summary>
-        /// Mesma resposta e mesmo conjunto de efeitos: status, sucesso/erro, persistência e os trechos com efeito que
-        /// executam (não só a descrição agregada: o INSERT detectado na criação aparece mesmo quando o Add do ramo não executa).
-        /// </summary>
-        private bool SameResponse(Entry a, Entry b) =>
-            a.Outcome.Success == b.Outcome.Success && a.Outcome.Status == b.Outcome.Status
-            && a.Outcome.Rule == b.Outcome.Rule && a.Scenario.Expected.Persisted == b.Scenario.Expected.Persisted
-            && EffectSignature(a.Outcome, a.Assignment) == EffectSignature(b.Outcome, b.Assignment)
-            && Happened(a.Outcome, a.Assignment).Select(e => e.Effect).ToHashSet().SetEquals(Happened(b.Outcome, b.Assignment).Select(e => e.Effect));
-
-        /// <summary>
-        /// Caminho feliz: validações passam; para cada regra, na ordem, o gatilho é falso (ou o trecho não é alcançado);
-        /// saídas antecipadas evitadas; ramos opcionais ativados quando possível (mais efeitos cobertos).
-        /// </summary>
-        private List<Pred> HappyConstraints(out List<Pred> branches, out Dictionary<EarlyExit, Pred> avoidance)
-        {
-            var happy = new List<Pred> { _validationsOk };
-            foreach (var rule in _rules)
-            {
-                if (Extend(happy, Pred.Not(rule.Trigger), Pred.Not(Pred.And(rule.Site.Path, rule.Trigger))) is null)
-                {
-                    _notes.Add($"Nenhum caminho de sucesso: a regra \"{rule.Message ?? rule.TriggerCode}\" sempre bloqueia com as regras anteriores satisfeitas.");
-                    break;
-                }
-            }
-
-            avoidance = [];
-            foreach (var exit in _exits)
-                if (Extend(happy, Pred.Not(exit.Trigger), Pred.Not(Pred.And(exit.Site.Path, exit.Trigger))) is { } chosen)
-                    avoidance[exit] = chosen;
-
-            branches = [];
-            foreach (var literal in BranchLiterals())
-                if (Extend(happy, literal) is not null) branches.Add(literal);
-            return happy;
-        }
-
-        /// <summary>Acrescenta a primeira alternativa que mantém as restrições satisfazíveis.</summary>
-        private Pred? Extend(List<Pred> constraints, params Pred[] alternatives)
-        {
-            foreach (var alternative in alternatives)
-                if (Solve([.. constraints, alternative]) is not null)
-                {
-                    constraints.Add(alternative);
-                    return alternative;
-                }
-            return null;
-        }
-
-        /// <summary>Condições dos trechos com efeitos (if, ternário, ?. ...) que não são gatilho de regra: os ramos da tabela de decisão.</summary>
-        private List<Pred> BranchLiterals()
-        {
-            var ruleAtoms = _rules.SelectMany(r => Evaluator.Atoms(r.Trigger)).Concat(_exits.SelectMany(x => Evaluator.Atoms(x.Trigger)))
-                .Select(a => a.Key).ToHashSet();
-            var literals = new List<Pred>();
-            foreach (var effect in _flow.Effects.OrderBy(e => e.Site.Order, Comparer<IReadOnlyList<int>>.Create(FlowModel.Compare)))
-                foreach (var conjunct in Evaluator.Conjuncts(effect.Site.Path))
-                {
-                    var atom = conjunct is NotPred n ? n.Inner : conjunct;
-                    if (atom is AndPred or OrPred or ConstPred or OpaquePred or ModelValidPred) continue;
-                    if (ruleAtoms.Contains(atom.Key) || literals.Any(l => (l is NotPred ln ? ln.Inner : l).Key == atom.Key)) continue;
-                    literals.Add(conjunct);
-                }
-            return literals;
+            if (outcome.Point.Validation is { } validation)
+                return entry.Outcome.Violated.Contains(validation) && (entry.Outcome.Violated.Count == 1 || outcome.Aggregated);
+            return LeafOf(entry.Outcome, entry.Assignment) == outcome;
         }
 
         /// <summary>Campo do body que recebe texto no cenário de tipo inválido (model binding).</summary>
@@ -675,15 +456,15 @@ public partial class ScenarioGenerator(ScenarioGenerationOptions? options = null
         }
 
         /// <summary>
-        /// Partição inválida de tipo: texto num campo numérico/data/bool/enum do body. O model binding falha e o
-        /// ModelState fica inválido (400 automático com [ApiController], ou o if (!ModelState.IsValid) do controller).
+        /// Tipo inválido no JSON: texto num campo numérico/data/bool/enum do body. O model binding falha e o ModelState
+        /// fica inválido (400 automático com [ApiController], ou o if (!ModelState.IsValid) do controller).
         /// </summary>
-        private (Entry? Item, string? Status, string? Reason) Mismatch(CoverageTarget target, Plan plan)
+        private (Entry? Item, string? Reason) Mismatch(TerminalOutcome outcome, List<(DecisionCondition Condition, Func<Assignment, Outcome, bool?> Value)> conditions)
         {
-            var field = target.Leaf!.BindingField!;
+            var field = outcome.Point.BindingField!;
             if (_principalEntry is not { Scenario.Request.Body: System.Text.Json.Nodes.JsonObject body } happy)
-                return (null, null, "precisa do payload do caminho principal para trocar o tipo do campo");
-            if (!body.ContainsKey(field.Name)) return (null, null, $"{field.Name} não aparece no payload do caminho principal");
+                return (null, "precisa do payload do caminho principal para trocar o tipo do campo");
+            if (!body.ContainsKey(field.Name)) return (null, $"{field.Name} não aparece no payload do caminho principal");
 
             var modelState = _flow.Rules.FirstOrDefault(r => r.IsModelStateCheck);
             var mutated = (System.Text.Json.Nodes.JsonObject)body.DeepClone();
@@ -704,11 +485,12 @@ public partial class ScenarioGenerator(ScenarioGenerationOptions? options = null
                     StatusSource = _flow.ApiController ? "validacao" : source,
                     Messages = [$"The JSON value could not be converted to {field.Type.ToDisplayString()}. Path: $.{field.Name}"],
                     Rule = "model binding: tipo do JSON incompatível",
+                    Source = modelState?.Site.Source,
                 },
-                Decisions = plan.Conditions.ToDictionary(c => c.Condition.Id, _ => (bool?)null),
+                Decisions = conditions.ToDictionary(c => c.Condition.Id, _ => (bool?)null),
                 Notes = ["Mensagem do System.Text.Json (pode variar com a versão e a configuração do JSON)."],
             };
-            return (happy with { Scenario = scenario, HidePreconditions = true, MismatchField = field, Target = target }, null, null);
+            return (happy with { Scenario = scenario, HidePreconditions = true, MismatchField = field, Leaf = outcome }, null);
         }
 
         /// <summary>Mensagem da regra com os trechos constantes resolvidos ($"{pPropriedade} não existe" → "EnderecoId não existe"), ou o gatilho.</summary>
@@ -725,8 +507,8 @@ public partial class ScenarioGenerator(ScenarioGenerationOptions? options = null
         }
 
         /// <summary>
-        /// Confere a matriz com as regras do relatório (if/throw/guarda dos métodos do fluxo): as regras e saídas do fluxo
-        /// já têm linha (uma por folha); sobra avisar a regra que encerra o fluxo e não foi traduzida em gatilho.
+        /// Confere a matriz com as regras do relatório (if/throw/guarda dos métodos do fluxo): as regras e returns do fluxo
+        /// já têm linha (uma por desfecho); sobra avisar a regra que encerra o fluxo e não foi traduzida em gatilho.
         /// </summary>
         private void CodeConditionNotes()
         {
@@ -1072,6 +854,7 @@ public partial class ScenarioGenerator(ScenarioGenerationOptions? options = null
             return result;
         }
 
-        private static string FieldName(InputField field) => CoveragePlanner.FieldName(field);
+        private static string FieldName(InputField field) =>
+            field.Location == InputLocations.Body ? ValidationRule.JsonPath(field) is { Length: > 0 } path ? path : field.Name : field.Name;
     }
 }

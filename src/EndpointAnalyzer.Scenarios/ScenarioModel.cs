@@ -483,7 +483,7 @@ public partial class ScenarioGenerator
         {
             if (o.Success != expected.Success || o.Status != expected.Status || o.Rule != expected.Rule) return false;
             // A mesma folha do fluxo (duas regras com a mesma condição em pontos diferentes não se confundem).
-            if (_leaves.Count > 0 && LeafOf(o, a) != LeafOf(expected, ea)) return false;
+            if (_outcomes.Count > 0 && LeafOf(o, a) != LeafOf(expected, ea)) return false;
             if (!o.Success) return true;
             return o.Exits.Count == expected.Exits.Count && EffectSignature(o, a) == EffectSignature(expected, ea);
         }

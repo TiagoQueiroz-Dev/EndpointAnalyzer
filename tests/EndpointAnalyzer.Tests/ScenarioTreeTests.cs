@@ -6,8 +6,9 @@ using EndpointAnalyzer.Scenarios;
 namespace EndpointAnalyzer.Tests;
 
 /// <summary>
-/// Geração de cenários pela árvore de execução (EndpointAnalyzer_Arvore_Geracao_Cenarios.md): folhas distintas pelo ponto
-/// do código, viabilidade SAT/UNSAT/UNKNOWN, obrigações de cobertura e identidade estrutural estável.
+/// Geração de cenários pelos desfechos reais do endpoint (EndpointAnalyzer_Arvore_Geracao_Cenarios.md): pontos de
+/// encerramento pelo código, retornos propagados entre métodos, um cenário por desfecho (ponto + efeitos), viabilidade
+/// SAT/UNSAT/UNKNOWN e identidade estrutural estável.
 /// </summary>
 [Collection(SampleSolutionCollection.Name)]
 public class ScenarioTreeTests(SampleSolutionFixture fixture)
@@ -113,33 +114,78 @@ public class ScenarioTreeTests(SampleSolutionFixture fixture)
     }
 
     [Fact]
-    public async Task Required_comprimento_e_faixa_geram_so_os_representantes_necessarios()
+    public async Task Required_comprimento_e_faixa_geram_um_cenario_por_validacao()
     {
         var matrix = await MatrixAsync(Remessas);
-        var titles = matrix.Scenarios.Select(s => s.Title).ToList();
 
-        Assert.Contains("placa ausente (null)", titles);
-        Assert.Contains("placa só com espaços", titles);
-        Assert.DoesNotContain("placa vazio (\"\")", titles);
-        Assert.Contains(titles, t => t.StartsWith("placa com 6", StringComparison.Ordinal));
-        Assert.Contains(titles, t => t.StartsWith("placa com 8", StringComparison.Ordinal));
-        Assert.Contains(titles, t => t.StartsWith("prioridade = 0", StringComparison.Ordinal));
-        Assert.Contains(titles, t => t.StartsWith("prioridade = 6", StringComparison.Ordinal));
-        Assert.Contains(titles, t => t.StartsWith("prioridade = 5", StringComparison.Ordinal));
-        // Limites válidos que o caminho feliz já exercita não ganham cenário próprio.
-        Assert.DoesNotContain(titles, t => t.StartsWith("prioridade = 1", StringComparison.Ordinal));
-        Assert.DoesNotContain(titles, t => t.StartsWith("placa com 7", StringComparison.Ordinal));
+        // Cada validação é um desfecho: null/vazio/espaços, 6/8 caracteres e 0/6 não multiplicam cenários.
+        foreach (var message in new[] { "The Placa field is required.", "The field Placa must be a string with a minimum length of 7 and a maximum length of 7.", "The field Prioridade must be between 1 and 5." })
+            Assert.Single(matrix.Scenarios, s => s.Kind == ScenarioKinds.Validation && s.Expected.Messages.Contains(message));
+        Assert.DoesNotContain(matrix.Scenarios, s => s.Kind == ScenarioKinds.Boundary);
+        Assert.Equal(matrix.Scenarios.Count, matrix.Scenarios.Select(s => s.Terminal).Distinct().Count());
     }
 
     [Fact]
-    public async Task Laco_e_coberto_com_zero_uma_e_varias_iteracoes_sem_alegar_exaustividade()
+    public async Task Laco_so_gera_cenario_quando_muda_os_efeitos()
     {
         var matrix = await MatrixAsync(Remessas);
 
-        Assert.Contains(matrix.Scenarios, s => s.Request.Body?["itens"]?.AsArray().Count == 0 && s.Expected.Outcome == "sucesso");
-        Assert.Contains(matrix.Scenarios, s => s.Request.Body?["itens"]?.AsArray().Count == 1 && s.Expected.Outcome == "sucesso");
-        Assert.Contains(matrix.Scenarios, s => s.Request.Body?["itens"]?.AsArray().Count == 2 && s.Expected.Outcome == "sucesso");
-        Assert.Contains(matrix.Notes, n => n.StartsWith("Laços cobertos com 0, 1, 2", StringComparison.Ordinal));
+        // Sem itens o laço não insere ItemRemessa: outro conjunto de efeitos, outro desfecho. Duas iterações não são outro desfecho.
+        var semItens = Assert.Single(matrix.Scenarios, s => s.Request.Body?["itens"]?.AsArray().Count == 0 && s.Expected.Outcome == "sucesso");
+        Assert.DoesNotContain(semItens.Expected.Effects, e => e.Target == "ItemRemessa");
+        Assert.True(semItens.Expected.Persisted);
+        Assert.Equal(("request.Itens.Count > 0", false), (semItens.Focus!.Expression, semItens.Focus.Value));
+        Assert.DoesNotContain(matrix.Scenarios, s => s.Request.Body?["itens"]?.AsArray().Count == 2);
+        Assert.DoesNotContain(matrix.Notes, n => n.StartsWith("Laços cobertos", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Retorno_bool_de_metodo_chamado_e_propagado_e_dois_returns_falsos_sao_um_desfecho()
+    {
+        var matrix = await MatrixAsync("PUT /api/remessas/{id}/confirmar");
+
+        // VolumesValidos devolve false por dois caminhos (<= 0 e > 100): o controller responde o mesmo BadRequest — um cenário.
+        var invalidos = Assert.Single(matrix.Scenarios, s => s.Expected.Messages.Contains("Quantidade de volumes inválida."));
+        Assert.Equal(400, invalidos.Expected.HttpStatus);
+        var volumes = (long)invalidos.Request.Body!["volumes"]!;
+        Assert.True(volumes is <= 0 or > 100, $"volumes = {volumes}");
+        // A condição é a do método chamado, não uma suposição sobre o retorno dele.
+        Assert.DoesNotContain(invalidos.Preconditions, p => p.Description.Contains("VolumesValidos", StringComparison.Ordinal));
+        Assert.True((long)matrix.Scenarios[0].Request.Body!["volumes"]! is > 0 and <= 100);
+    }
+
+    [Fact]
+    public async Task Null_devolvido_pelo_service_decide_o_ternario_do_controller()
+    {
+        var matrix = await MatrixAsync("PUT /api/remessas/{id}/confirmar");
+
+        // return remessa is null ? NotFound() : Ok(remessa.Id): o lado NotFound é um ponto de encerramento, e o null vem
+        // do return do service quando a consulta não encontra a remessa.
+        var naoEncontrada = Assert.Single(matrix.Scenarios, s => s.Expected.HttpStatus == 404);
+        Assert.Equal(ScenarioKinds.Rule, naoEncontrada.Kind);
+        Assert.Contains(naoEncontrada.Preconditions, p => p.Description.StartsWith("Não existe Remessa", StringComparison.Ordinal));
+        Assert.False(naoEncontrada.Expected.Persisted);
+
+        var principal = matrix.Scenarios[0];
+        Assert.Equal(200, principal.Expected.HttpStatus);
+        Assert.True(principal.Expected.Persisted);
+        Assert.Contains(principal.Expected.Effects, e => e is { Target: "Remessa", Kind: EntityOperations.Update });
+
+        // Um cenário por desfecho: sucesso, volumes inválidos, não encontrada e tipo inválido no JSON.
+        Assert.Equal(4, matrix.Scenarios.Count);
+        Assert.All(matrix.Scenarios, s => Assert.Null(s.NoPayload));
+    }
+
+    [Fact]
+    public async Task Barramento_repassa_o_retorno_do_handler_e_o_lado_inalcancavel_do_ternario_fica_unsat()
+    {
+        var matrix = await MatrixAsync("PUT /api/pedidos/{id}/cancelar");
+
+        // ok = bus.EnviarComando(...) → mediator.Send → Handle, que só devolve true (ou lança): BadRequest nunca acontece.
+        var badRequest = Assert.Single(matrix.Scenarios, s => s.Terminal!.Contains("PedidoController.Cancelar|return|!ok", StringComparison.Ordinal));
+        Assert.Equal(PathFeasibilities.Unsat, badRequest.Feasibility);
+        Assert.False(string.IsNullOrWhiteSpace(badRequest.NoPayload));
+        Assert.DoesNotContain(matrix.Scenarios.SelectMany(s => s.Preconditions), p => p.Description.Contains("mediator.Send", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -175,18 +221,20 @@ public class ScenarioTreeTests(SampleSolutionFixture fixture)
         Assert.Single(leaves, l => l.Label == "EnderecoId não existe");
         Assert.DoesNotContain(leaves, l => l.Key.Contains("Existe<int, Endereco>", StringComparison.Ordinal));
 
-        // if (ModelState.IsValid) return ApiResponse(...): a saída inevitável tem linha própria, com o payload do caminho principal.
+        // if (ModelState.IsValid) return ApiResponse(...): é o return que encerra a requisição no caminho principal.
         var modelState = Row(Assert.Single(leaves, l => l.Key.Contains("ModelState.IsValid", StringComparison.Ordinal)));
         var principal = matrix.Scenarios.First(s => s is { Kind: ScenarioKinds.Success, Focus: null });
-        Assert.Equal(principal.Id, modelState.EquivalentTo);
+        Assert.Equal(principal.Id, modelState.Id);
         Assert.Null(modelState.NoPayload);
-        Assert.Equal(principal.Request.Body!.ToJsonString(), modelState.Request.Body!.ToJsonString());
 
-        // Saída que nunca acontece: UNSAT, linha sem payload com o motivo.
-        var notificacoes = Row(Assert.Single(leaves, l => l.Key.Contains("PossuiNotificacoes", StringComparison.Ordinal)));
-        Assert.Equal(PathFeasibilities.Unsat, notificacoes.Feasibility);
-        Assert.False(string.IsNullOrWhiteSpace(notificacoes.NoPayload));
-        Assert.Null(notificacoes.Request.Body);
+        // O return depois dele nunca acontece: UNSAT, linha sem payload com o motivo.
+        var final = Row(Assert.Single(leaves, l => l.Key == TerminalKinds.Success));
+        Assert.Equal(PathFeasibilities.Unsat, final.Feasibility);
+        Assert.False(string.IsNullOrWhiteSpace(final.NoPayload));
+        Assert.Null(final.Request.Body);
+
+        // Return interno (Commit com notificações pendentes) não é folha: o valor volta ao chamador.
+        Assert.DoesNotContain(leaves, l => l.Key.Contains("PossuiNotificacoes", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -225,17 +273,17 @@ public class ScenarioTreeTests(SampleSolutionFixture fixture)
     }
 
     [Fact]
-    public async Task Limite_de_cenarios_corta_variacoes_nunca_folhas()
+    public async Task Limite_de_caminhos_deixa_desfechos_nao_decididos_nunca_inalcancaveis()
     {
         var full = await MatrixAsync(Remessas);
-        var matrix = (await GenerateAsync(Remessas, new ScenarioGenerationOptions { MaxScenarios = 3 })).Matrix;
+        var matrix = (await GenerateAsync(Remessas, new ScenarioGenerationOptions { MaxPaths = 3 })).Matrix;
 
-        Assert.Contains(matrix.Notes, n => n.StartsWith("Limite de 3 cenários atingido", StringComparison.Ordinal));
-        Assert.True(matrix.Scenarios.Count > 3);
-        Assert.True(matrix.Scenarios.Count < full.Scenarios.Count);
-        // Toda folha continua com linha, com payload quando a matriz completa também tem.
-        Assert.Equal(full.Scenarios.Select(s => s.Terminal).Distinct().Order(), matrix.Scenarios.Select(s => s.Terminal).Distinct().Order());
-        Assert.Equal(full.Scenarios.Count(s => s.NoPayload is not null), matrix.Scenarios.Count(s => s.NoPayload is not null));
+        Assert.Contains(matrix.Notes, n => n.StartsWith("Limite de 3 caminhos de execução atingido", StringComparison.Ordinal));
+        // Todo ponto de encerramento continua com linha; o que não foi alcançado fica UNKNOWN, nunca UNSAT.
+        var points = full.Scenarios.Select(s => s.Terminal!).Where(t => !t.Contains("|efeitos:", StringComparison.Ordinal)).Order();
+        Assert.Equal(points, matrix.Scenarios.Select(s => s.Terminal!).Where(t => !t.Contains("|efeitos:", StringComparison.Ordinal)).Order());
+        Assert.DoesNotContain(matrix.Scenarios, s => s.Feasibility == PathFeasibilities.Unsat
+            && full.Scenarios.Single(f => f.Terminal == s.Terminal).Feasibility != PathFeasibilities.Unsat);
     }
 
     [Fact]

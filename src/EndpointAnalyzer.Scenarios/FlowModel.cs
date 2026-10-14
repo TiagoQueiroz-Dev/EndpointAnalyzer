@@ -266,6 +266,11 @@ public sealed class FlowModel
                     AddGuard(method, inv, guard.Trigger, guard.Code, guard.Exception);
                     break;
 
+                // return remessa is null ? NotFound() : Ok(remessa.Id): o lado de erro do ternário é um encerramento próprio.
+                case ReturnStatementSyntax { Expression: { } returned } when isEntry && SymbolicResolver.Unwrap(returned) is ConditionalExpressionSyntax conditional:
+                    ConditionalReturn(method, conditional, scope);
+                    break;
+
                 // catch (Exception e) { Bus.PublicarEvento(new DomainNotification("Commit", e.Message)); }: falha de infraestrutura notificada.
                 case CatchClauseSyntax cc when !isEntry && ExitOf(cc.Block.Statements, method) is { Kind: "notify" } caught:
                 {
@@ -383,6 +388,22 @@ public sealed class FlowModel
             StatusSource = source,
             StatusNote = note,
         });
+    }
+
+    /// <summary>Return do endpoint com ternário entre uma resposta de erro e uma de sucesso: o lado de erro vira regra; o outro segue como resposta final.</summary>
+    private void ConditionalReturn(AnalyzedMethod method, ConditionalExpressionSyntax conditional, Scope scope)
+    {
+        var whenTrue = StatusOf(conditional.WhenTrue, method.Model, 0);
+        var whenFalse = StatusOf(conditional.WhenFalse, method.Model, 0);
+        static bool Error(HashSet<int> statuses) => statuses.Count > 0 && statuses.All(s => s >= 400);
+        if (Error(whenTrue) == Error(whenFalse)) return;
+
+        var condition = _resolver.Pred(conditional.Condition, scope);
+        var (arm, trigger, code, statuses) = Error(whenTrue)
+            ? (conditional.WhenTrue, condition, conditional.Condition.Compact(), whenTrue)
+            : (conditional.WhenFalse, Pred.Not(condition), SyntaxConditions.Negate(conditional.Condition), whenFalse);
+        var (message, syntax) = MessageOf(arm, method.Model);
+        Add(method, arm, conditional, trigger, code, new Exit("return", arm, null, null, message, syntax, statuses), isEntry: true);
     }
 
     private void AddThrow(AnalyzedMethod method, SyntaxNode at, SyntaxNode pathFrom, Pred trigger, string code, ExpressionSyntax thrown, string kind)
@@ -650,7 +671,7 @@ public sealed class FlowModel
         var isGuard = type is "Guard" or "GuardClauseExtensions" or "Ensure" or "Check";
         if (!isThrowIf && !isGuard) return null;
 
-        var subject = _resolver.Term(args[0].Expression, scope);
+        var subject = _resolver.Term(args[0].Expression, scope) is var s and not (ObjTerm or TupleTerm) ? s : null;
         var text = args[0].Expression.Compact();
         Term? Arg(int i) => i < args.Count ? _resolver.Term(args[i].Expression, scope) : null;
         var kind = isThrowIf ? name["ThrowIf".Length..] : name;
@@ -706,6 +727,9 @@ public sealed class FlowModel
         var e = SymbolicResolver.Unwrap(expression);
         switch (e)
         {
+            case ConditionalExpressionSyntax conditional:
+                return [.. StatusOf(conditional.WhenTrue, model, depth), .. StatusOf(conditional.WhenFalse, model, depth)];
+
             case InvocationExpressionSyntax inv:
             {
                 var name = inv.Expression switch
@@ -765,7 +789,9 @@ public sealed class FlowModel
 
         var success = statuses.LastOrDefault(s => s is >= 200 and < 300);
         // return ApiResponse(...) que devolve Ok ou BadRequest: o BadRequest é a resposta das notificações.
-        if (success > 0 && returns.Any(r => r.Expression is { } e && StatusOf(e, entry.Model, 0) is var both && both.Any(s => s < 400) && both.Any(s => s >= 400)))
+        // (o ternário entre erro e sucesso não conta: o lado de erro já é uma regra própria)
+        if (success > 0 && returns.Any(r => r.Expression is { } e && SymbolicResolver.Unwrap(e) is not ConditionalExpressionSyntax
+                && StatusOf(e, entry.Model, 0) is var both && both.Any(s => s < 400) && both.Any(s => s >= 400)))
             NotificationStatus ??= statuses.First(s => s >= 400);
         if (success > 0)
         {

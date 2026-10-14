@@ -23,14 +23,12 @@ public sealed class FlowTreeNode
     public SourceReference? Source { get; init; }
 }
 
-/// <summary>Transição entre dois nós: condição simbólica (quando há) e sentido (true, false, case ou next).</summary>
+/// <summary>Transição entre dois nós: condição simbólica (quando há) e sentido (true, false ou next).</summary>
 public sealed class FlowTreeEdge
 {
     public required FlowTreeNode From { get; init; }
 
     public required FlowTreeNode To { get; init; }
-
-    public Pred? Condition { get; init; }
 
     public string? ConditionCode { get; init; }
 
@@ -38,16 +36,14 @@ public sealed class FlowTreeEdge
 }
 
 /// <summary>
-/// Visão lógica da execução do endpoint. Internamente é um grafo com junções: ramos que convergem para a mesma
-/// validação ou para o mesmo trecho não duplicam o restante do fluxo.
+/// Visão lógica da execução do endpoint, montada a partir dos caminhos explorados. Internamente é um grafo com junções:
+/// caminhos que passam pelo mesmo ponto do código compartilham o nó (o restante do fluxo não é duplicado).
 /// </summary>
 public sealed class FlowTree
 {
     public List<FlowTreeNode> Nodes { get; } = [];
 
     public List<FlowTreeEdge> Edges { get; } = [];
-
-    public List<TerminalOutcome> Terminals { get; init; } = [];
 
     /// <summary>Lacunas de análise: condições não traduzidas (opacas) e trechos que o modelo não consegue representar.</summary>
     public List<string> Gaps { get; } = [];
@@ -74,12 +70,14 @@ public sealed class FlowTree
 }
 
 /// <summary>
-/// Folha da árvore: um desfecho distinto do endpoint (validação que falha, regra que encerra, retorno antecipado ou
-/// resposta final com um conjunto de efeitos). Distinguida pelo ponto semântico do código, nunca pela mensagem HTTP.
+/// Ponto real de encerramento da requisição: validação de entrada que devolve 400 antes da action, tipo do JSON
+/// incompatível (model binding), regra que encerra com erro (throw, return de erro, notificação, guarda, catch) ou
+/// return do endpoint (retorno antecipado ou resposta final). Os returns de métodos internos não são pontos de
+/// encerramento: o valor deles é propagado ao chamador e o fluxo segue até um destes pontos.
 /// </summary>
-public sealed class TerminalOutcome
+public sealed class TerminalPoint
 {
-    /// <summary>Chave estável (<see cref="Scenario.Terminal"/>), com discriminador quando há ocorrências equivalentes.</summary>
+    /// <summary>Chave estável pelo ponto semântico do código (método, tipo, condição normalizada), sem linha nem mensagem.</summary>
     public required string Key { get; init; }
 
     /// <summary>Um de <see cref="TerminalKinds"/>.</summary>
@@ -93,14 +91,12 @@ public sealed class TerminalOutcome
 
     /// <summary>
     /// Regras do mesmo ponto do código alcançadas por mais de um caminho (o mesmo método chamado de dois ramos com a
-    /// mesma condição): uma folha só, com um caminho alternativo por ocorrência.
+    /// mesma condição): um ponto só.
     /// </summary>
     public IReadOnlyList<CodeRule> Rules { get; init; } = [];
 
-    public IReadOnlyList<EarlyExit> Exits { get; init; } = [];
-
-    /// <summary>Variação de sucesso: o literal do ramo no valor oposto ao do caminho principal.</summary>
-    public Pred? Flipped { get; init; }
+    /// <summary>Return antecipado do próprio endpoint.</summary>
+    public EarlyExit? Exit { get; init; }
 
     /// <summary>Campo do body com tipo JSON incompatível (model binding).</summary>
     public InputField? BindingField { get; init; }
@@ -108,81 +104,92 @@ public sealed class TerminalOutcome
     public SourceReference? Source { get; init; }
 
     public int? Status { get; init; }
+}
+
+/// <summary>Um nó percorrido num caminho e a transição que leva até ele (sentido e condição assumida).</summary>
+public sealed record PathStep(string NodeKey, FlowNodeKind Kind, string Label, SourceReference? Source, string Sense, string? Condition);
+
+/// <summary>
+/// Caminho de execução do endpoint até um ponto de encerramento: as restrições acumuladas (guardas anteriores que
+/// passam, ramos escolhidos e a condição que dispara o encerramento), os efeitos que executam e a viabilidade.
+/// </summary>
+public sealed class ExecutionPath
+{
+    public required TerminalPoint Terminal { get; init; }
+
+    /// <summary>Restrições exatas do caminho, na ordem em que o fluxo as avalia.</summary>
+    public required IReadOnlyList<PathConstraint> Constraints { get; init; }
+
+    /// <summary>Efeitos que executam com certeza no caminho, na ordem.</summary>
+    public required IReadOnlyList<EffectSite> Effects { get; init; }
+
+    /// <summary>Returns de métodos internos que o caminho toma (deixam de executar o resto do método).</summary>
+    public required IReadOnlyList<EarlyExit> InnerExits { get; init; }
+
+    public required IReadOnlyList<PathStep> Steps { get; init; }
+
+    /// <summary>Condições que distinguem o desfecho (gatilho do encerramento, ramos de efeito, returns internos).</summary>
+    public required IReadOnlyList<Decision> Decisive { get; init; }
+
+    public required SolveResult Result { get; init; }
+
+    /// <summary>Validação que só falha junto com outra do mesmo campo (os erros são devolvidos juntos).</summary>
+    public bool Aggregated { get; init; }
+
+    /// <summary>Por que o caminho é UNKNOWN ou como ele foi montado (validação agregada).</summary>
+    public string? Reason { get; init; }
+}
+
+/// <summary>Condição decisiva de um caminho: o predicado, como no código, e o valor que o caminho assume.</summary>
+public sealed record Decision(Pred Pred, string Code, bool Value);
+
+/// <summary>Restrição de um caminho: a exata e, quando houver, uma forma mais legível para o payload (¬gatilho em vez de ¬(alcançada ∧ gatilho)).</summary>
+public sealed record PathConstraint(Pred Exact, Pred? Preferred = null);
+
+/// <summary>
+/// Desfecho distinto do endpoint: um ponto de encerramento e, nas respostas de sucesso, o conjunto de efeitos (inseriu
+/// vs. não inseriu). Caminhos diferentes que chegam ao mesmo ponto com os mesmos efeitos são o mesmo desfecho: um
+/// cenário só. Distinguido pelo ponto semântico do código, nunca pela mensagem ou pelo status HTTP.
+/// </summary>
+public sealed class TerminalOutcome
+{
+    /// <summary>Chave estável (<see cref="Scenario.Terminal"/>).</summary>
+    public required string Key { get; init; }
+
+    public required TerminalPoint Point { get; init; }
+
+    public required string Label { get; init; }
+
+    public string Kind => Point.Kind;
+
+    public bool Success => Point.Success;
+
+    /// <summary>Assinatura dos efeitos (entidade + operação, eventos, envios) que distingue as respostas de sucesso.</summary>
+    public IReadOnlyList<string> Effects { get; init; } = [];
+
+    /// <summary>Caminhos viáveis (ou não decididos) até o desfecho, o mais simples primeiro.</summary>
+    public List<ExecutionPath> Paths { get; } = [];
+
+    /// <summary>Efeitos do desfecho principal do mesmo ponto que este não executa (ex.: "ItemRemessa INSERT").</summary>
+    public IReadOnlyList<string> Missing { get; init; } = [];
+
+    /// <summary>Efeitos que só este desfecho executa, em relação ao principal do mesmo ponto.</summary>
+    public IReadOnlyList<string> Extra { get; init; } = [];
+
+    /// <summary>Variação de efeitos de um return de sucesso (não é o desfecho principal daquele return).</summary>
+    public bool IsVariant { get; init; }
 
     public FlowTreeNode? Node { get; set; }
-
-    // ---- Fase 3: viabilidade ----
 
     public Feasibility Feasibility { get; set; } = Feasibility.Unknown;
 
     public string? Reason { get; set; }
 
-    /// <summary>Valores que satisfazem o caminho (prova do SAT, ou hipótese quando UNKNOWN por condição opaca).</summary>
-    public Assignment? Witness { get; set; }
-
     /// <summary>Validação que só falha junto com outra do mesmo campo (não há valor que viole só ela).</summary>
     public bool Aggregated { get; set; }
-
-    /// <summary>Mesmo desfecho (resposta e efeitos) de outra folha: a linha desta folha reaproveita o payload da outra.</summary>
-    public TerminalOutcome? EquivalentTo { get; set; }
 }
 
-/// <summary>Caminho até uma folha: sequência de decisões (restrições acumuladas) e a viabilidade.</summary>
-public sealed class PathCandidate
-{
-    public required TerminalOutcome Leaf { get; init; }
-
-    /// <summary>Restrições do caminho: guardas anteriores que passam + condição que dispara a folha.</summary>
-    public required IReadOnlyList<Pred> Constraints { get; init; }
-
-    /// <summary>Condição-alvo (gatilho da regra, violação, literal do ramo): onde uma condição opaca torna a folha UNKNOWN.</summary>
-    public Pred? Target { get; init; }
-
-    public required SolveResult Result { get; init; }
-}
-
-/// <summary>
-/// Obrigação de cobertura: atingir uma folha ou exercitar uma classe/limite/ramo relevante que a atinge.
-/// Identificar uma obrigação não implica um novo teste: um cenário já escolhido pode cobrir várias.
-/// </summary>
-public sealed class CoverageTarget
-{
-    public string Id { get; set; } = "";
-
-    /// <summary>Chave estável: folha-âncora + discriminador da obrigação.</summary>
-    public required string Key { get; init; }
-
-    /// <summary>Um de <see cref="CoverageTargetKinds"/>.</summary>
-    public required string Kind { get; init; }
-
-    public required string Label { get; init; }
-
-    /// <summary>Folha de onde a obrigação vem (regra, validação, caminho principal).</summary>
-    public required TerminalOutcome Anchor { get; init; }
-
-    /// <summary>Folha que o cenário precisa atingir; nula quando qualquer desfecho de sucesso serve.</summary>
-    public TerminalOutcome? Leaf { get; init; }
-
-    /// <summary>Precisa ser verdadeiro com os valores do cenário (classe, limite, ramo, iterações).</summary>
-    public Pred? Predicate { get; init; }
-
-    public Probe? Probe { get; init; }
-
-    public CodeRule? Rule { get; init; }
-
-    public InputField? Field { get; init; }
-
-    public int? Iterations { get; init; }
-
-    public string Status { get; set; } = "";
-
-    public string? Reason { get; set; }
-
-    /// <summary>Gerada para ela: nenhum cenário anterior a cobria.</summary>
-    public bool Selected { get; set; }
-}
-
-/// <summary>Identidade estável do cenário: hash do endpoint e da obrigação (folha + classe necessária).</summary>
+/// <summary>Identidade estável do cenário: hash do endpoint e do desfecho (ponto de encerramento + efeitos).</summary>
 public static partial class ScenarioKey
 {
     public static string Of(string endpoint, string target)

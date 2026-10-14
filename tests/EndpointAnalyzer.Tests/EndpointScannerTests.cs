@@ -24,6 +24,7 @@ public class EndpointScannerTests(SampleSolutionFixture fixture)
             "Programação de transporte | PATCH /api/programacoes/{id}/finalizar",
             "Programação de transporte | PATCH /api/programacoes/{id}/cancelar",
             "Remessa | POST /api/remessas",
+            "Remessa | PUT /api/remessas/{id}/confirmar",
             "Veículo | POST /veiculo/v1",
             "Veículo | POST /api/veiculos",
             "Veículo | PUT /api/veiculos/{id}/disponibilidade",

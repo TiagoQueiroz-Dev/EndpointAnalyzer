@@ -1,5 +1,14 @@
 # EndpointAnalyzer — Geração de cenários por árvore de execução
 
+> **Correção aplicada (14/10/2026): desfechos primeiro.** A geração não parte mais de condições nem de obrigações de
+> cobertura. O fluxo de controle é reconstruído (`FlowModel`), os retornos dos métodos chamados são propagados às condições
+> do chamador (`SymbolicResolver`), os caminhos são percorridos até os pontos reais de encerramento
+> (`ExecutionPathExplorer`) e só então os desfechos distintos — ponto de encerramento + efeitos executados — são
+> identificados (`TerminalOutcomeCollector`), com **um cenário por desfecho** (`ScenarioGenerator`). Return de método
+> interno não é folha. Classes de equivalência, limites, iterações de laço e ramos que não mudam a resposta nem os efeitos
+> deixaram de gerar cenários (Fase 4 abaixo: as obrigações viram, no máximo, a descrição do valor escolhido ou uma
+> observação). `CoveragePlanner` e `PathFeasibilityService` foram removidos; `MaxScenarios` deu lugar a `MaxPaths`.
+
 ## 1. Objetivo
 
 Substituir a geração centrada em *candidatos de teste* por uma geração centrada nos **desfechos alcançáveis do fluxo do endpoint**.

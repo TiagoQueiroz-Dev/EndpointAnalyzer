@@ -162,12 +162,12 @@ public class AnalysisDiffTests(SampleSolutionFixture fixture)
         Assert.Equal(("500", "600"), (max.Before!.GetValue<string>(), max.After!.GetValue<string>()));
         Assert.Contains(validation.Fields, f => f.Path == "mensagem");
 
-        // Mesma obrigação (identidade estrutural): o limite novo aparece no foco (documentação do cenário); o comportamento
-        // é o resultado esperado do cenário inválido (mensagem e regra que interrompe).
+        // Mesmo desfecho (identidade estrutural): o limite novo aparece no foco (documentação do cenário); o comportamento
+        // é o resultado esperado do cenário inválido (mensagem e regra que interrompe). Limite válido não é desfecho próprio.
         var scenarios = Group(result, "matriz-estatica");
-        Assert.Equal((0, 0, 2), (scenarios.Counts.Added, scenarios.Counts.Removed, scenarios.Counts.Changed));
-        Assert.All(scenarios.Items, i => Assert.Contains(i.Fields, f => f.Path == "foco.expressao" && f.Impact == DiffImpacts.Documentation));
+        Assert.Equal((0, 0, 1), (scenarios.Counts.Added, scenarios.Counts.Removed, scenarios.Counts.Changed));
         var invalid = Assert.Single(scenarios.Items, i => i.Impact == DiffImpacts.Behavior);
+        Assert.Contains(invalid.Fields, f => f.Path == "foco.expressao" && f.Impact == DiffImpacts.Documentation);
         Assert.Contains(invalid.Fields, f => f.Path == "esperado.mensagens");
         Assert.Contains(invalid.Fields, f => f.Path == "esperado.regra");
     }

@@ -65,24 +65,24 @@ public class ScenarioGenerationTests(SampleSolutionFixture fixture)
         var indisponivel = Rule(matrix, "Veículo indisponível.");
         Assert.Contains(indisponivel.Preconditions, p => p.Description.Contains("Disponivel = false"));
 
-        // Limite da regra do código: hoje ainda é aceito.
-        var hoje = Assert.Single(matrix.Scenarios, s => s.Kind == ScenarioKinds.Boundary && s.Title.StartsWith("data = hoje", StringComparison.Ordinal));
-        Assert.Equal(today, DateTime.Parse((string)hoje.Request.Body!["data"]!));
-        Assert.Equal("sucesso", hoje.Expected.Outcome);
+        // O limite da regra (data = hoje) não muda o desfecho: é o caminho principal, sem cenário próprio.
+        Assert.DoesNotContain(matrix.Scenarios, s => s.Kind == ScenarioKinds.Boundary);
     }
 
     [Fact]
-    public async Task Validacoes_geram_particoes_invalidas_e_valores_limite()
+    public async Task Cada_validacao_e_um_desfecho_com_um_unico_cenario()
     {
         var matrix = await MatrixAsync("POST /api/programacoes");
 
-        var acima = Assert.Single(matrix.Scenarios, s => s.Kind == ScenarioKinds.Validation && s.Title.StartsWith("observacao com 501", StringComparison.Ordinal));
+        // Uma validação, um desfecho, um cenário: o título diz qual classe o valor escolhido representa.
+        var acima = Assert.Single(matrix.Scenarios, s => s.Kind == ScenarioKinds.Validation && s.Expected.Messages.Any(m => m.Contains("maximum length of '500'")));
+        Assert.StartsWith("observacao com 501", acima.Title, StringComparison.Ordinal);
         Assert.Equal(501, ((string)acima.Request.Body!["observacao"]!).Length);
         Assert.Equal(400, acima.Expected.HttpStatus);
         Assert.Equal(ScenarioTechniques.BoundaryValue, acima.Technique);
 
-        var limite = Assert.Single(matrix.Scenarios, s => s.Kind == ScenarioKinds.Boundary && s.Title.StartsWith("observacao com 500", StringComparison.Ordinal));
-        Assert.Equal("sucesso", limite.Expected.Outcome);
+        // O limite válido (500) não muda o desfecho: sem cenário próprio.
+        Assert.DoesNotContain(matrix.Scenarios, s => s.Kind == ScenarioKinds.Boundary || s.Title.StartsWith("observacao com 500", StringComparison.Ordinal));
 
         // FluentValidation: GreaterThan(0).When(HasValue) → 0 é inválido, com a mensagem do WithMessage.
         var veiculoZero = Assert.Single(matrix.Scenarios, s => s.Kind == ScenarioKinds.Validation && s.Expected.Messages.Contains("Veículo inválido."));
@@ -91,21 +91,20 @@ public class ScenarioGenerationTests(SampleSolutionFixture fixture)
         // Tabela de decisão: o cenário de 501 caracteres só viola a validação de Observacao.
         var maxLength = Assert.Single(matrix.Conditions, c => c.Expression == "request.Observacao.Length > 500");
         Assert.True(acima.Decisions[maxLength.Id]);
-        Assert.False(limite.Decisions[maxLength.Id]);
+        Assert.False(matrix.Scenarios[0].Decisions[maxLength.Id]);
     }
 
     [Fact]
-    public async Task Required_e_StringLength_geram_so_os_representantes_necessarios()
+    public async Task Required_e_StringLength_geram_um_cenario_por_validacao()
     {
         var matrix = await MatrixAsync("POST /api/veiculos");
         var validations = matrix.Scenarios.Where(s => s.Kind == ScenarioKinds.Validation).Select(s => s.Title).ToList();
 
-        // "" e "   " violam a mesma checagem (IsNullOrWhiteSpace): só espaços representa a classe; 6 e 8 são os dois lados do limite.
-        Assert.Equal(3, validations.Count);
+        // Duas validações, dois desfechos: null, "", espaços, 6 ou 8 caracteres não viram cenários a mais.
+        Assert.Equal(2, validations.Count);
         Assert.Contains("placa só com espaços", validations);
-        Assert.DoesNotContain("placa vazio (\"\")", validations);
         Assert.Contains(validations, t => t.StartsWith("placa com 6", StringComparison.Ordinal));
-        Assert.Contains(validations, t => t.StartsWith("placa com 8", StringComparison.Ordinal));
+        Assert.DoesNotContain(validations, t => t.StartsWith("placa com 8", StringComparison.Ordinal));
 
         // 7 espaços: viola só o [Required], não o [StringLength(7)].
         var espacos = Assert.Single(matrix.Scenarios, s => s.Title == "placa só com espaços");
@@ -133,7 +132,8 @@ public class ScenarioGenerationTests(SampleSolutionFixture fixture)
         var tipo = Rule(matrix, "Tipo de veículo não encontrado");
         Assert.Equal(400, tipo.Expected.HttpStatus);
         Assert.Equal("código", tipo.Expected.StatusSource);
-        Assert.Contains(tipo.Preconditions, p => p.Description == "veiculoTipos.ExistePorId(1) retorna false");
+        // veiculoTipos.ExistePorId(id) devolve false com id null ou o resultado do repositório: o retorno é propagado até a consulta.
+        Assert.Contains(tipo.Preconditions, p => p.Description == "_repository.ExistePorId(1) retorna false");
 
         // A regra da placa depende do tipo de veículo exigir placa (estado consultado).
         var placa = Rule(matrix, "Placa obrigatória para esse tipo de veículo");
@@ -164,15 +164,15 @@ public class ScenarioGenerationTests(SampleSolutionFixture fixture)
     }
 
     [Fact]
-    public async Task Ramo_do_parametro_bool_muda_os_efeitos()
+    public async Task Ramo_que_so_muda_campos_da_mesma_entidade_nao_e_outro_desfecho()
     {
         var matrix = await MatrixAsync("PUT /api/veiculos/{id}/disponibilidade");
 
-        var disponivel = Assert.Single(matrix.Scenarios, s => s.Kind == ScenarioKinds.Success && s.Request.Query!["disponivel"] == "true");
-        var indisponivel = Assert.Single(matrix.Scenarios, s => s.Kind == ScenarioKinds.Success && s.Request.Query!["disponivel"] == "false");
+        // disponivel verdadeiro ou falso: o mesmo UPDATE do veículo e a mesma resposta (um desfecho só); o ramo fica na tabela de decisão.
+        var disponivel = Assert.Single(matrix.Scenarios, s => s.Kind == ScenarioKinds.Success);
         Assert.Contains("UltimaProgramacaoId = null", disponivel.Expected.Effects.Single(e => e.Target == "Veiculo").Properties!);
-        Assert.DoesNotContain("UltimaProgramacaoId = null", indisponivel.Expected.Effects.Single(e => e.Target == "Veiculo").Properties!);
         Assert.Equal("/api/veiculos/1/disponibilidade?disponivel=true", disponivel.Request.Url);
+        Assert.Contains(matrix.Conditions, c => c is { Kind: "ramo", Expression: "disponivel" });
 
         var naoEncontrado = Assert.Single(matrix.Scenarios, s => s.Kind == ScenarioKinds.Rule);
         Assert.Equal(404, naoEncontrado.Expected.HttpStatus);
@@ -202,8 +202,10 @@ public class ScenarioGenerationTests(SampleSolutionFixture fixture)
         Assert.Equal(404, naoEncontrado.Expected.HttpStatus);
         Assert.Equal("middleware", naoEncontrado.Expected.StatusSource);
 
+        // [Range(1, 1000)]: um desfecho, um cenário (0 ou 1001 levam à mesma validação).
+        Assert.Single(matrix.Scenarios, s => s.Expected.Messages.Contains("The field Quantidade must be between 1 and 1000."));
         Assert.Contains(matrix.Scenarios, s => s.Title.StartsWith("quantidade = 0", StringComparison.Ordinal) && s.Expected.HttpStatus == 400);
-        Assert.Contains(matrix.Scenarios, s => s.Title.StartsWith("quantidade = 1000", StringComparison.Ordinal) && s.Expected.Outcome == "sucesso");
+        Assert.DoesNotContain(matrix.Scenarios, s => s.Title.StartsWith("quantidade = 1000", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -253,33 +255,35 @@ public class ScenarioGenerationTests(SampleSolutionFixture fixture)
     }
 
     [Fact]
-    public async Task Required_em_int_nao_falha_e_o_valor_padrao_segue_o_fluxo()
+    public async Task Required_em_int_nao_falha_e_o_valor_padrao_nao_e_outro_desfecho()
     {
         var matrix = await MatrixAsync("POST /api/programacoes-transporte/{id}/origens");
 
-        var sequencia = Assert.Single(matrix.Scenarios, s => s.Title.StartsWith("sequencia ausente ou 0", StringComparison.Ordinal));
-        Assert.Equal(0, (long)sequencia.Request.Body!["sequencia"]!);
-        Assert.Equal("sucesso", sequencia.Expected.Outcome);
-        Assert.Contains(sequencia.Notes!, n => n.StartsWith("Omitir sequencia no JSON", StringComparison.Ordinal));
+        // Ausente ou 0 segue o caminho principal: avisado na matriz, sem cenário próprio.
+        Assert.DoesNotContain(matrix.Scenarios, s => s.Title.StartsWith("sequencia ausente", StringComparison.Ordinal));
+        Assert.Contains(matrix.Notes, n => n.StartsWith("sequencia: [Required] não tem efeito em int não anulável (ausente no JSON, chega como 0", StringComparison.Ordinal));
 
-        // enderecoId = 0: Existe retorna true sem consultar (id == default).
-        var zero = Assert.Single(matrix.Scenarios, s => s.Focus?.Expression == "id == null || id.Equals(default(TKey))");
-        Assert.Equal(0, (long)zero.Request.Body!["enderecoId"]!);
+        // enderecoId = 0: Existe retorna true sem consultar (id == default). É um return interno: o valor é propagado ao
+        // handler e o fluxo chega à mesma resposta, com os mesmos efeitos — não é outro desfecho.
+        Assert.DoesNotContain(matrix.Scenarios, s => s.Focus?.Expression == "id == null || id.Equals(default(TKey))");
+        Assert.DoesNotContain(matrix.Scenarios, s => s.Terminal!.Contains("OrigemCommandHandler.Existe|id", StringComparison.Ordinal));
     }
 
     [Fact]
-    public async Task Cada_condicao_do_fluxo_aparece_verdadeira_e_falsa()
+    public async Task Returns_internos_nao_sao_desfechos_e_a_resposta_final_inalcancavel_explica_o_motivo()
     {
         var matrix = await MatrixAsync("POST /api/programacoes-transporte/{id}/origens");
 
         var existeOrigem = Assert.Single(matrix.Conditions, c => c is { Kind: "ramo", Expression: "existeOrigem" });
-        Assert.Contains(matrix.Scenarios, s => s.Decisions[existeOrigem.Id] == true);
         Assert.Contains(matrix.Scenarios, s => s.Decisions[existeOrigem.Id] == false);
 
-        // Saída antecipada que nunca acontece (notificações pendentes já encerraram o cenário): linha própria, sem payload, com o motivo.
-        var notificacoes = Assert.Single(matrix.Scenarios, s => s.Focus?.Expression.Contains("notifications.PossuiNotificacoes()", StringComparison.Ordinal) == true);
-        Assert.Equal(PathFeasibilities.Unsat, notificacoes.Feasibility);
-        Assert.False(string.IsNullOrWhiteSpace(notificacoes.NoPayload));
+        // if (notifications.PossuiNotificacoes()) return false; no Commit: return interno, não ponto de encerramento.
+        Assert.DoesNotContain(matrix.Scenarios, s => s.Focus?.Expression.Contains("notifications.PossuiNotificacoes()", StringComparison.Ordinal) == true);
+
+        // if (ModelState.IsValid) return ApiResponse(...) sempre acontece: o return depois dele fica sem payload, com o motivo.
+        var final = Assert.Single(matrix.Scenarios, s => s.Terminal == TerminalKinds.Success);
+        Assert.Equal(PathFeasibilities.Unsat, final.Feasibility);
+        Assert.Contains("ModelState.IsValid", final.NoPayload);
     }
 
     [Fact]

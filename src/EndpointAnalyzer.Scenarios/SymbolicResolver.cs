@@ -35,7 +35,8 @@ public sealed class VarTable(InputModel input)
 
     public Var? Input(IParameterSymbol parameter) => input.Root(parameter) is { } root ? Input(root) : null;
 
-    public Var Root(StateRoot root, ITypeSymbol type)
+    /// <param name="notNull">O código garante que o valor não é null (análise de nulidade do compilador).</param>
+    public Var Root(StateRoot root, ITypeSymbol type, bool notNull = false)
     {
         if (_vars.TryGetValue(root.Key, out var existing)) return existing;
         var (underlying, nullable) = InputModel.Underlying(type);
@@ -45,7 +46,7 @@ public sealed class VarTable(InputModel input)
             Key = root.Key,
             Kind = kind,
             Origin = root.Origin,
-            Nullable = nullable || (!underlying.IsValueType && kind != VarKind.Collection),
+            Nullable = !notNull && (nullable || (!underlying.IsValueType && kind != VarKind.Collection)),
             Display = root.Render(null),
             Root = root,
             EnumMembers = kind == VarKind.Enum ? InputModel.EnumMembersOf(underlying) : null,
@@ -86,13 +87,39 @@ public sealed record Scope(SemanticModel Model, AnalyzedMethod? Method, IReadOnl
 /// Traduz condições do código (Roslyn) para predicados sobre o payload e o estado: segue parâmetros até o argumento
 /// do chamador (e daí até o endpoint), locais até a inicialização e chamadas até a consulta que produz o valor
 /// (repositório, serviço, DbContext). O que não dá para traduzir vira um predicado opaco (suposição do cenário).
+/// <para>
+/// Retornos entre métodos: o valor de uma chamada a um método do fluxo com vários returns é o de cada return, sob a
+/// condição do caminho até ele dentro do método chamado. Uma condição do chamador sobre esse valor
+/// (if (!Validar(x)), if (resultado == null), if (!resultado.Sucesso)) vira a disjunção dos returns que a satisfazem,
+/// em vez de uma suposição sobre o resultado da chamada.
+/// </para>
 /// </summary>
 public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable vars)
 {
     private const int MaxDepth = 16;
 
-    private readonly Dictionary<(SyntaxNode, AnalyzedMethod?), Term?> _terms = [];
+    /// <summary>Returns seguidos por chamada (acima disso a chamada fica como valor consultado).</summary>
+    private const int MaxReturns = 8;
+
+    /// <summary>Chamadas com vários returns desdobradas dentro de uma mesma condição (aninhadas).</summary>
+    private const int MaxSplitDepth = 3;
+
+    /// <summary>Chamada a um método do fluxo com vários returns, avaliada no escopo do chamador.</summary>
+    private readonly record struct Split(InvocationExpressionSyntax Call, AnalyzedMethod Caller);
+
+    private readonly Dictionary<(SyntaxNode, AnalyzedMethod?), (Term? Term, Split[] Splits)> _terms = [];
     private readonly Dictionary<AnalyzedMethod, Pred> _callerPaths = [];
+
+    /// <summary>Valor fixado para uma chamada enquanto um dos returns dela é avaliado.</summary>
+    private readonly Dictionary<Split, Term> _forced = [];
+
+    /// <summary>Chamadas com vários returns encontradas na tradução em andamento.</summary>
+    private List<Split>? _splits;
+
+    /// <summary>Métodos sendo desdobrados (recursão).</summary>
+    private readonly HashSet<ISymbol> _inlining = new(SymbolEqualityComparer.Default);
+
+    private readonly Dictionary<Split, Pred?> _inlined = [];
 
     public VarTable Vars => vars;
 
@@ -111,13 +138,28 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
     public Term? Term(ExpressionSyntax expression, Scope scope, int depth = 0)
     {
         if (depth > MaxDepth) return null;
-        if (scope.Bindings is null)
+        if (scope.Bindings is not null || _forced.Count > 0) return ResolveTerm(expression, scope, depth);
+
+        // O cache guarda também as chamadas com vários returns de que o valor depende (para desdobrar a condição).
+        var cacheKey = ((SyntaxNode)expression, scope.Method);
+        if (_terms.TryGetValue(cacheKey, out var cached))
         {
-            var cacheKey = ((SyntaxNode)expression, scope.Method);
-            if (_terms.TryGetValue(cacheKey, out var cached)) return cached;
-            return _terms[cacheKey] = ResolveTerm(expression, scope, depth);
+            _splits?.AddRange(cached.Splits);
+            return cached.Term;
         }
-        return ResolveTerm(expression, scope, depth);
+        var outer = _splits;
+        _splits = [];
+        try
+        {
+            var term = ResolveTerm(expression, scope, depth);
+            _terms[cacheKey] = (term, [.. _splits]);
+            return term;
+        }
+        finally
+        {
+            outer?.AddRange(_splits);
+            _splits = outer;
+        }
     }
 
     private Term? ResolveTerm(ExpressionSyntax expression, Scope scope, int depth)
@@ -176,8 +218,11 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
             {
                 var left = Term(b.Left, scope, depth + 1);
                 var right = Term(b.Right, scope, depth + 1);
-                return left is null || right is null ? null : new ArithTerm(op, left, right);
+                return left is null or TupleTerm or ObjTerm || right is null or TupleTerm or ObjTerm ? null : new ArithTerm(op, left, right);
             }
+
+            case BaseObjectCreationExpressionSyntax creation:
+                return Created(creation, scope, depth);
 
             case PrefixUnaryExpressionSyntax u when u.IsKind(SyntaxKind.UnaryMinusExpression) && Term(u.Operand, scope, depth + 1) is { } operand:
                 return operand is ConstTerm { Number: { } n } ? ConstTerm.Of(-n) : new ArithTerm("-", ConstTerm.Of(0), operand);
@@ -209,8 +254,27 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
         return MemberOf(Term(ma.Expression, scope, depth + 1), name, symbol);
     }
 
+    /// <summary>new Resultado { Sucesso = false } / new Resultado(false, "msg"): membros pelo inicializador e pelos parâmetros de mesmo nome.</summary>
+    private ObjTerm? Created(BaseObjectCreationExpressionSyntax creation, Scope scope, int depth)
+    {
+        if (scope.Model.GetTypeInfo(creation).Type is not INamedTypeSymbol type || type.TypeKind is not (TypeKind.Class or TypeKind.Struct)) return null;
+        var members = new Dictionary<string, Term>(StringComparer.Ordinal);
+        if (scope.Model.GetSymbolInfo(creation).Symbol is IMethodSymbol constructor)
+            foreach (var parameter in constructor.Parameters)
+            {
+                var property = type.GetMembers().FirstOrDefault(m => m is IPropertySymbol or IFieldSymbol && string.Equals(m.Name, parameter.Name, StringComparison.OrdinalIgnoreCase));
+                if (property is not null && Argument(creation, constructor, parameter) is { } argument && Term(argument, scope, depth + 1) is { } value)
+                    members[property.Name] = value;
+            }
+        foreach (var assignment in creation.Initializer?.Expressions.OfType<AssignmentExpressionSyntax>() ?? [])
+            if (assignment.Left is IdentifierNameSyntax member && Term(assignment.Right, scope, depth + 1) is { } value)
+                members[member.Identifier.Text] = value;
+        return new ObjTerm(type.Name, members);
+    }
+
     private Term? MemberOf(Term? target, string name, ISymbol? symbol)
     {
+        if (target is ObjTerm created) return created.Members.GetValueOrDefault(name);
         if (target is TupleTerm tuple && TypeOf(symbol) is { } memberType)
         {
             foreach (var item in tuple.Items.Where(i => i.Var.Kind == VarKind.Object))
@@ -227,6 +291,8 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
     private Term? Invocation(InvocationExpressionSyntax invocation, IMethodSymbol? method, Scope scope, int depth)
     {
         if (method is null) return null;
+        // Um dos returns do método chamado, enquanto a condição do chamador é desdobrada por return.
+        if (scope.Method is { } caller && _forced.TryGetValue(new Split(invocation, caller), out var forced)) return forced;
         var receiver = invocation.Expression is MemberAccessExpressionSyntax ma ? ma.Expression : null;
 
         // Conversões que não mudam a regra: x.Trim(), x.ToUpper(), x.GetValueOrDefault().
@@ -260,15 +326,20 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
             && receiver is not null && Term(receiver, scope, depth + 1) is VarTerm { Var.Kind: VarKind.Collection } collection)
             return collection with { Measure = Measure.Length };
 
-        // Método do grafo com um único return: segue o valor retornado (ObterOuFalhar → repository.ObterPorId).
-        if (scope.Method?.CallSites.FirstOrDefault(cs => cs.Syntax == invocation) is { } site && graph.MethodOf(site.Node) is { } target
-            && !IsBoundary(target.Symbol) && SingleReturn(target.Declaration) is { } returned)
+        if (scope.Method is { } from && CalleeOf(invocation, from) is { } target)
         {
-            var inner = Term(returned, ScopeOf(target), depth + 1);
-            // Só vale seguir quando chega no payload, numa constante ou numa consulta a repositório/DbContext;
-            // ObterTodos().FirstOrDefault(...) fica melhor descrito pela chamada original.
-            if (inner is ConstTerm or NowTerm || inner is VarTerm { Var.Origin: VarOrigin.Input } || inner is VarTerm { Var.Root.Repository: true })
-                return inner;
+            var returns = ReturnsOf(target);
+            // Método do grafo com um único return: segue o valor retornado (ObterOuFalhar → repository.ObterPorId).
+            if (returns.Count == 1)
+            {
+                var inner = Term(returns[0], ScopeOf(target), depth + 1);
+                // Só vale seguir quando chega no payload, numa constante, num objeto criado ou numa consulta a
+                // repositório/DbContext; ObterTodos().FirstOrDefault(...) fica melhor descrito pela chamada original.
+                if (inner is ConstTerm or NowTerm or ObjTerm || inner is VarTerm { Var.Origin: VarOrigin.Input } || inner is VarTerm { Var.Root.Repository: true })
+                    return inner;
+            }
+            // Vários returns: a condição que usar este valor é desdobrada por return (Atomic); aqui fica o valor da chamada.
+            else if (returns.Count is > 1 and <= MaxReturns) _splits?.Add(new Split(invocation, from));
         }
 
         if (method.ReturnsVoid) return null;
@@ -376,7 +447,10 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
                     && SymbolEqualityComparer.Default.Equals(method.Model.GetDeclaredSymbol(declarator), local):
                     // Reatribuída depois: o valor depende do caminho.
                     if (IsReassigned(local, method)) return null;
-                    return declarator.Initializer is { } init ? Term(init.Value, scope, depth + 1) : null;
+                    if (declarator.Initializer is not { } init) return null;
+                    var value = Term(init.Value, scope, depth + 1);
+                    // Objeto criado e alterado depois (remessa.Placa = ...): os membros do inicializador não valem mais.
+                    return value is ObjTerm && IsMutated(local, method) ? null : value;
 
                 case ForEachStatementSyntax forEach when forEach.Identifier.Text == local.Name
                     && SymbolEqualityComparer.Default.Equals(method.Model.GetDeclaredSymbol(forEach), local):
@@ -393,6 +467,12 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
         method.Declaration.DescendantNodes().OfType<AssignmentExpressionSyntax>().Any(a =>
             a.Left is IdentifierNameSyntax id && id.Identifier.Text == local.Name
             && SymbolEqualityComparer.Default.Equals(method.Model.GetSymbolInfo(a.Left).Symbol, local));
+
+    /// <summary>Algum membro do objeto é atribuído depois da criação (local.Membro = ...).</summary>
+    private static bool IsMutated(ILocalSymbol local, AnalyzedMethod method) =>
+        method.Declaration.DescendantNodes().OfType<AssignmentExpressionSyntax>().Any(a =>
+            a.Left is MemberAccessExpressionSyntax { Expression: IdentifierNameSyntax id } && id.Identifier.Text == local.Name
+            && SymbolEqualityComparer.Default.Equals(method.Model.GetSymbolInfo(id).Symbol, local));
 
     /// <summary>
     /// Campo/propriedade do próprio objeto: numa entidade (programacao.Finalizar() → Status) é o membro do receiver
@@ -428,8 +508,6 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
     public Pred Pred(ExpressionSyntax expression, Scope scope)
     {
         var e = UnwrapParens(expression);
-        var model = scope.Model;
-
         switch (e)
         {
             case PrefixUnaryExpressionSyntax u when u.IsKind(SyntaxKind.LogicalNotExpression):
@@ -440,7 +518,175 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
 
             case BinaryExpressionSyntax b when b.IsKind(SyntaxKind.LogicalOrExpression):
                 return Scenarios.Pred.Or(Pred(b.Left, scope), Pred(b.Right, scope));
+        }
+        return Atomic(() => AtomicPred(e, scope));
+    }
 
+    /// <summary>
+    /// Condição atômica com os retornos propagados: se ela usa o valor de uma chamada com vários returns, vira
+    /// (caminho até o return 1 ∧ condição com o valor 1) ∨ (caminho até o return 2 ∧ condição com o valor 2) ∨ ...
+    /// </summary>
+    private Pred Atomic(Func<Pred> build, int depth = 0)
+    {
+        var outer = _splits;
+        _splits = [];
+        Pred pred;
+        List<Split> found;
+        try
+        {
+            pred = build();
+            found = _splits;
+        }
+        finally
+        {
+            _splits = outer;
+        }
+
+        if (depth >= MaxSplitDepth || found.FirstOrDefault(s => !_forced.ContainsKey(s)) is not { Call: not null } split
+            || Alternatives(split, depth) is not { } arms)
+            return pred;
+
+        var result = new List<Pred>();
+        foreach (var (guard, value) in arms)
+        {
+            _forced[split] = value;
+            try
+            {
+                result.Add(Scenarios.Pred.And(guard, Atomic(build, depth + 1)));
+            }
+            finally
+            {
+                _forced.Remove(split);
+            }
+        }
+        return Scenarios.Pred.Or(result);
+    }
+
+    /// <summary>Cada return do método chamado: a condição para chegar nele (dentro do método) e o valor devolvido.</summary>
+    private List<(Pred Guard, Term Value)>? Alternatives(Split split, int depth)
+    {
+        if (CalleeOf(split.Call, split.Caller) is not { } target || ReturnsOf(target) is not { Count: > 1 and <= MaxReturns } returns) return null;
+        var symbol = target.Symbol.OriginalDefinition;
+        if (!_inlining.Add(symbol)) return null;
+        try
+        {
+            var arms = new List<(Pred, Term)>();
+            foreach (var returned in returns) arms.AddRange(Arms(returned, target, Local(returned, target), depth));
+            return arms.Count is > 0 and <= MaxReturns * 2 ? arms : null;
+        }
+        finally
+        {
+            _inlining.Remove(symbol);
+        }
+    }
+
+    /// <summary>Valor de um return; se ele mesmo depende de outra chamada com vários returns, um valor por return dela.</summary>
+    private List<(Pred Guard, Term Value)> Arms(ExpressionSyntax returned, AnalyzedMethod method, Pred guard, int depth)
+    {
+        if (guard is ConstPred { Value: false }) return [];
+        var outer = _splits;
+        _splits = [];
+        Term? term;
+        List<Split> found;
+        try
+        {
+            term = Term(returned, ScopeOf(method));
+            found = _splits;
+        }
+        finally
+        {
+            _splits = outer;
+        }
+
+        var nested = depth + 1 < MaxSplitDepth ? found.FirstOrDefault(s => !_forced.ContainsKey(s)) : default;
+        if (nested.Call is null || Alternatives(nested, depth + 1) is not { } inner)
+            return [(guard, term ?? Returned(returned, method))];
+
+        var result = new List<(Pred, Term)>();
+        foreach (var (g, value) in inner)
+        {
+            _forced[nested] = value;
+            try
+            {
+                result.AddRange(Arms(returned, method, Scenarios.Pred.And(guard, g), depth + 1));
+            }
+            finally
+            {
+                _forced.Remove(nested);
+            }
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Valor de um return que não dá para traduzir (remessa.Id): um valor próprio daquele return, não nulo quando o
+    /// compilador garante (análise de nulidade), para não confundir com o return que devolve null.
+    /// </summary>
+    private VarTerm Returned(ExpressionSyntax returned, AnalyzedMethod method)
+    {
+        var info = method.Model.GetTypeInfo(returned);
+        var type = info.Type ?? UnwrapTask(method.Symbol.ReturnType);
+        var root = new StateRoot
+        {
+            Key = $"ret:{method.DisplayName}@{returned.SpanStart}",
+            TypeName = type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+            Template = Template(returned, ScopeOf(method), 0),
+            Source = new SourceReference { File = method.SourceFile, Method = method.DisplayName, Line = returned.StartLine() },
+        };
+        var notNull = info.Nullability.FlowState == NullableFlowState.NotNull || returned is BaseObjectCreationExpressionSyntax;
+        return new VarTerm(vars.Root(root, type, notNull));
+    }
+
+    /// <summary>
+    /// if (Validar(x)) com Validar do fluxo devolvendo bool: a disjunção dos returns verdadeiros, cada um com o caminho
+    /// até ele (if (!Faturada) return true; ...; return false; → !Faturada). Null quando nada no método é traduzível
+    /// (a chamada original descreve melhor a condição).
+    /// </summary>
+    private Pred? Inline(InvocationExpressionSyntax invocation, Scope scope)
+    {
+        if (scope.Bindings is not null || scope.Method is not { } caller || CalleeOf(invocation, caller) is not { } target) return null;
+        if (UnwrapTask(target.Symbol.ReturnType).SpecialType != SpecialType.System_Boolean) return null;
+        var split = new Split(invocation, caller);
+        if (_forced.Count == 0 && _inlined.TryGetValue(split, out var cached)) return cached;
+        var returns = ReturnsOf(target);
+        var symbol = target.Symbol.OriginalDefinition;
+        if (returns.Count is 0 or > MaxReturns || !_inlining.Add(symbol)) return null;
+        try
+        {
+            var inlined = Scenarios.Pred.Or(returns.Select(r => Scenarios.Pred.And(Local(r, target), Pred(r, ScopeOf(target)))));
+            var atoms = Evaluator.Atoms(inlined).ToList();
+            var result = atoms.Count > 0 && atoms.All(a => a is OpaquePred) ? null : inlined;
+            if (_forced.Count == 0) _inlined[split] = result;
+            return result;
+        }
+        finally
+        {
+            _inlining.Remove(symbol);
+        }
+    }
+
+    /// <summary>bool valido = Validar(x) / a &gt; b && c, sem reatribuição: a condição da inicialização.</summary>
+    private ExpressionSyntax? LocalCondition(ExpressionSyntax expression, Scope scope)
+    {
+        if (scope.Bindings is not null || scope.Method is not { } method || UnwrapParens(expression) is not IdentifierNameSyntax id
+            || scope.Model.GetSymbolInfo(id).Symbol is not ILocalSymbol { Type.SpecialType: SpecialType.System_Boolean } local || IsReassigned(local, method))
+            return null;
+        var declarator = method.Declaration.DescendantNodes().OfType<VariableDeclaratorSyntax>()
+            .FirstOrDefault(d => d.Identifier.Text == local.Name && SymbolEqualityComparer.Default.Equals(method.Model.GetDeclaredSymbol(d), local));
+        if (declarator?.Initializer?.Value is not { } value) return null;
+        return Unwrap(value) switch
+        {
+            BinaryExpressionSyntax or PrefixUnaryExpressionSyntax or IsPatternExpressionSyntax => value,
+            InvocationExpressionSyntax inv when CalleeOf(inv, method) is not null => value,
+            _ => null,
+        };
+    }
+
+    private Pred AtomicPred(ExpressionSyntax e, Scope scope)
+    {
+        var model = scope.Model;
+        switch (e)
+        {
             case BinaryExpressionSyntax b when ComparisonOp(b) is { } op:
                 return Comparison(b, op, scope) ?? Opaque(e, scope);
 
@@ -462,6 +708,10 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
                 if (Call(inv, method, scope) is { } call) return call;
                 break;
         }
+
+        // Método do fluxo que devolve bool (direto, com await ou guardado numa local): os returns dele.
+        if (Unwrap(e) is InvocationExpressionSyntax invoked && !AssumedTrue.Contains(invoked) && Inline(invoked, scope) is { } inlined) return inlined;
+        if (LocalCondition(e, scope) is { } initializer) return Pred(initializer, scope);
 
         return Term(e, scope) switch
         {
@@ -494,7 +744,7 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
             return new CmpPred(c with { Measure = Measure.Length }, ">", ConstTerm.Of(0), inv.Compact());
 
         if (method.Name == "Equals" && args.Count == 1 && receiver is not null
-            && Term(receiver, scope) is { } l and not TupleTerm && Term(args[0].Expression, scope) is { } r and not TupleTerm)
+            && Term(receiver, scope) is { } l and not (TupleTerm or ObjTerm) && Term(args[0].Expression, scope) is { } r and not (TupleTerm or ObjTerm))
             return new CmpPred(l, "==", r, inv.Compact());
 
         return null;
@@ -502,21 +752,36 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
 
     private Pred? Comparison(BinaryExpressionSyntax b, string op, Scope scope)
     {
+        // valido == false, com bool valido = Validar(x): a condição da inicialização.
+        if (op is "==" or "!=")
+            foreach (var (side, other) in new[] { (b.Left, b.Right), (b.Right, b.Left) })
+                if (scope.Model.GetConstantValue(other).Value is bool expected && LocalCondition(side, scope) is { } initializer)
+                {
+                    var condition = Pred(initializer, scope);
+                    return expected == (op == "==") ? condition : Scenarios.Pred.Not(condition);
+                }
+
         var left = Term(b.Left, scope);
         var right = Term(b.Right, scope);
         var code = b.Compact();
+
+        // Dois valores conhecidos (um return que devolve null comparado com null): decidido aqui.
+        if (left is ConstTerm lc && right is ConstTerm rc && Constant(lc, op, rc) is { } decided)
+            return decided ? Scenarios.Pred.True : Scenarios.Pred.False;
 
         // x == null / x != null
         if (op is "==" or "!=" && (left is ConstTerm { IsNull: true } || right is ConstTerm { IsNull: true }))
         {
             var other = left is ConstTerm { IsNull: true } ? right : left;
             var otherSyntax = left is ConstTerm { IsNull: true } ? b.Right : b.Left;
+            // Objeto criado no código nunca é null.
+            if (other is ObjTerm) return op == "==" ? Scenarios.Pred.False : Scenarios.Pred.True;
             if (other is not VarTerm { Measure: Measure.Value } v) return null;
             Pred isNull = new NullPred(v.Var, $"{otherSyntax.Compact()} == null");
             return op == "==" ? isNull : Scenarios.Pred.Not(isNull);
         }
 
-        if (left is null or TupleTerm || right is null or TupleTerm) return null;
+        if (left is null or TupleTerm or ObjTerm || right is null or TupleTerm or ObjTerm) return null;
 
         // flag == true / flag != false
         var (flagTerm, flagConst) = (left, right) switch
@@ -534,6 +799,20 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
         return new CmpPred(left, op, right, code);
     }
 
+    /// <summary>Comparação entre duas constantes; null quando o tipo dos valores não permite decidir.</summary>
+    private static bool? Constant(ConstTerm left, string op, ConstTerm right)
+    {
+        if (left.IsNull || right.IsNull)
+            return op switch { "==" => left.IsNull && right.IsNull, "!=" => !(left.IsNull && right.IsNull), _ => null };
+        if (left.Bool is { } lb && right.Bool is { } rb)
+            return op switch { "==" => lb == rb, "!=" => lb != rb, _ => null };
+        if (left.Text is { } lt && right.Text is { } rt)
+            return op switch { "==" => lt == rt, "!=" => lt != rt, _ => null };
+        if (left.Number is { } ln && right.Number is { } rn)
+            return op switch { "==" => ln == rn, "!=" => ln != rn, "<" => ln < rn, "<=" => ln <= rn, ">" => ln > rn, ">=" => ln >= rn, _ => null };
+        return null;
+    }
+
     /// <summary>x is null, x is not null, x is A or B, x is &gt; 5, x is { Status: Ativo }, x is Tipo t.</summary>
     public Pred? Pattern(Term? subject, ExpressionSyntax subjectSyntax, PatternSyntax pattern, Scope scope)
     {
@@ -542,13 +821,28 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
         {
             case DiscardPatternSyntax or VarPatternSyntax:
                 return Scenarios.Pred.True;
+            case ConstantPatternSyntax c when subject is ObjTerm && Term(c.Expression, scope) is ConstTerm { IsNull: true }:
+                return Scenarios.Pred.False;
+            case ConstantPatternSyntax c when subject is ConstTerm known && Term(c.Expression, scope) is ConstTerm k0 && Constant(known, "==", k0) is { } same:
+                return same ? Scenarios.Pred.True : Scenarios.Pred.False;
+            case RecursivePatternSyntax { PropertyPatternClause: { } created } when subject is ObjTerm obj:
+            {
+                var parts = new List<Pred>();
+                foreach (var sub in created.Subpatterns)
+                {
+                    if (sub.NameColon?.Name.Identifier.Text is not { } name) return null;
+                    if (Pattern(MemberOf(obj, name, null), SyntaxFactory.ParseExpression($"{subjectSyntax}.{name}"), sub.Pattern, scope) is not { } subPred) return null;
+                    parts.Add(subPred);
+                }
+                return Scenarios.Pred.And(parts);
+            }
             case ConstantPatternSyntax c when Term(c.Expression, scope) is ConstTerm k:
                 if (subject is not VarTerm { Measure: Measure.Value } v) return null;
                 if (k.IsNull) return new NullPred(v.Var, $"{subjectSyntax.Compact()} == null");
                 if (k.Bool is { } b && v.Var.Kind == VarKind.Bool)
                     return b ? new BoolPred(v.Var, subjectSyntax.Compact()) : Scenarios.Pred.Not(new BoolPred(v.Var, subjectSyntax.Compact()));
                 return new CmpPred(subject, "==", k, text);
-            case RelationalPatternSyntax r when subject is not (null or TupleTerm) && Term(r.Expression, scope) is ConstTerm k2:
+            case RelationalPatternSyntax r when subject is not (null or TupleTerm or ObjTerm) && Term(r.Expression, scope) is ConstTerm k2:
                 return new CmpPred(subject, r.OperatorToken.Text, k2, text);
             case UnaryPatternSyntax u when u.IsKind(SyntaxKind.NotPattern):
                 return Pattern(subject, subjectSyntax, u.Pattern, scope) is { } inner ? Scenarios.Pred.Not(inner) : null;
@@ -841,16 +1135,29 @@ public sealed class SymbolicResolver(CallGraph graph, InputModel input, VarTable
             || type.ContainingNamespace?.ToDisplayString().StartsWith("Microsoft.EntityFrameworkCore", StringComparison.Ordinal) == true;
     }
 
-    private static ExpressionSyntax? SingleReturn(SyntaxNode declaration)
+    /// <summary>
+    /// Método do fluxo (com fonte, fora de repositório/DbContext) chamado por <paramref name="invocation"/> no escopo do
+    /// chamador. No despacho por barramento (bus.EnviarComando(cmd) → mediator.Send → Handle) o valor devolvido é o do
+    /// handler: o barramento só repassa.
+    /// </summary>
+    private AnalyzedMethod? CalleeOf(InvocationExpressionSyntax invocation, AnalyzedMethod caller) =>
+        caller.CallSites.Where(cs => cs.Syntax == invocation).OrderBy(cs => cs.Message is null ? 1 : 0).FirstOrDefault() is { } site
+        && graph.MethodOf(site.Node) is { } target && !IsBoundary(target.Symbol) && !target.Symbol.ReturnsVoid
+            ? target
+            : null;
+
+    /// <summary>Expressões devolvidas pelo método (corpo de expressão ou cada return alcançável, fora de lambdas).</summary>
+    private static List<ExpressionSyntax> ReturnsOf(AnalyzedMethod method)
     {
-        if (declaration is BaseMethodDeclarationSyntax { ExpressionBody: { } arrow }) return arrow.Expression;
-        if (declaration is LocalFunctionStatementSyntax { ExpressionBody: { } localArrow }) return localArrow.Expression;
-        var returns = declaration.DescendantNodes()
-            .Where(n => n is not (AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax) || n == declaration)
+        var declaration = method.Declaration;
+        if (declaration is BaseMethodDeclarationSyntax { ExpressionBody: { } arrow }) return [arrow.Expression];
+        if (declaration is LocalFunctionStatementSyntax { ExpressionBody: { } localArrow }) return [localArrow.Expression];
+        return declaration.DescendantNodes()
             .OfType<ReturnStatementSyntax>()
-            .Where(r => !r.Ancestors().TakeWhile(a => a != declaration).Any(a => a is AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax))
+            .Where(r => r.Expression is not null && method.IsReachable(r)
+                && !r.Ancestors().TakeWhile(a => a != declaration).Any(a => a is AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax))
+            .Select(r => r.Expression!)
             .ToList();
-        return returns.Count == 1 ? returns[0].Expression : null;
     }
 
     public static ExpressionSyntax Unwrap(ExpressionSyntax e)

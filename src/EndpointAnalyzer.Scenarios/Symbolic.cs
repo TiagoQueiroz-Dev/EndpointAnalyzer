@@ -111,6 +111,12 @@ public sealed record ArithTerm(string Op, Term Left, Term Right) : Term;
 /// </summary>
 public sealed record TupleTerm(IReadOnlyList<VarTerm> Items) : Term;
 
+/// <summary>
+/// Objeto criado no código (return new Resultado { Sucesso = false }): os membros conhecidos pelo inicializador ou pelos
+/// parâmetros do construtor com o mesmo nome. Nunca é null. Só existe na tradução: não chega ao solver.
+/// </summary>
+public sealed record ObjTerm(string TypeName, IReadOnlyDictionary<string, Term> Members) : Term;
+
 /// <summary>Predicado sobre as variáveis. Text é a expressão como no código (forma positiva).</summary>
 public abstract record Pred
 {

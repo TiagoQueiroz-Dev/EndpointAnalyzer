@@ -7,6 +7,8 @@ namespace SampleApi.Remessas;
 
 // Fluxo usado para testar a geração de cenários pela árvore de execução: a mesma validação alcançada por dois ramos,
 // regras diferentes com a mesma mensagem, retorno antecipado sem escrita, laço com efeito e regra depois da persistência.
+// A confirmação testa a propagação de retornos entre métodos: o bool com dois returns falsos decide o BadRequest do
+// controller e o null devolvido pelo service decide o NotFound do ternário.
 
 public class ItemRemessaRequest
 {
@@ -33,6 +35,11 @@ public class CriarRemessaRequest
     public List<ItemRemessaRequest> Itens { get; set; } = [];
 }
 
+public class ConfirmarRemessaRequest
+{
+    public int Volumes { get; set; }
+}
+
 public class Remessa : Entidade
 {
     public string Placa { get; set; } = "";
@@ -40,6 +47,10 @@ public class Remessa : Entidade
     public int Prioridade { get; set; }
 
     public bool Urgente { get; set; }
+
+    public bool Confirmada { get; set; }
+
+    public int Volumes { get; set; }
 }
 
 public class ItemRemessa : Entidade
@@ -52,6 +63,10 @@ public class ItemRemessa : Entidade
 public interface IRemessaService
 {
     Task<int> Criar(CriarRemessaRequest request);
+
+    bool VolumesValidos(ConfirmarRemessaRequest request);
+
+    Task<Remessa?> Confirmar(int id, ConfirmarRemessaRequest request);
 }
 
 public class RemessaService(IRepository<Remessa> remessas, IRepository<ItemRemessa> itens) : IRemessaService
@@ -94,6 +109,29 @@ public class RemessaService(IRepository<Remessa> remessas, IRepository<ItemRemes
         if (placa == "AAA0A00")
             throw new RegraNegocioException("Placa reservada.");
     }
+
+    // Dois returns falsos: o controller responde o mesmo BadRequest pelos dois (um desfecho só).
+    public bool VolumesValidos(ConfirmarRemessaRequest request)
+    {
+        if (request.Volumes <= 0)
+            return false;
+        if (request.Volumes > 100)
+            return false;
+        return true;
+    }
+
+    // Devolve null quando a remessa não existe: o controller decide o NotFound pelo valor devolvido.
+    public async Task<Remessa?> Confirmar(int id, ConfirmarRemessaRequest request)
+    {
+        var remessa = remessas.ObterTodos().FirstOrDefault(r => r.Id == id);
+        if (remessa == null)
+            return null;
+
+        remessa.Confirmada = true;
+        remessa.Volumes = request.Volumes;
+        await remessas.SalvarAlteracoesAsync();
+        return remessa;
+    }
 }
 
 [ApiController]
@@ -107,5 +145,16 @@ public class RemessaController(IRemessaService service) : ControllerBase
     {
         var id = await service.Criar(request);
         return Ok(id);
+    }
+
+    /// <summary>Confirma a remessa com a quantidade de volumes e retorna o id.</summary>
+    [HttpPut("{id}/confirmar")]
+    public async Task<IActionResult> Confirmar(int id, ConfirmarRemessaRequest request)
+    {
+        if (!service.VolumesValidos(request))
+            return BadRequest("Quantidade de volumes inválida.");
+
+        var remessa = await service.Confirmar(id, request);
+        return remessa is null ? NotFound() : Ok(remessa.Id);
     }
 }
