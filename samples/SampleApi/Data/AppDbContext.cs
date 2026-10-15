@@ -19,6 +19,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
     public DbSet<Pedidos.Pedido> Pedidos => Set<Pedidos.Pedido>();
 
+    public DbSet<Pedidos.HistoricoPedido> HistoricosPedido => Set<Pedidos.HistoricoPedido>();
+
     public DbSet<Origens.ProgramacaoTransporte> ProgramacoesTransporte => Set<Origens.ProgramacaoTransporte>();
 
     public DbSet<Origens.Local> Locais => Set<Origens.Local>();
@@ -28,4 +30,6 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<Remessas.Remessa> Remessas => Set<Remessas.Remessa>();
 
     public DbSet<Remessas.ItemRemessa> ItensRemessa => Set<Remessas.ItemRemessa>();
+
+    public DbSet<SampleDomain.Contrato> Contratos => Set<SampleDomain.Contrato>();
 }

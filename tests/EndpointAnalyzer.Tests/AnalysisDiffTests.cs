@@ -397,6 +397,164 @@ public class AnalysisDiffTests(SampleSolutionFixture fixture)
         Assert.All(result.Sections.SelectMany(s => s.Groups).Where(g => g.Id != "documentacao"), g => Assert.Empty(g.Items));
     }
 
+    private static EntityChange Change(string entity, string operation, params (string Property, string Value)[] properties) => new()
+    {
+        Entity = entity,
+        Operation = operation,
+        Properties = properties.Select(p => p.Property).ToList(),
+        PropertyChanges = properties.Select(p => new PropertyChange { Property = p.Property, Value = p.Value }).ToList(),
+    };
+
+    private async Task<AnalysisDiffGroup> EntitiesAsync(List<EntityChange> previous, List<EntityChange> current)
+    {
+        var (a, b) = (await ReportAsync(), await ReportAsync());
+        a.Context.EntityChanges = previous;
+        b.Context.EntityChanges = current;
+        return Group(Compare(a, b), "entidades");
+    }
+
+    [Fact]
+    public async Task Entidade_que_passa_a_ser_gravada_e_nova_e_a_que_deixa_e_removida()
+    {
+        var group = await EntitiesAsync(
+            [Change("Programacao", EntityOperations.Insert, ("Status", "Pendente")), Change("Carga", EntityOperations.Delete)],
+            [Change("Programacao", EntityOperations.Insert, ("Status", "Pendente")), Change("Historico", EntityOperations.Insert, ("Data", "DateTime.Now"))]);
+
+        var added = group.Items.Single(i => i.Kind == DiffKinds.Added);
+        Assert.Equal(("Historico", EntityOperations.Insert), (added.Entity!.Entity, added.Entity.Operation));
+        Assert.Equal(EntityPropertyChanges.Added, Assert.Single(added.Entity.Properties).Change);
+        var removed = group.Items.Single(i => i.Kind == DiffKinds.Removed);
+        Assert.Equal(("Carga", EntityOperations.Delete), (removed.Entity!.Entity, removed.Entity.Operation));
+        Assert.Equal((1, 1, 0, 0, 1), (group.Counts.Added, group.Counts.Removed, group.Counts.Changed, group.Counts.Uncertain, group.Counts.Unchanged));
+    }
+
+    [Fact]
+    public async Task Condicoes_comuns_do_fluxo_somem_e_so_as_clausulas_que_mudaram_aparecem()
+    {
+        var (a, b) = (await ReportAsync(), await ReportAsync());
+        foreach (var report in new[] { a, b })
+            report.Context.ConditionRegistry = new()
+            {
+                ["C1"] = "ModelState.IsValid", ["C2"] = "xRota != null", ["C3"] = "xPedido.EhTrocaNota != true", ["C4"] = "xPedido.EhValido()",
+            };
+        static EntityChange When(EntityChange change, string[] operation, string[]? property = null)
+        {
+            change.ConditionIds = [.. operation];
+            foreach (var p in change.PropertyChanges) p.ConditionIds = [.. property ?? operation];
+            return change;
+        }
+        a.Context.EntityChanges =
+        [
+            When(Change("Local", EntityOperations.Insert, ("Sequencia", "s")), ["C1"]),
+            When(Change("Rota", EntityOperations.Update, ("DadosRotaJson", "null")), ["C1", "C2"]),
+            When(Change("Programacao", EntityOperations.Update, ("Canhotos", "false")), ["C1"]),
+        ];
+        b.Context.EntityChanges =
+        [
+            When(Change("Local", EntityOperations.Insert, ("Sequencia", "s")), ["C1"]),
+            When(Change("Rota", EntityOperations.Update, ("DadosRotaJson", "null")), ["C1", "C4"]),
+            When(Change("Programacao", EntityOperations.Update, ("Canhotos", "false")), ["C1"], ["C1", "C3"]),
+        ];
+
+        var group = Group(Compare(a, b), "entidades");
+        Assert.Equal(2, group.Items.Count); // Local: só a condição do fluxo, igual nas duas versões.
+        var rota = group.Items.Single(i => i.Entity!.Entity == "Rota").Entity!;
+        Assert.Equal(["xPedido.EhValido()"], rota.Conditions); // ModelState.IsValid é comum a todas as gravações: fica de fora.
+        Assert.Equal(["xPedido.EhValido()"], rota.ConditionsAdded);
+        Assert.Equal(["xRota != null"], rota.ConditionsRemoved);
+        var canhotos = group.Items.Single(i => i.Entity!.Entity == "Programacao").Entity!.Properties.Single();
+        Assert.Equal(EntityPropertyChanges.Changed, canhotos.Change);
+        Assert.Null(Assert.Single(canhotos.Removed).Conditions); // Antes: sempre que o UPDATE acontecia.
+        Assert.Equal(["xPedido.EhTrocaNota != true"], Assert.Single(canhotos.Added).Conditions);
+        Assert.DoesNotContain("ModelState.IsValid", JsonSerializer.Serialize(group));
+    }
+
+    /// <summary>Contexto com o registro das cláusulas e uma gravação INSERT por entidade (operação e propriedades na mesma condição).</summary>
+    private async Task<EndpointAnalysisReport> FlowReportAsync(params (string Entity, string[] Conditions)[] changes)
+    {
+        var report = await ReportAsync();
+        report.Context.ConditionRegistry = new() { ["C1"] = "ModelState.IsValid", ["C2"] = "dto.Valor > 0", ["C3"] = "dto.Extra != null" };
+        report.Context.EntityChanges = changes.Select(c =>
+        {
+            var change = Change(c.Entity, EntityOperations.Insert, ("Valor", "dto.Valor"));
+            change.ConditionIds = [.. c.Conditions];
+            foreach (var p in change.PropertyChanges) p.ConditionIds = [.. c.Conditions];
+            return change;
+        }).ToList();
+        return report;
+    }
+
+    [Fact]
+    public async Task Nova_gravacao_fora_do_fluxo_nao_altera_as_outras_entidades()
+    {
+        // Só entra a Auditoria, num ramo sem ModelState.IsValid: Pedido e Item continuam iguais.
+        var group = Group(Compare(
+            await FlowReportAsync(("Pedido", ["C1", "C2"]), ("Item", ["C1"])),
+            await FlowReportAsync(("Pedido", ["C1", "C2"]), ("Item", ["C1"]), ("Auditoria", ["C3"]))), "entidades");
+
+        var added = Assert.Single(group.Items);
+        Assert.Equal(("Auditoria", DiffKinds.Added), (added.Entity!.Entity, added.Kind));
+        Assert.Equal((1, 0, 0, 2), (group.Counts.Added, group.Counts.Removed, group.Counts.Changed, group.Counts.Unchanged));
+    }
+
+    [Fact]
+    public async Task Gravacao_que_passa_a_depender_da_condicao_do_fluxo_e_alterada()
+    {
+        // O Log era gravado sempre; agora só com ModelState.IsValid (cláusula comum às demais gravações nas duas versões).
+        var group = Group(Compare(
+            await FlowReportAsync(("Pedido", ["C1", "C2"]), ("Item", ["C1"]), ("Log", [])),
+            await FlowReportAsync(("Pedido", ["C1", "C2"]), ("Item", ["C1"]), ("Log", ["C1"]))), "entidades");
+
+        var log = Assert.Single(group.Items);
+        Assert.Equal(("Log", DiffKinds.Changed), (log.Entity!.Entity, log.Kind));
+        Assert.Equal(["ModelState.IsValid"], log.Entity.ConditionsAdded);
+        Assert.Empty(log.Entity.Conditions); // Na exibição, a condição do fluxo continua de fora.
+    }
+
+    [Fact]
+    public async Task Insert_com_menos_propriedades_e_alterado_com_a_situacao_de_cada_propriedade()
+    {
+        var group = await EntitiesAsync(
+            [Change("Programacao", EntityOperations.Insert, ("Status", "Pendente"), ("Observacao", "request.Observacao"), ("Data", "request.Data"))],
+            [Change("Programacao", EntityOperations.Insert, ("Status", "Aprovada"), ("Data", "request.Data"))]);
+
+        var item = Assert.Single(group.Items);
+        Assert.Equal(DiffKinds.Changed, item.Kind);
+        Assert.Equal(DiffImpacts.Behavior, item.Impact);
+        var properties = item.Entity!.Properties.ToDictionary(p => p.Name);
+        Assert.Equal(EntityPropertyChanges.Removed, properties["Observacao"].Change);
+        Assert.Empty(properties["Observacao"].After);
+        Assert.Equal(EntityPropertyChanges.Changed, properties["Status"].Change);
+        Assert.Equal(("Pendente", "Aprovada"), (properties["Status"].Before.Single().Value, properties["Status"].After.Single().Value));
+        Assert.Equal(EntityPropertyChanges.Unchanged, properties["Data"].Change);
+        Assert.Null(item.Before); // A estrutura da entidade substitui o JSON canônico.
+        Assert.Null(item.After);
+    }
+
+    [Fact]
+    public async Task Entidade_que_so_mudou_de_lugar_no_codigo_nao_e_alteracao()
+    {
+        var (previous, current) = (Change("Programacao", EntityOperations.Insert, ("Status", "Pendente")), Change("Programacao", EntityOperations.Insert, ("Status", "Pendente")));
+        previous.Source = new SourceReference { File = "Services/A.cs", Method = "Criar", Line = 10 };
+        current.Source = new SourceReference { File = "Services/B.cs", Method = "Gravar", Line = 99 };
+
+        var group = await EntitiesAsync([previous], [current]);
+        Assert.Empty(group.Items);
+        Assert.Equal((0, 1), (group.Counts.Minor, group.Counts.Unchanged));
+    }
+
+    [Fact]
+    public async Task Insert_que_vira_update_e_uma_remocao_e_uma_inclusao_nunca_incerto()
+    {
+        var group = await EntitiesAsync(
+            [Change("Programacao", EntityOperations.Insert, ("Status", "Pendente"))],
+            [Change("Programacao", EntityOperations.Update, ("Status", "Pendente"))]);
+
+        Assert.Equal([DiffKinds.Added, DiffKinds.Removed], group.Items.Select(i => i.Kind).Order());
+        Assert.All(group.Items, i => Assert.Equal("Programacao", i.Entity!.Entity));
+        Assert.Equal(0, group.Counts.Uncertain);
+    }
+
     [Fact]
     public async Task Credenciais_nao_aparecem_no_diff()
     {

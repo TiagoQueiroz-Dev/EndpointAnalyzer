@@ -22,6 +22,30 @@ public class Pedido : Entidade
     public int Quantidade { get; set; }
 
     public PedidoStatus Status { get; set; }
+
+    public List<HistoricoPedido>? Historicos { get; set; }
+}
+
+/// <summary>Criada pelo construtor, que delega parte das atribuições a um método privado (DefinirQuantidade).</summary>
+public class HistoricoPedido : Entidade
+{
+    public HistoricoPedido(int clienteId, int quantidade)
+    {
+        ClienteId = clienteId;
+        DefinirQuantidade(quantidade);
+    }
+
+    public int ClienteId { get; set; }
+
+    public int Quantidade { get; set; }
+
+    public string Descricao { get; set; } = "";
+
+    private void DefinirQuantidade(int quantidade)
+    {
+        Quantidade = quantidade;
+        Descricao = $"Pedido com {quantidade} item(ns)";
+    }
 }
 
 public class AdicionarPedidoViewModel
@@ -58,6 +82,8 @@ public interface IPedidoRepository : IRepository<Pedido>
     Pedido? ObterPorId(int id);
 
     void Atualizar(Pedido pedido);
+
+    void AdicionarHistorico(HistoricoPedido historico);
 }
 
 public class PedidoRepository(Data.AppDbContext context) : Repository<Pedido>(context), IPedidoRepository
@@ -65,6 +91,8 @@ public class PedidoRepository(Data.AppDbContext context) : Repository<Pedido>(co
     public Pedido? ObterPorId(int id) => DbSet.Find(id);
 
     public void Atualizar(Pedido pedido) => DbSet.Update(pedido);
+
+    public void AdicionarHistorico(HistoricoPedido historico) => context.Add(historico);
 }
 
 /// <summary>Um handler para dois comandos: cada Send vai para o Handle do comando enviado.</summary>
@@ -85,6 +113,7 @@ public class PedidoCommandHandler(IPedidoRepository pedidos, IMediator mediator)
         };
 
         pedidos.Adicionar(pedido);
+        pedidos.AdicionarHistorico(new HistoricoPedido(request.ClienteId, request.Quantidade));
         await pedidos.SalvarAlteracoesAsync();
         await mediator.Publish(new PedidoAdicionadoEvent(pedido.Id), cancellationToken);
         return true;
@@ -99,6 +128,9 @@ public class PedidoCommandHandler(IPedidoRepository pedidos, IMediator mediator)
             throw new DomainException(nameof(request.PedidoId), "Pedido já cancelado");
 
         pedido.Status = PedidoStatus.Cancelado;
+        // Navegação com ! (supressão de nulo): continua sendo um DELETE do histórico.
+        foreach (var historico in pedido.Historicos?.ToList() ?? [])
+            pedido.Historicos!.Remove(historico);
         pedidos.Atualizar(pedido);
         await pedidos.SalvarAlteracoesAsync();
         return true;

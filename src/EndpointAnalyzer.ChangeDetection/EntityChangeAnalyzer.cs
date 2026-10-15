@@ -111,7 +111,7 @@ public class EntityChangeAnalyzer : IEntityChangeAnalyzer
     {
         var model = method.Model;
         var createdLocals = CreatedLocals(method, catalog);
-        var isConstructor = method.Symbol.MethodKind == MethodKind.Constructor;
+        var isConstructor = InConstruction(method);
 
         foreach (var node in method.Declaration.DescendantNodes())
         {
@@ -134,7 +134,15 @@ public class EntityChangeAnalyzer : IEntityChangeAnalyzer
                     break;
 
                 case AssignmentExpressionSyntax assignment when assignment.Parent is not InitializerExpressionSyntax:
-                    AnalyzeAssignment(method, assignment, catalog, createdLocals, isConstructor, raw);
+                    AnalyzeAssignment(method, assignment.Left, AssignedValue(assignment), assignment, catalog, createdLocals, isConstructor, raw);
+                    break;
+
+                // Renovacoes++ / --Saldo: também altera a propriedade.
+                case PostfixUnaryExpressionSyntax { RawKind: (int)SyntaxKind.PostIncrementExpression or (int)SyntaxKind.PostDecrementExpression } step:
+                    AnalyzeAssignment(method, step.Operand, step.Compact(), step, catalog, createdLocals, isConstructor, raw);
+                    break;
+                case PrefixUnaryExpressionSyntax { RawKind: (int)SyntaxKind.PreIncrementExpression or (int)SyntaxKind.PreDecrementExpression } step:
+                    AnalyzeAssignment(method, step.Operand, step.Compact(), step, catalog, createdLocals, isConstructor, raw);
                     break;
             }
         }
@@ -194,7 +202,10 @@ public class EntityChangeAnalyzer : IEntityChangeAnalyzer
         if (verb.Prefix is null) return;
 
         var isRepository = receiverType is not null && receiverType.HasSource() && !catalog.IsEntity(receiverType);
-        var isNavigation = access.Expression is MemberAccessExpressionSyntax nav
+        // programacao.Pontos!.Remove(p): o ! (supressão de nulo) não muda a navegação.
+        var receiver = access.Expression is PostfixUnaryExpressionSyntax bang && bang.IsKind(SyntaxKind.SuppressNullableWarningExpression)
+            ? bang.Operand : access.Expression;
+        var isNavigation = receiver is MemberAccessExpressionSyntax nav
             && model.GetSymbolInfo(nav).Symbol is IPropertySymbol navProperty
             && catalog.IsEntity(method.ResolveType(navProperty.ContainingType));
         if (!isRepository && !isNavigation) return;
@@ -203,18 +214,24 @@ public class EntityChangeAnalyzer : IEntityChangeAnalyzer
             raw.Add(new RawEntityChange(method, argumentEntity.Name, verb.Operation, null, null, condition, Reference(method, invocation), IsOperation: true));
     }
 
-    private static void AnalyzeAssignment(AnalyzedMethod method, AssignmentExpressionSyntax assignment, EntityCatalog catalog,
+    private static string AssignedValue(AssignmentExpressionSyntax assignment) => assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
+        ? assignment.Right.Compact()
+        : $"{assignment.Left.Compact()} {assignment.OperatorToken.Text} {assignment.Right.Compact()}";
+
+    /// <param name="left">Alvo da escrita (Status, this.Status, x.Status).</param>
+    /// <param name="value">Valor gravado, como texto do código (x = 1 → "1"; Renovacoes++ → "Renovacoes++").</param>
+    private static void AnalyzeAssignment(AnalyzedMethod method, ExpressionSyntax left, string value, SyntaxNode node, EntityCatalog catalog,
         HashSet<string> createdLocals, bool isConstructor, List<RawEntityChange> raw)
     {
         var model = method.Model;
-        var target = model.GetSymbolInfo(assignment.Left).Symbol;
+        var target = model.GetSymbolInfo(left).Symbol;
         if (target is not (IPropertySymbol or IFieldSymbol { IsConst: false })) return;
 
         ITypeSymbol? ownerType;
         string? receiverName = null;
         var implicitThis = false;
 
-        switch (assignment.Left)
+        switch (left)
         {
             case MemberAccessExpressionSyntax access when access.Expression is ThisExpressionSyntax:
                 ownerType = method.Context.ThisType ?? method.Symbol.ContainingType;
@@ -239,11 +256,7 @@ public class EntityChangeAnalyzer : IEntityChangeAnalyzer
             ? EntityOperations.Insert
             : EntityOperations.Update;
 
-        var value = assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
-            ? assignment.Right.Compact()
-            : $"{assignment.Left.Compact()} {assignment.OperatorToken.Text} {assignment.Right.Compact()}";
-
-        raw.Add(new RawEntityChange(method, ownerType!.Name, operation, PropertyName(target), value, ConditionOf(method, assignment), Reference(method, assignment), IsOperation: false));
+        raw.Add(new RawEntityChange(method, ownerType!.Name, operation, PropertyName(target), value, ConditionOf(method, node), Reference(method, node), IsOperation: false));
     }
 
     /// <summary>Tipo da expressão no contexto de execução (genéricos resolvidos).</summary>
@@ -253,6 +266,43 @@ public class EntityChangeAnalyzer : IEntityChangeAnalyzer
     /// <summary>§23: só vale entidade com tipo concreto (TEntity sem resolver não é efeito do endpoint).</summary>
     private static bool IsConcreteEntity(ITypeSymbol? type) =>
         type is INamedTypeSymbol { TypeKind: not TypeKind.TypeParameter } && type is not ITypeParameterSymbol;
+
+    /// <summary>
+    /// Construtor, ou método chamado no próprio objeto (DefinirDataAgendamento(...), this.Definir(...)) por uma cadeia que
+    /// começa no construtor do mesmo tipo: as atribuições em this fazem parte da criação (INSERT), não de um UPDATE.
+    /// </summary>
+    private static bool InConstruction(AnalyzedMethod method)
+    {
+        var type = method.Symbol.ContainingType;
+        for (var m = method; m is not null; m = m.Caller)
+        {
+            if (m.Symbol.MethodKind == MethodKind.Constructor) return m == method || SameOrDerived(m.Symbol.ContainingType, type);
+            if (m.Caller is not { } caller || !SameOrDerived(caller.Symbol.ContainingType, type)) return false;
+            // A chamada precisa ser no próprio objeto: Outro.Definir() no construtor altera outra instância.
+            var site = caller.CallSites.FirstOrDefault(s => s.Node == m.Node);
+            if (site?.Syntax is not InvocationExpressionSyntax { Expression: var callee }
+                || callee is not (SimpleNameSyntax or MemberAccessExpressionSyntax { Expression: ThisExpressionSyntax or BaseExpressionSyntax }))
+                return false;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Mesmo tipo, mesmo vindo de compilações diferentes: o método da entidade resolvido pelo projeto que chama (Application)
+    /// e a propriedade resolvida pelo projeto da entidade (Domain) são símbolos distintos do mesmo tipo.
+    /// </summary>
+    private static bool SameDefinition(ITypeSymbol a, ITypeSymbol b) =>
+        SymbolEqualityComparer.Default.Equals(a.OriginalDefinition, b.OriginalDefinition)
+        || (a.OriginalDefinition.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) == b.OriginalDefinition.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)
+            && a.ContainingAssembly?.Name == b.ContainingAssembly?.Name);
+
+    /// <summary>O tipo é o próprio <paramref name="type"/> ou deriva dele.</summary>
+    private static bool SameOrDerived(INamedTypeSymbol? candidate, INamedTypeSymbol type)
+    {
+        for (var t = candidate; t is not null; t = t.BaseType)
+            if (SameDefinition(t, type)) return true;
+        return false;
+    }
 
     /// <summary>Variáveis locais que recebem new Entidade(...) dentro do método.</summary>
     private static HashSet<string> CreatedLocals(AnalyzedMethod method, EntityCatalog catalog)
@@ -284,7 +334,7 @@ public class EntityChangeAnalyzer : IEntityChangeAnalyzer
     {
         if (member.ContainingType is null) return false;
         for (INamedTypeSymbol? t = type; t is not null; t = t.BaseType)
-            if (SymbolEqualityComparer.Default.Equals(t.OriginalDefinition, member.ContainingType.OriginalDefinition)) return true;
+            if (SameDefinition(t, member.ContainingType)) return true;
         return false;
     }
 

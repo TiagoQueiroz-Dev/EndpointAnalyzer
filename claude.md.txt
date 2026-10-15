@@ -1,0 +1,7 @@
+# Endpoint Analyzer
+
+Sempre que receber um prompt siga passo a passo:
+
+1 - Realize uma pesquisa profunda sobre como os profissionais realizam esse tipo de tarefa.
+2 - Me mande uma resposta simplificada, suscinta e acertiva.
+3 - Não altere nada além do solicitado.

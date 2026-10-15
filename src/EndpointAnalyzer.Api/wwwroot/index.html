@@ -402,6 +402,49 @@
   .diff-cell::before { content: attr(data-side); display: block; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
   .diff-cell pre { max-height: 360px; background: var(--code); padding: 6px 8px; border-radius: 4px; }
   .diff-minor-toggle { margin: 12px 0 4px; padding: 6px 12px; font-size: 12.5px; }
+  .diff-op { font: 700 10.5px ui-monospace, monospace; padding: 1px 6px; border-radius: 4px; color: #fff; background: var(--muted); }
+  .diff-op.INSERT { background: var(--post); } .diff-op.UPDATE { background: var(--put); } .diff-op.DELETE { background: var(--delete); }
+  /* Entidades alteradas: poucas linhas, só o que mudou; sinal + texto (não só cor), sem riscado em texto longo. */
+  .diff-entity { padding: 6px 10px; }
+  .diff-entity-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+  .diff-sign { font: 700 15px ui-monospace, monospace; min-width: 1ch; }
+  .diff-entity.adicionado .diff-sign { color: var(--post); } .diff-entity.removido .diff-sign { color: var(--delete); } .diff-entity.alterado .diff-sign { color: var(--put); }
+  .diff-entity-what { font-size: 12.5px; color: var(--muted); }
+  .diff-entity-plan { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; margin: 0 0 6px; font-size: 13px; }
+  .diff-entity-plan p { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 0; }
+  .diff-entity-plan .adicionado b { color: var(--post); } .diff-entity-plan .removido b { color: var(--delete); }
+  .diff-entity-plan .alterado b { color: var(--put); } .diff-entity-plan .incerto b { color: var(--patch); }
+  .link-btn { background: none; border: 0; padding: 2px 0; color: var(--accent); font-size: 12.5px; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+  .link-btn[aria-pressed="true"] { font-weight: 600; }
+  .link-btn:focus-visible, details.diff-pl-more > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+  .diff-entity-cond { margin: 3px 0 0 calc(1ch + 8px); font-size: 12.5px; }
+  .diff-pls { margin: 4px 0 0 2px; font-size: 13px; }
+  .diff-pl { display: grid; grid-template-columns: 1.5ch minmax(8ch, 30ch) minmax(0, 1fr); gap: 0 10px; align-items: baseline; padding: 1px 0; }
+  .diff-pls code, .diff-entity-cond code, .diff-entity-names code { background: transparent; padding: 0; font-size: 12.5px; }
+  .diff-pl-sign { font: 700 13px ui-monospace, monospace; }
+  .diff-pl.adicionada .diff-pl-sign { color: var(--post); } .diff-pl.removida .diff-pl-sign { color: var(--delete); } .diff-pl.alterada .diff-pl-sign { color: var(--put); }
+  .diff-pl-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .diff-pl-value { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; }
+  .diff-pl.removida .diff-pl-name, .diff-pl.removida .diff-pl-value { color: var(--muted); }
+  /* Uma linha por valor (máx. ~60 caracteres, WCAG 1.4.8); inteiro no DOM e no title; "Mostrar valores completos" quebra a linha. */
+  .diff-val { display: inline-block; max-width: min(100%, 60ch); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+  .diff-cond .diff-val { max-width: min(100%, 44ch); }
+  .diff-group.full .diff-val, .diff-group.full .diff-pl-name { max-width: none; white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+  .diff-old, .diff-new { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0 4px; max-width: 100%; padding: 0 4px; border-radius: 3px; }
+  .diff-old { background: var(--diff-del); } .diff-new { background: var(--diff-ins); }
+  .diff-arrow { color: var(--muted); }
+  .diff-cond { color: var(--muted); font-size: 12px; }
+  .diff-cond-part { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; margin-right: 10px; }
+  .diff-cond-what { color: var(--muted); font-size: 12px; }
+  .diff-entity-common { margin: 0 0 8px; padding: 6px 10px; border: 1px dashed var(--border); border-radius: 6px; }
+  .diff-entity-common > p { margin: 0 0 2px; font-size: 12.5px; font-weight: 600; }
+  .diff-sep { color: var(--muted); }
+  details.diff-pl-more { margin: 2px 0 0; }
+  details.diff-pl-more > summary { margin-left: calc(1.5ch + 10px); }
+  details.diff-pl-more > summary { cursor: pointer; font-size: 12px; color: var(--accent); width: fit-content; }
+  .diff-entity-names { margin: 4px 0 0; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+  @media (max-width: 700px) { .diff-pl { grid-template-columns: 1.5ch minmax(0, 1fr); } .diff-pl-value { grid-column: 2; } }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   @media (max-width: 700px) {
     .diff-grid { grid-template-columns: minmax(0, 1fr); }
     table.diff-fields thead { display: none; }
@@ -2666,7 +2709,11 @@ function renderDiff(report) {
 /** Grupo só com os itens visíveis no filtro; sem itens visíveis, nada (a mensagem de vazio é única, na aba). */
 function diffGroupHtml(group, shown, tag = "h3") {
   const visible = group.comparable ? group.items.filter(shown) : [];
-  return visible.length ? `<section class="diff-group"><${tag}>${esc(group.title)}</${tag}>${visible.map(diffItemHtml).join("")}</section>` : "";
+  if (group.id !== "entidades") return visible.length ? `<section class="diff-group"><${tag}>${esc(group.title)}</${tag}>${visible.map(diffItemHtml).join("")}</section>` : "";
+  // Entidades: a mudança de condição repetida em várias gravações aparece uma vez, no topo, e sai dos cards.
+  const common = entityCommonClauses(visible);
+  return visible.length ? `<section class="diff-group${diffEntityFull ? " full" : ""}"><${tag}>${esc(group.title)}</${tag}>${entityPlanHtml(visible)}${
+    entityCommonHtml(common)}${visible.map(i => i.entity && i.kind !== "incerto" ? entityDiffItemHtml(i, common) : diffItemHtml(i)).join("")}</section>` : "";
 }
 
 /** Valor curto para o destaque do card; undefined quando não cabe numa linha (objetos), "—" quando o lado não existe. */
@@ -2751,6 +2798,7 @@ function diffHighlightHtml(item, side) {
  * IDs, notas e snapshots ficam no segundo nível, "Estrutura completa".
  */
 function diffItemHtml(item) {
+  if (item.entity && item.kind !== "incerto") return entityDiffItemHtml(item);
   const side = diffOneSide(item);
   const context = item.kind === "incerto" ? diffUncertainText : item.notes[0];
   const tag = item.impact === "comportamento" ? "" : `<span class="diff-impact ${esc(item.impact)}">${esc(diffImpacts[item.impact] ?? item.impact)}</span>`;
@@ -2768,6 +2816,183 @@ function diffItemHtml(item) {
         : `<p class="muted">Nenhum campo diferente.</p>`}
       ${diffFullHtml(item)}</details>
   </article>`;
+}
+
+// ---- Entidades alteradas: só o que mudou, em poucas linhas. Cada entidade com +, − ou ~, a operação e a tag; um resumo
+// em contagens; a condição só pelo que é próprio da gravação (as do fluxo vêm filtradas do servidor) e, quando muda, só as
+// cláusulas que entraram ou saíram; nas propriedades, só as atribuições que entraram ou saíram. Valores longos ficam em
+// uma linha, inteiros no DOM (leitor de tela e title), com um botão para mostrar tudo. ----
+
+const entityDiffKinds = { adicionado: "Novo", removido: "Removido", alterado: "Alterado" };
+const entityDiffSigns = { adicionado: "+", removido: "−", alterado: "~" };
+const entityPropSigns = { removida: "−", adicionada: "+", alterada: "~" };
+const entityPropKinds = { removida: "deixou de ser gravada", adicionada: "passou a ser gravada", alterada: "alterada" };
+/** Ordem das linhas: o que deixou de ser gravado primeiro. */
+const entityPropOrder = ["removida", "adicionada", "alterada", "igual"];
+/** Linhas visíveis por entidade; as demais ficam em "mais N". */
+const entityVisibleLines = 5;
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+let diffEntityFull = false;     // valores e condições completos (sem cortar em uma linha)
+
+/** Código cortado em uma linha (inteiro no DOM e no title); "Mostrar valores completos" tira o corte. */
+const entityCodeHtml = (text, cls = "") => `<code class="diff-val ${cls}" title="${esc(text)}">${esc(text)}</code>`;
+
+const entityCondHtml = (clauses) => clauses?.length
+  ? `<span class="diff-cond">se ${clauses.map(c => entityCodeHtml(c)).join(" <span aria-hidden=\"true\">∧</span><span class=\"sr-only\">e</span> ")}</span>` : "";
+
+const entityAssignmentHtml = (a) => `${entityCodeHtml(a.value)}${a.conditions?.length ? ` ${entityCondHtml(a.conditions)}` : ""}`;
+
+/**
+ * Efeito da mudança na condição (conjunção de cláusulas): sair cláusula é exigir menos, então grava em mais casos; entrar
+ * é exigir mais, grava em menos casos.
+ */
+function entityCondEffect(e) {
+  const [added, removed] = [e.conditionsAdded.length, e.conditionsRemoved.length];
+  return added && removed ? "condição trocada" : removed ? "grava em mais casos" : added ? "grava em menos casos" : "";
+}
+
+/** Cláusula que entrou (+) ou saiu (−) em 2 ou mais entidades alteradas: chave "+|texto" → entidades. */
+function entityCommonClauses(items) {
+  const byClause = new Map();
+  for (const i of items.filter(i => i.entity && i.kind === "alterado"))
+    for (const [sign, list] of [["−", i.entity.conditionsRemoved], ["+", i.entity.conditionsAdded]])
+      for (const c of list) {
+        const key = `${sign}|${c}`;
+        if (!byClause.has(key)) byClause.set(key, []);
+        byClause.get(key).push(`${i.entity.entity} ${i.entity.operation}`);
+      }
+  return new Map([...byClause].filter(([, entities]) => entities.length > 1));
+}
+
+/** Bloco do topo: cada cláusula comum uma vez, com o sentido e em quantas gravações (nomes no title). */
+function entityCommonHtml(common) {
+  if (!common.size) return "";
+  const lines = [...common].map(([key, entities]) => {
+    const [sign, clause] = [key[0], key.slice(2)];
+    return entityLineHtml(sign === "+" ? "adicionada" : "removida", sign === "+" ? "passa a exigir" : "não exige mais",
+      `${entityCodeHtml(clause)} <span class="diff-cond" title="${esc(entities.join(", "))}">em ${plural(entities.length, "gravação", "gravações")}</span>`,
+      sign === "+" ? "cláusula que entrou" : "cláusula que saiu");
+  });
+  return `<div class="diff-entity-common"><p>Condição alterada em várias gravações</p><div class="diff-pls">${lines.join("")}</div></div>`;
+}
+
+/** "não exige mais − X  passa a exigir + Y": o sentido em texto, não só no sinal e na cor. */
+function entityCondDeltaHtml(added, removed) {
+  const part = (list, cls, sign, what) => list.length ? `<span class="diff-cond-part"><span class="diff-cond-what">${what}</span>${
+    list.map(c => `<span class="${cls}"><span aria-hidden="true">${sign} </span>${entityCodeHtml(c)}</span>`).join(" ")}</span>` : "";
+  return `${part(removed, "diff-old", "−", "não exige mais")}${part(added, "diff-new", "+", "passa a exigir")}`;
+}
+
+/** Condição própria antes e agora (sem as cláusulas comuns a todas as gravações do fluxo). */
+function entityCondBeforeAfterHtml(e) {
+  const before = [...e.conditions.filter(c => !e.conditionsAdded.includes(c)), ...e.conditionsRemoved];
+  const side = (list) => list.length ? entityCondHtml(list) : `<span class="diff-cond">sem condição própria (só o fluxo do endpoint)</span>`;
+  return `<details class="diff-pl-more"><summary>ver condição antes → agora</summary><div class="diff-pls">${
+    entityLineHtml("igual", "antes", side(before))}${entityLineHtml("igual", "agora", side(e.conditions))}</div></details>`;
+}
+
+/** Resumo em contagens, no lugar de frases longas: "1 removida · 1 alterada · grava em mais casos · 2 iguais". */
+function entityDiffSummary(item) {
+  const e = item.entity;
+  const n = e.properties.length;
+  if (item.kind === "adicionado") return n ? plural(n, "propriedade", "propriedades") : "";
+  if (item.kind === "removido") return n ? `gravava ${plural(n, "propriedade", "propriedades")}` : "";
+  const count = (change) => e.properties.filter(p => p.change === change).length;
+  return [
+    [count("adicionada"), "nova", "novas"], [count("removida"), "removida", "removidas"], [count("alterada"), "alterada", "alteradas"],
+  ].filter(([k]) => k).map(([k, one, many]) => plural(k, one, many))
+    .concat(entityCondEffect(e) ? [entityCondEffect(e)] : [],
+      entityField(item, "classe") ? ["classificação alterada"] : [],
+      count("igual") ? [plural(count("igual"), "igual", "iguais")] : [])
+    .join(" · ");
+}
+
+const entityField = (item, path) => item.fields.find(f => f.path === path && primaryImpacts.has(f.impact));
+
+/** Uma linha: sinal (com texto para leitor de tela), rótulo e conteúdo. */
+const entityLineHtml = (change, label, content, hint) => `<div class="diff-pl ${esc(change)}">
+    <span class="diff-pl-sign" aria-hidden="true">${entityPropSigns[change] ?? ""}</span>
+    <span class="diff-pl-name">${label}${hint ? `<span class="sr-only"> (${esc(hint)})</span>` : ""}</span>
+    <span class="diff-pl-value">${content}</span></div>`;
+
+/** Delta de uma propriedade alterada: mesmo valor com outra condição, um valor trocado por outro, ou o que entrou e saiu. */
+function entityChangedValueHtml(p) {
+  const [out, inn] = [p.removed, p.added];
+  if (out.length === 1 && inn.length === 1) {
+    const [a, b] = [out[0], inn[0]];
+    if (a.value === b.value) {
+      const [ca, cb] = [a.conditions ?? [], b.conditions ?? []];
+      return `${entityCodeHtml(b.value)} <span class="diff-cond">condição: ${[
+        ...cb.filter(c => !ca.includes(c)).map(c => `<span class="diff-new">+ ${entityCodeHtml(c)}</span>`),
+        ...ca.filter(c => !cb.includes(c)).map(c => `<span class="diff-old">− ${entityCodeHtml(c)}</span>`),
+      ].join(" ") || "sempre"}</span>`;
+    }
+    // Mesma condição dos dois lados: só o valor mudou, a condição aparece uma vez.
+    const same = JSON.stringify(a.conditions ?? []) === JSON.stringify(b.conditions ?? []);
+    const side = (x) => same ? entityCodeHtml(x.value) : entityAssignmentHtml(x);
+    return `<span class="diff-old"><span class="sr-only">antes: </span>${side(a)}</span> <span class="diff-arrow" aria-hidden="true">→</span>
+      <span class="diff-new"><span class="sr-only">depois: </span>${side(b)}</span>${same && b.conditions?.length ? ` ${entityCondHtml(b.conditions)}` : ""}`;
+  }
+  return [...inn.map(a => `<span class="diff-new"><span aria-hidden="true">+ </span><span class="sr-only">passou a atribuir </span>${entityAssignmentHtml(a)}</span>`),
+    ...out.map(a => `<span class="diff-old"><span aria-hidden="true">− </span><span class="sr-only">deixou de atribuir </span>${entityAssignmentHtml(a)}</span>`)].join(" ");
+}
+
+function entityPropLineHtml(p) {
+  const values = p.change === "alterada" ? entityChangedValueHtml(p)
+    : (p.change === "removida" ? p.before : p.after).map(entityAssignmentHtml).join(`<span class="diff-sep" aria-hidden="true"> | </span>`);
+  return entityLineHtml(p.change, `<code>${esc(p.name)}</code>`, values, entityPropKinds[p.change]);
+}
+
+/** Linhas além do limite ficam num details nativo (teclado e leitor de tela sem ARIA extra). */
+function entityLinesHtml(lines, label) {
+  if (lines.length <= entityVisibleLines + 1) return lines.join("");
+  return `${lines.slice(0, entityVisibleLines).join("")}<details class="diff-pl-more"><summary>mais ${plural(lines.length - entityVisibleLines, label, `${label}s`)}</summary>${
+    lines.slice(entityVisibleLines).join("")}</details>`;
+}
+
+/**
+ * Entidade numa olhada: sinal, entidade, operação, tag e um resumo em contagens; abaixo, só o que mudou. Novo mostra o que
+ * passa a ser gravado; removido só o resumo (os nomes ficam num details); alterado só as propriedades e cláusulas que mudaram.
+ */
+function entityDiffItemHtml(item, common = new Map()) {
+  const e = item.entity;
+  const props = [...e.properties].sort((a, b) => entityPropOrder.indexOf(a.change) - entityPropOrder.indexOf(b.change));
+  const lines = [];
+  const condChanged = item.kind === "alterado" && (e.conditionsAdded.length || e.conditionsRemoved.length);
+  if (item.kind === "alterado") {
+    // Cláusulas que já estão no bloco do topo não se repetem no card.
+    const own = (list, sign) => list.filter(c => !common.has(`${sign}|${c}`));
+    const [added, removed] = [own(e.conditionsAdded, "+"), own(e.conditionsRemoved, "−")];
+    if (added.length || removed.length) lines.push(entityLineHtml("alterada", "condição", entityCondDeltaHtml(added, removed), "alterada"));
+    else if (condChanged) lines.push(entityLineHtml("alterada", "condição", `<span class="diff-cond">mesma mudança das demais gravações (acima)</span>`, "alterada"));
+    const classe = entityField(item, "classe");
+    if (classe) lines.push(entityLineHtml("alterada", "classificação",
+      `<span class="diff-old">${esc(classe.before ?? "—")}</span> <span class="diff-arrow" aria-hidden="true">→</span> <span class="diff-new">${esc(classe.after ?? "—")}</span>`, "alterada"));
+    lines.push(...props.filter(p => p.change !== "igual").map(entityPropLineHtml));
+  } else if (item.kind === "adicionado") {
+    lines.push(...props.map(entityPropLineHtml));
+  }
+  const condition = item.kind !== "alterado" && e.conditions.length ? `<p class="diff-entity-cond">${entityCondHtml(e.conditions)}</p>` : "";
+  const gone = item.kind === "removido" && props.length
+    ? `<details class="diff-pl-more"><summary>ver propriedades que gravava</summary><p class="diff-entity-names">${props.map(p => `<code>${esc(p.name)}</code>`).join(", ")}</p></details>` : "";
+  const summary = entityDiffSummary(item);
+  return `<article class="diff-item diff-entity ${esc(item.kind)}" aria-label="${esc(`${e.entity} ${e.operation}: ${entityDiffKinds[item.kind] ?? item.kind}`)}">
+    <div class="diff-entity-head"><span class="diff-sign" aria-hidden="true">${entityDiffSigns[item.kind] ?? ""}</span>
+      <span class="diff-title">${esc(e.entity)}</span><span class="diff-op ${esc(e.operation)}">${esc(e.operation)}</span>
+      <span class="diff-kind ${esc(item.kind)}">${esc(entityDiffKinds[item.kind] ?? diffKinds[item.kind] ?? item.kind)}</span>
+      ${summary ? `<span class="diff-entity-what">${esc(summary)}</span>` : ""}</div>
+    ${condition}${lines.length ? `<div class="diff-pls">${entityLinesHtml(lines, "linha")}</div>` : ""}${condChanged ? entityCondBeforeAfterHtml(e) : ""}${gone}
+  </article>`;
+}
+
+/** Cabeçalho do grupo: o resumo "+1 nova · ~2 alteradas · −1 removida" e o botão de valores completos. */
+function entityPlanHtml(items) {
+  const n = (kind) => items.filter(i => i.kind === kind).length;
+  const parts = [["adicionado", "+", "nova", "novas"], ["alterado", "~", "alterada", "alteradas"], ["removido", "−", "removida", "removidas"], ["incerto", "?", "incerta", "incertas"]]
+    .filter(([kind]) => n(kind)).map(([kind, sign, one, many]) => `<span class="${kind}"><b>${sign}${n(kind)}</b> ${n(kind) === 1 ? one : many}</span>`);
+  if (!parts.length) return "";
+  return `<div class="diff-entity-plan"><p>${parts.join(`<span class="muted" aria-hidden="true">·</span>`)}</p>
+    <button type="button" class="link-btn" data-diff-entity-full aria-pressed="${diffEntityFull}">Mostrar valores completos</button></div>`;
 }
 
 /** Segundo nível: natureza, identificadores, todas as notas e a estrutura canônica de cada lado. */
@@ -4106,6 +4331,14 @@ $("result").addEventListener("click", (e) => {
   if (diffTab) { diffSection = diffTab.dataset.diffSection; render("diff"); return; }
   const diffKind = e.target.closest("[data-diff-filter]");
   if (diffKind) { diffFilter = diffKind.dataset.diffFilter; render("diff"); return; }
+  // Sem redesenhar a aba: o foco continua no botão.
+  const entityFull = e.target.closest("[data-diff-entity-full]");
+  if (entityFull) {
+    diffEntityFull = !diffEntityFull;
+    entityFull.closest(".diff-group")?.classList.toggle("full", diffEntityFull);
+    entityFull.setAttribute("aria-pressed", String(diffEntityFull));
+    return;
+  }
   const diffToggle = e.target.closest("[data-diff-minor]");
   if (diffToggle) { diffMinor = !diffMinor; render("diff"); return; }
   const flowView = e.target.closest("[data-flow-view]");

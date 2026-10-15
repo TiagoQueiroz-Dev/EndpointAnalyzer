@@ -207,7 +207,84 @@ public class AnalysisDiffItem
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool Alert { get; set; }
 
+    /// <summary>Só em "Entidades alteradas": a entidade, a operação e a situação de cada propriedade.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AnalysisDiffEntity? Entity { get; set; }
+
     public List<string> Notes { get; set; } = [];
+}
+
+/// <summary>Situação de uma propriedade gravada (INSERT/UPDATE) entre as duas versões.</summary>
+public static class EntityPropertyChanges
+{
+    /// <summary>Passou a ser gravada.</summary>
+    public const string Added = "adicionada";
+
+    /// <summary>Deixou de ser gravada.</summary>
+    public const string Removed = "removida";
+
+    /// <summary>Continua gravada, com outro valor ou outra condição.</summary>
+    public const string Changed = "alterada";
+
+    public const string Unchanged = "igual";
+}
+
+/// <summary>
+/// Entidade comparada: identificada pela entidade e pela operação (INSERT, UPDATE, DELETE). Passar a gravar é
+/// <see cref="DiffKinds.Added"/>, deixar de gravar é <see cref="DiffKinds.Removed"/> e gravar outras propriedades, valores
+/// ou condições é <see cref="DiffKinds.Changed"/>.
+/// </summary>
+public class AnalysisDiffEntity
+{
+    public string Entity { get; set; } = "";
+
+    /// <summary>Um de <see cref="EntityOperations"/>.</summary>
+    public string Operation { get; set; } = "";
+
+    /// <summary>
+    /// Condição própria da operação (lado atual; o anterior quando foi removida), em cláusulas: sem as cláusulas comuns a
+    /// todas as gravações do fluxo (validações e guardas do caminho de sucesso). Vazia: sempre que o fluxo chega até aqui.
+    /// </summary>
+    public List<string> Conditions { get; set; } = [];
+
+    /// <summary>Cláusulas que entraram na condição da operação (só quando a entidade existe nas duas versões).</summary>
+    public List<string> ConditionsAdded { get; set; } = [];
+
+    public List<string> ConditionsRemoved { get; set; } = [];
+
+    /// <summary>União das propriedades das duas versões, em ordem alfabética.</summary>
+    public List<AnalysisDiffEntityProperty> Properties { get; set; } = [];
+}
+
+public class AnalysisDiffEntityProperty
+{
+    public string Name { get; set; } = "";
+
+    /// <summary>Um de <see cref="EntityPropertyChanges"/>.</summary>
+    public string Change { get; set; } = EntityPropertyChanges.Unchanged;
+
+    /// <summary>Atribuições na versão anterior; vazia quando a propriedade não era gravada (ou não tem valor conhecido).</summary>
+    public List<AnalysisDiffAssignment> Before { get; set; } = [];
+
+    public List<AnalysisDiffAssignment> After { get; set; } = [];
+
+    /// <summary>Só o que mudou numa propriedade alterada: atribuições (valor + condição) que saíram.</summary>
+    public List<AnalysisDiffAssignment> Removed { get; set; } = [];
+
+    /// <summary>Atribuições (valor + condição) que entraram.</summary>
+    public List<AnalysisDiffAssignment> Added { get; set; } = [];
+}
+
+/// <summary>Valor atribuído à propriedade e a condição própria em que é atribuído.</summary>
+public class AnalysisDiffAssignment
+{
+    public string Value { get; set; } = "";
+
+    /// <summary>
+    /// Cláusulas próprias da atribuição: sem as do fluxo e as da operação. Nula quando é atribuída sempre que a operação acontece.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? Conditions { get; set; }
 }
 
 public class AnalysisDiffField

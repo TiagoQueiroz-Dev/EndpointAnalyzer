@@ -299,6 +299,90 @@ test('conteudo do relatorio e escapado e as expansoes usam details/summary nativ
     /@media \(max-width: 700px\) \{[\s\S]*?table\.diff-fields thead \{ display: none; \}/);
 });
 
+test('entidades: tag Novo, Removido ou Alterado e so o que mudou, sem condicoes repetidas nem JSON', async () => {
+  const v = (value, conditions) => conditions ? { value, conditions } : { value };
+  const prop = (name, change, { before = [], after = [], removed = [], added = [] } = {}) => ({ name, change, before, after, removed, added });
+  const entity = (kind, entity, operation, properties, extra = {}, fields = []) => ({
+    ...item(kind, 'comportamento', `${entity} ${operation}`, fields),
+    entity: { entity, operation, properties, conditions: [], conditionsAdded: [], conditionsRemoved: [], ...extra },
+  });
+  const longo = 'pRequest.DataPrevisaoChegada?.ToUniversalTime() ?? DateTime.UtcNow.AddDays(1).Date.AddHours(8).ToUniversalTime()';
+  const items = [
+    entity('adicionado', 'HistoricoAgendamento', 'INSERT', [prop('PedidoId', 'adicionada', { after: [v('pPedidoId')] })],
+      { conditions: ['pRequest.DataAgendamento != null'] }),
+    entity('removido', 'Rota', 'UPDATE', [prop('DadosRotaJson', 'removida', { before: [v('null')] })], { conditions: ['xRota != null'] }),
+    entity('alterado', 'ProgramacaoTransporte', 'UPDATE', [
+      prop('Data', 'igual', { before: [v('x')], after: [v('x')] }),
+      prop('TodosPedidosCanhotosTratados', 'alterada', { removed: [v('false')], added: [v('false', ['xPedido.EhTrocaNota != true'])] }),
+      prop('PontoAtualEnderecoId', 'alterada', { removed: [v('xPedido.Destino.EnderecoId', ['p == null'])], added: [v('xEndereco.Id', ['p == null'])] }),
+      prop('Observacao', 'removida', { before: [v(longo)] }),
+    ], { conditionsAdded: ['<b>xPedido.EhValido()</b>'], conditionsRemoved: ['xRota != null'] }),
+    entity('alterado', 'Pedido', 'INSERT', ['A', 'B', 'C', 'D', 'E', 'F', 'G'].map(n => prop(n, 'adicionada', { after: [v('1')] }))),
+  ];
+  const { html } = await page(diffOf([group('entidades', 'Entidades alteradas', items)], []));
+  const [added, removed, changed, many] = cards(html);
+
+  // Cabeçalho do grupo: resumo em contagens e o botão (aria-pressed) para os valores completos.
+  assert.match(html, /diff-entity-plan"><p><span class="adicionado"><b>\+1<\/b> nova[\s\S]*<b>~2<\/b> alteradas[\s\S]*<b>−1<\/b> removida[\s\S]*data-diff-entity-full aria-pressed="false">Mostrar valores completos/);
+
+  // Novo: tag, operação, contagem, só a condição própria e o que passa a ser gravado.
+  assert.match(added, /aria-label="HistoricoAgendamento INSERT: Novo"[\s\S]*diff-op INSERT">INSERT[\s\S]*diff-kind adicionado">Novo[\s\S]*diff-entity-what">1 propriedade</);
+  assert.match(added, /diff-entity-cond"><span class="diff-cond">se <code class="diff-val " title="pRequest\.DataAgendamento != null">/);
+  assert.match(added, /diff-pl adicionada[\s\S]*<code>PedidoId<\/code><span class="sr-only"> \(passou a ser gravada\)[\s\S]*pPedidoId/);
+
+  // Removido: só o resumo; os nomes ficam num details.
+  assert.match(removed, /diff-kind removido">Removido[\s\S]*gravava 1 propriedade/);
+  assert.doesNotMatch(removed, /diff-pls/);
+  assert.match(removed, /<details class="diff-pl-more"><summary>ver propriedades que gravava<\/summary>[\s\S]*<code>DadosRotaJson<\/code>/);
+
+  // Alterado: contagens, só as cláusulas que entraram ou saíram, e só o delta de cada propriedade.
+  assert.match(changed, /diff-entity-what">1 removida · 2 alteradas · condição trocada · 1 igual</);
+  assert.match(changed, /condição[\s\S]*não exige mais<\/span><span class="diff-old"><span aria-hidden="true">− <\/span><code[^>]*>xRota != null[\s\S]*passa a exigir<\/span><span class="diff-new"><span aria-hidden="true">\+ <\/span><code[^>]*>&lt;b&gt;xPedido\.EhValido\(\)&lt;\/b&gt;/);
+  assert.match(changed, /TodosPedidosCanhotosTratados[\s\S]*false<\/code> <span class="diff-cond">condição: <span class="diff-new">\+ <code[^>]*>xPedido\.EhTrocaNota != true/, 'mesmo valor: só a cláusula nova');
+  const ponto = changed.split('<code>PontoAtualEnderecoId</code>')[1].split('class="diff-pl ')[0];
+  assert.match(ponto, /antes: <\/span><code[^>]*>xPedido\.Destino\.EnderecoId<\/code><\/span>[\s\S]*→[\s\S]*depois: <\/span><code[^>]*>xEndereco\.Id<\/code><\/span> <span class="diff-cond">se /);
+  assert.equal((ponto.match(/>p == null</g) ?? []).length, 1, 'mesma condição dos dois lados: aparece uma vez');
+  assert.ok(changed.includes(`title="${longo}"`), 'valor longo inteiro no DOM e no title');
+  assert.doesNotMatch(changed, /<code>Data<\/code>/, 'propriedade igual não vira linha');
+
+  // Mais de 6 linhas: 5 visíveis e o resto num details nativo.
+  assert.equal((many.split('<details')[0].match(/class="diff-pl /g) ?? []).length, 5);
+  assert.match(many, /<details class="diff-pl-more"><summary>mais 2 linhas<\/summary>/);
+
+  for (const card of [added, removed, changed, many]) assert.doesNotMatch(card, /<pre>|Estrutura completa|Origem no código|line-through/);
+});
+
+test('entidades: mudanca de condicao repetida aparece uma vez no topo, com o sentido e o antes/agora', async () => {
+  const entity = (name, operation, extra) => ({
+    ...item('alterado', 'comportamento', `${name} ${operation}`, []),
+    entity: { entity: name, operation, properties: [], conditions: [], conditionsAdded: [], conditionsRemoved: [], ...extra },
+  });
+  const comum = ['pRequest.Sequencia != 0', 'xCommand != null'];
+  const items = [
+    entity('Local', 'INSERT', { conditions: ['xOrigem.EhValido()'], conditionsRemoved: comum }),
+    entity('Rota', 'UPDATE', { conditions: ['xRota != null'], conditionsRemoved: comum }),
+    entity('ProgramacaoTransporte', 'UPDATE', { conditions: ['Existe(x)'], conditionsRemoved: ['xCommand != null'], conditionsAdded: ['Existe(x)'] }),
+  ];
+  const { html } = await page(diffOf([group('entidades', 'Entidades alteradas', items)], []));
+  const [local, rota, programacao] = cards(html);
+
+  // Topo: cada cláusula uma vez, em quantas gravações e quais (title).
+  const top = html.split('<article')[0];
+  assert.match(top, /Condição alterada em várias gravações[\s\S]*não exige mais[\s\S]*pRequest\.Sequencia != 0[\s\S]*title="Local INSERT, Rota UPDATE">em 2 gravações/);
+  assert.match(top, /xCommand != null[\s\S]*title="Local INSERT, Rota UPDATE, ProgramacaoTransporte UPDATE">em 3 gravações/);
+  assert.doesNotMatch(top, /Existe\(x\)/, 'cláusula de uma gravação só fica no card');
+
+  // Card: sentido em texto; a cláusula comum não se repete; antes → agora num details.
+  assert.match(local, /diff-entity-what">grava em mais casos</);
+  assert.match(local, /mesma mudança das demais gravações \(acima\)/);
+  assert.doesNotMatch(local.split('<details')[0], /pRequest\.Sequencia/);
+  assert.match(local, /<summary>ver condição antes → agora<\/summary>[\s\S]*antes[\s\S]*xOrigem\.EhValido\(\)[\s\S]*pRequest\.Sequencia != 0[\s\S]*xCommand != null[\s\S]*agora[\s\S]*xOrigem\.EhValido\(\)/);
+  assert.match(rota, /grava em mais casos/);
+  assert.match(programacao, /diff-entity-what">condição trocada</);
+  assert.match(programacao, /passa a exigir<\/span><span class="diff-new">[\s\S]*Existe\(x\)/);
+  assert.doesNotMatch(programacao.split('<details')[0], /xCommand/);
+});
+
 test('resposta atrasada de outra analise nao substitui o diff exibido', async () => {
   const pending = {};
   const h = harness(url => new Promise(resolve => { pending[new URL(url, 'http://x').searchParams.get('analysisId')] = resolve; }));

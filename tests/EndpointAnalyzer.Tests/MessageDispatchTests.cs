@@ -56,6 +56,26 @@ public class MessageDispatchTests(SampleSolutionFixture fixture)
     }
 
     [Fact]
+    public async Task Atribuicoes_em_metodo_chamado_pelo_construtor_fazem_parte_do_insert()
+    {
+        var context = await fixture.ContextAsync(Adicionar);
+
+        // HistoricoPedido(...) atribui ClienteId e chama DefinirQuantidade, que atribui Quantidade e Descricao: tudo é criação.
+        var insert = Assert.Single(context.EntityChanges, c => c.Entity == "HistoricoPedido");
+        Assert.Equal(EntityOperations.Insert, insert.Operation);
+        Assert.Equal(["ClienteId", "Descricao", "Quantidade"], insert.Properties.Order());
+    }
+
+    [Fact]
+    public async Task Remocao_pela_navegacao_com_supressao_de_nulo_e_delete()
+    {
+        var context = await fixture.ContextAsync(Cancelar);
+
+        var delete = Assert.Single(context.EntityChanges, c => c.Entity == "HistoricoPedido");
+        Assert.Equal(EntityOperations.Delete, delete.Operation);
+    }
+
+    [Fact]
     public async Task Barramento_do_projeto_nao_esconde_o_handler_dentro_da_infraestrutura()
     {
         var context = await fixture.ContextAsync(Cancelar);

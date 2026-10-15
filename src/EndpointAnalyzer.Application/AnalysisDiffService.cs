@@ -109,7 +109,18 @@ public sealed partial class AnalysisDiffService
                 "Fonte: condições encontradas no código (Context.Conditions)."));
         }
         section.Groups.Add(Group("efeitos", "Efeitos", Effects(previous.Context), Effects(current.Context)));
-        section.Groups.Add(Group("entidades", "Entidades alteradas", Entities(previous.Context), Entities(current.Context)));
+        // Mesmo recorte nas duas versões: só sai o que é condição do fluxo em ambas (senão uma gravação nova "altera" todas as outras).
+        var flow = FlowClauses(previous.Context);
+        flow.IntersectWith(FlowClauses(current.Context));
+        section.Groups.Add(Group("entidades", "Entidades alteradas", DiffMatcher.Match(Entities(previous.Context, flow), Entities(current.Context, flow)), null,
+            "Cada entidade é identificada pela entidade e pela operação (INSERT, UPDATE, DELETE): passar a gravar é novo, deixar de gravar "
+            + "é removido e gravar outras propriedades, valores ou condições é alterado. As condições comuns a todas as gravações (validações "
+            + "do caminho de sucesso) ficam de fora: aparece só o que é próprio de cada gravação.", (match, item) =>
+            {
+                // A estrutura da entidade substitui os snapshots: a tela não mostra o JSON canônico das entidades.
+                item.Entity = EntityDiff(match);
+                item.Before = item.After = null;
+            }));
 
         var (pa, ca) = (HasAiSummary(previous), HasAiSummary(current));
         if (pa && ca)
@@ -209,37 +220,115 @@ public sealed partial class AnalysisDiffService
                 .Add("origem", "Origem no código", DiffImpacts.Origin, S(Origin(e.Source)));
         }).ToList();
 
-    private static List<DiffProjection> Entities(EndpointAnalysisContext context) =>
+    /// <summary>Cláusula de condição: Code() para comparar, o texto original para exibir.</summary>
+    private sealed record Clause(string Code, string Text);
+
+    /// <param name="All">Condição completa da operação: é a que se compara (a do fluxo também pode entrar ou sair).</param>
+    /// <param name="Clauses">Condição própria da operação, para exibir: sem as cláusulas comuns a todas as gravações do fluxo.</param>
+    /// <param name="Own">Condição própria de cada atribuição: sem as cláusulas do fluxo e as da operação (já implícitas).</param>
+    private sealed record EntitySide(EntityChange Change, List<Clause> All, List<Clause> Clauses, Dictionary<PropertyChange, List<Clause>> Own);
+
+    /// <summary>Cláusulas (C1, C2...) pela expressão, sem repetição: o registro é renumerado a cada análise.</summary>
+    private static List<Clause> Clauses(IEnumerable<string>? ids, Dictionary<string, string> registry) =>
+        (ids ?? []).Select(id => registry.GetValueOrDefault(id) ?? id).Select(text => new Clause(Code(text), text))
+            .Where(c => c.Code.Length > 0).DistinctBy(c => c.Code).ToList();
+
+    /// <summary>
+    /// Cláusulas presentes em todas as gravações condicionadas do fluxo (ModelState.IsValid, Existe&lt;...&gt;, x != null): são o
+    /// caminho de sucesso do endpoint, não o que distingue uma gravação. Repetidas em toda linha, só poluem a comparação.
+    /// </summary>
+    private static HashSet<string> FlowClauses(EndpointAnalysisContext context)
+    {
+        var sets = context.EntityChanges.Select(e => Clauses(e.ConditionIds, context.ConditionRegistry).Select(c => c.Code).ToHashSet())
+            .Where(s => s.Count > 0).ToList();
+        if (sets.Count < 2) return [];
+        var common = new HashSet<string>(sets[0]);
+        foreach (var set in sets.Skip(1)) common.IntersectWith(set);
+        return common;
+    }
+
+    /// <summary>
+    /// Entidade + operação é a identidade (o analisador junta tudo de uma entidade e operação num item só): INSERT que vira
+    /// UPDATE é um removido e um novo, nunca uma correspondência incerta. As condições ficam só com o que é próprio da
+    /// gravação: sem as cláusulas do fluxo e, na propriedade, sem as da operação.
+    /// </summary>
+    /// <param name="flow">Cláusulas do fluxo nas duas versões (<see cref="FlowClauses"/> de cada uma, intersectadas).</param>
+    private static List<DiffProjection> Entities(EndpointAnalysisContext context, HashSet<string> flow) =>
         context.EntityChanges.Select((e, i) =>
         {
-            var (conditions, display) = ConditionSet(e.ConditionIds, context.ConditionRegistry);
-            var p = new DiffProjection($"{e.Entity} {e.Operation}", null, i, DiffImpacts.Behavior) { Source = e }
-                .Key($"entidade|{e.Entity}|{e.Operation}|{e.EffectClass}|{conditions?.ToJsonString()}")
-                .Key($"entidade|{e.Entity}|{e.Operation}|{e.EffectClass}").Key($"entidade|{e.Entity}|{e.Operation}")
-                .SupportKey($"entidade|{e.Entity}")
+            var clauses = Clauses(e.ConditionIds, context.ConditionRegistry);
+            var implied = clauses.Select(c => c.Code).Concat(flow).ToHashSet();
+            var own = clauses.Where(c => !flow.Contains(c.Code)).ToList();
+            var side = new EntitySide(e, clauses, own, e.PropertyChanges.ToDictionary(p => p,
+                p => Clauses(p.ConditionIds, context.ConditionRegistry).Where(c => !implied.Contains(c.Code)).ToList()));
+            var p = new DiffProjection($"{e.Entity} {e.Operation}", null, i, DiffImpacts.Behavior) { Source = side }
+                .Key($"entidade|{e.Entity}|{e.Operation}")
                 .Add("operacao", "Operação", DiffImpacts.Behavior, S($"{e.Entity} {e.Operation}"))
                 .Add("classe", "Classe", DiffImpacts.Behavior, S(e.EffectClass))
-                .Add("condicoes", "Condições", DiffImpacts.Behavior, conditions, display)
+                .Add("condicoes", "Condições", DiffImpacts.Behavior, Set(clauses.Select(c => c.Code)), List(own.Select(c => c.Text)))
                 .Add("propriedades", "Propriedades", DiffImpacts.Behavior, Set(e.Properties));
-            // Uma linha por propriedade: valor atribuído e condição (a mesma propriedade pode ser atribuída em mais de um ramo).
-            foreach (var property in e.PropertyChanges.GroupBy(c => c.Property).OrderBy(g => g.Key, StringComparer.Ordinal))
-            {
-                var assignments = property.Select(c => (Change: c, Conditions: ConditionSet(c.ConditionIds, context.ConditionRegistry)))
-                    .OrderBy(a => Code(a.Change.Value), StringComparer.Ordinal).ToList();
-                p.Add($"propriedade.{property.Key}", $"Propriedade {property.Key}", DiffImpacts.Behavior,
-                    new JsonArray(assignments.Select(a => (JsonNode?)new JsonObject
-                    {
-                        ["valor"] = Code(a.Change.Value),
-                        ["condicoes"] = a.Conditions.Value,
-                    }).ToArray()),
-                    new JsonArray(assignments.Select(a => (JsonNode?)new JsonObject
-                    {
-                        ["valor"] = a.Change.Value,
-                        ["condicoes"] = a.Conditions.Display ?? JsonValue.Create("sempre"),
-                    }).ToArray()));
-            }
-            return p.Add("origem", "Origem no código", DiffImpacts.Origin, S(Origin(e.CreationSource ?? e.Source)));
+            // Uma linha por propriedade: valores atribuídos e condições (a mesma propriedade pode ser atribuída em mais de um ramo).
+            foreach (var property in e.PropertyChanges.Select(c => c.Property).Distinct().Order(StringComparer.Ordinal))
+                p.Add($"propriedade.{property}", $"Propriedade {property}", DiffImpacts.Behavior,
+                    Set(Assignments(side, property).Select(a => a.Key)));
+            // Sem origem no código: onde a entidade é gravada não muda o que é gravado.
+            return p;
         }).ToList();
+
+    /// <summary>
+    /// Situação de cada propriedade e só o que mudou: as atribuições que entraram ou saíram e as cláusulas da condição da
+    /// operação que entraram ou saíram (comparadas normalizadas).
+    /// </summary>
+    private static AnalysisDiffEntity EntityDiff(DiffMatch match)
+    {
+        var (sb, sc) = (match.Base?.Source as EntitySide, match.Current?.Source as EntitySide);
+        var change = (sc ?? sb)!.Change;
+        var (nb, nc) = (PropertyNames(sb), PropertyNames(sc));
+        var both = sb is not null && sc is not null;
+        return new AnalysisDiffEntity
+        {
+            Entity = change.Entity,
+            Operation = change.Operation,
+            Conditions = (sc ?? sb)!.Clauses.Select(c => c.Text).ToList(),
+            ConditionsAdded = both ? Except(sc!.All, sb!.All) : [],
+            ConditionsRemoved = both ? Except(sb!.All, sc!.All) : [],
+            Properties = nb.Union(nc).Order(StringComparer.Ordinal).Select(name =>
+            {
+                var (before, after) = (Assignments(sb, name), Assignments(sc, name));
+                var (kb, ka) = (before.Select(a => a.Key).ToHashSet(), after.Select(a => a.Key).ToHashSet());
+                return new AnalysisDiffEntityProperty
+                {
+                    Name = name,
+                    Change = !nb.Contains(name) ? EntityPropertyChanges.Added
+                        : !nc.Contains(name) ? EntityPropertyChanges.Removed
+                        : kb.SetEquals(ka) ? EntityPropertyChanges.Unchanged
+                        : EntityPropertyChanges.Changed,
+                    Before = before.Select(a => a.Assignment).ToList(),
+                    After = after.Select(a => a.Assignment).ToList(),
+                    Removed = both ? before.Where(a => !ka.Contains(a.Key)).Select(a => a.Assignment).ToList() : [],
+                    Added = both ? after.Where(a => !kb.Contains(a.Key)).Select(a => a.Assignment).ToList() : [],
+                };
+            }).ToList(),
+        };
+    }
+
+    private static List<string> Except(List<Clause> a, List<Clause> b) =>
+        a.Where(x => b.All(y => y.Code != x.Code)).Select(x => x.Text).ToList();
+
+    private static HashSet<string> PropertyNames(EntitySide? side) => side is null ? []
+        : side.Change.Properties.Concat(side.Change.PropertyChanges.Select(p => p.Property)).ToHashSet(StringComparer.Ordinal);
+
+    /// <summary>Atribuições da propriedade com a condição própria, sem repetição; a chave é o valor e as cláusulas normalizados.</summary>
+    private static List<(string Key, AnalysisDiffAssignment Assignment)> Assignments(EntitySide? side, string property) => side is null ? []
+        : side.Change.PropertyChanges.Where(p => p.Property == property)
+            .Select(p => (Change: p, Own: side.Own[p]))
+            .Select(x => (Key: $"{Code(x.Change.Value)}|{string.Join("&", x.Own.Select(c => c.Code).Order(StringComparer.Ordinal))}",
+                Assignment: new AnalysisDiffAssignment
+                {
+                    Value = x.Change.Value,
+                    Conditions = x.Own.Count > 0 ? x.Own.Select(c => c.Text).ToList() : null,
+                }))
+            .DistinctBy(x => x.Key).OrderBy(x => x.Key, StringComparer.Ordinal).ToList();
 
     /// <summary>Texto da IA: tudo é documentação (redação nunca é tratada como mudança de comportamento).</summary>
     private static List<DiffProjection> Documentation(EndpointAnalysisResult ai)
@@ -600,8 +689,9 @@ public sealed partial class AnalysisDiffService
     private static AnalysisDiffGroup Group(string id, string title, List<DiffProjection> bases, List<DiffProjection> currents, string? note = null) =>
         Group(id, title, DiffMatcher.Match(bases, currents), null, note);
 
+    /// <param name="decorate">Completa o item com a estrutura própria do grupo (ex.: propriedades da entidade).</param>
     private static AnalysisDiffGroup Group(string id, string title, List<DiffMatch> matches,
-        Func<DiffMatch, IEnumerable<AnalysisDiffField>>? extra, string? note)
+        Func<DiffMatch, IEnumerable<AnalysisDiffField>>? extra, string? note, Action<DiffMatch, AnalysisDiffItem>? decorate = null)
     {
         var group = new AnalysisDiffGroup { Id = id, Title = title };
         if (note is not null) group.Notes.Add(note);
@@ -612,6 +702,7 @@ public sealed partial class AnalysisDiffService
                 group.Counts.Unchanged++;
                 continue;
             }
+            decorate?.Invoke(match, item);
             group.Items.Add(item);
             Count(group.Counts, item);
         }
